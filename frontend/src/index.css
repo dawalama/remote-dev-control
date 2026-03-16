@@ -1,0 +1,547 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: oklch(0.145 0 0);
+  --color-foreground: oklch(0.985 0 0);
+  --color-card: oklch(0.17 0 0);
+  --color-card-foreground: oklch(0.985 0 0);
+  --color-popover: oklch(0.145 0 0);
+  --color-popover-foreground: oklch(0.985 0 0);
+  --color-primary: oklch(0.488 0.243 264.376);
+  --color-primary-foreground: oklch(0.985 0 0);
+  --color-secondary: oklch(0.269 0 0);
+  --color-secondary-foreground: oklch(0.985 0 0);
+  --color-muted: oklch(0.269 0 0);
+  --color-muted-foreground: oklch(0.708 0 0);
+  --color-accent: oklch(0.269 0 0);
+  --color-accent-foreground: oklch(0.985 0 0);
+  --color-destructive: oklch(0.396 0.141 25.723);
+  --color-destructive-foreground: oklch(0.637 0.237 25.331);
+  --color-border: oklch(0.269 0 0);
+  --color-input: oklch(0.269 0 0);
+  --color-ring: oklch(0.488 0.243 264.376);
+  --color-sidebar: oklch(0.12 0 0);
+  --color-sidebar-foreground: oklch(0.985 0 0);
+  --color-sidebar-border: oklch(0.269 0 0);
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+}
+
+@utility scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    @apply border-border outline-ring/50;
+  }
+  html, body {
+    overflow-x: hidden;
+    max-width: 100vw;
+    width: 100%;
+  }
+  body {
+    @apply bg-background text-foreground;
+    margin: 0;
+    font-family: system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* ============================================================
+   NAMED THEMES — ported from shared.css
+   Activated via data-theme attribute on <html>.
+   Overrides Tailwind utility classes so components don't need changes.
+   ============================================================ */
+
+/* Default — dark palette */
+[data-theme="default"] {
+  --t-bg: #1e2128;
+  --t-surface: #272b33;
+  --t-surface2: #31363f;
+  --t-surface3: #3a404a;
+  --t-surface-deep: #181b20;
+  --t-border: #3f4550;
+  --t-text: #eaedf2;
+  --t-text2: #9099a8;
+  --t-text3: #6b7280;
+  --t-accent: #5b9cf6;
+  --t-accent-hover: #4a8be5;
+  --t-green: #34d399;
+  --t-green-hover: #2ab885;
+  --t-red: #f87171;
+  --t-red-hover: #e55b5b;
+  --t-yellow: #fbbf24;
+  --t-purple: #a78bfa;
+  --t-orange: #fb923c;
+  --t-radius: 8px;
+  --t-radius-sm: 4px;
+  --t-shadow: none;
+  --t-terminal-bg: #1a1a2e;
+}
+
+/* Modern — light, rounded, Bauhaus accent */
+[data-theme="modern"] {
+  --t-bg: #F2F2F2;
+  --t-surface: #FFFFFF;
+  --t-surface2: #F7F7F7;
+  --t-surface3: #ECECEC;
+  --t-surface-deep: #E8E8E8;
+  --t-border: #E0E0E0;
+  --t-text: #1A1A1A;
+  --t-text2: #6B6B6B;
+  --t-text3: #999999;
+  --t-accent: #7B61FF;
+  --t-accent-hover: #6A4FEE;
+  --t-green: #22c55e;
+  --t-green-hover: #16a34a;
+  --t-red: #ef4444;
+  --t-red-hover: #dc2626;
+  --t-yellow: #eab308;
+  --t-purple: #7B61FF;
+  --t-orange: #f97316;
+  --t-radius: 24px;
+  --t-radius-sm: 12px;
+  --t-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  --t-terminal-bg: #0D0D0D;
+}
+
+/* Brutalist — black, orange accent, sharp edges */
+[data-theme="brutalist"] {
+  --t-bg: #050505;
+  --t-surface: #111111;
+  --t-surface2: #262626;
+  --t-surface3: #383838;
+  --t-surface-deep: #000000;
+  --t-border: #444444;
+  --t-text: #FFFFFF;
+  --t-text2: #999999;
+  --t-text3: #666666;
+  --t-accent: #FF4D00;
+  --t-accent-hover: #E64500;
+  --t-green: #00FF66;
+  --t-green-hover: #00DD55;
+  --t-red: #FF0033;
+  --t-red-hover: #DD002B;
+  --t-yellow: #FFCC00;
+  --t-purple: #FF4D00;
+  --t-orange: #FF6600;
+  --t-radius: 0px;
+  --t-radius-sm: 0px;
+  --t-shadow: none;
+  --t-terminal-bg: #000000;
+}
+
+/* ============================================================
+   TAILWIND OVERRIDE RULES — maps Tailwind classes to theme vars
+   ============================================================ */
+
+/* Body */
+[data-theme] body { background: var(--t-bg) !important; color: var(--t-text) !important; }
+
+/* Surfaces */
+[data-theme] .bg-gray-900,
+[data-theme] .bg-gray-950 { background-color: var(--t-surface-deep) !important; }
+[data-theme] .bg-gray-800 { background-color: var(--t-surface) !important; }
+[data-theme] .bg-gray-700 { background-color: var(--t-surface2) !important; }
+[data-theme] .bg-gray-600 { background-color: var(--t-surface3) !important; }
+[data-theme] .hover\:bg-gray-700:hover { background-color: var(--t-surface2) !important; }
+[data-theme] .hover\:bg-gray-600:hover { background-color: var(--t-surface3) !important; }
+[data-theme] .hover\:bg-gray-500:hover { background-color: var(--t-border) !important; }
+
+/* Text */
+[data-theme] .text-gray-100 { color: var(--t-text) !important; }
+[data-theme] .text-gray-200 { color: var(--t-text) !important; }
+[data-theme] .text-gray-300 { color: var(--t-text2) !important; }
+[data-theme] .text-gray-400 { color: var(--t-text2) !important; }
+[data-theme] .text-gray-500 { color: var(--t-text3) !important; }
+[data-theme] .hover\:text-gray-200:hover { color: var(--t-text) !important; }
+[data-theme] .hover\:text-gray-300:hover { color: var(--t-text2) !important; }
+
+/* Borders */
+[data-theme] .border-gray-700 { border-color: var(--t-border) !important; }
+[data-theme] .border-gray-600 { border-color: var(--t-border) !important; }
+[data-theme] .border-gray-800 { border-color: var(--t-border) !important; }
+
+/* Accent buttons */
+[data-theme] .bg-blue-600 { background-color: var(--t-accent) !important; color: #fff !important; }
+[data-theme] .hover\:bg-blue-700:hover { background-color: var(--t-accent-hover) !important; }
+[data-theme] .bg-green-600 { background-color: var(--t-green) !important; color: #fff !important; }
+[data-theme] .hover\:bg-green-700:hover { background-color: var(--t-green-hover) !important; }
+[data-theme] .bg-red-600 { background-color: var(--t-red) !important; color: #fff !important; }
+[data-theme] .hover\:bg-red-700:hover { background-color: var(--t-red-hover) !important; }
+[data-theme] .bg-yellow-600 { background-color: var(--t-yellow) !important; color: #fff !important; }
+[data-theme] .bg-green-500 { background-color: var(--t-green) !important; }
+[data-theme] .bg-red-500 { background-color: var(--t-red) !important; }
+[data-theme] .bg-gray-500 { background-color: var(--t-text3) !important; }
+[data-theme] .bg-blue-400 { background-color: var(--t-accent) !important; }
+[data-theme] .bg-blue-500 { background-color: var(--t-accent) !important; }
+
+/* Text accent colors */
+[data-theme] .text-blue-400,
+[data-theme] .text-blue-500 { color: var(--t-accent) !important; }
+[data-theme] .text-green-400,
+[data-theme] .text-green-500 { color: var(--t-green) !important; }
+[data-theme] .text-red-400 { color: var(--t-red) !important; }
+[data-theme] .text-yellow-400,
+[data-theme] .text-yellow-300 { color: var(--t-yellow) !important; }
+[data-theme] .text-purple-400 { color: var(--t-purple) !important; }
+[data-theme] .text-orange-400 { color: var(--t-orange) !important; }
+
+/* Border accent colors */
+[data-theme] .border-blue-500,
+[data-theme] .border-blue-400 { border-color: var(--t-accent) !important; }
+[data-theme] .border-b-2.border-blue-500 { border-bottom-color: var(--t-accent) !important; }
+
+/* Focus ring */
+[data-theme] .focus\:border-blue-500:focus { border-color: var(--t-accent) !important; }
+
+/* Radius */
+[data-theme] .rounded-lg { border-radius: var(--t-radius) !important; }
+[data-theme] .rounded-md,
+[data-theme] .rounded { border-radius: var(--t-radius-sm) !important; }
+[data-theme] .rounded-full { border-radius: 9999px !important; }
+
+/* Purple buttons */
+[data-theme] .bg-purple-600 { background-color: var(--t-purple) !important; color: #fff !important; }
+[data-theme] .hover\:bg-purple-700:hover { background-color: color-mix(in srgb, var(--t-purple) 85%, black) !important; }
+[data-theme] .bg-purple-500 { background-color: var(--t-purple) !important; }
+
+/* Opacity bg variants */
+[data-theme] .bg-black\/60 { background-color: rgba(0,0,0,0.6) !important; }
+[data-theme] .bg-black\/50 { background-color: rgba(0,0,0,0.5) !important; }
+
+/* Semantic dark backgrounds — tinted versions */
+[data-theme] .bg-yellow-900\/50 { background-color: color-mix(in srgb, var(--t-yellow) 15%, var(--t-surface)) !important; }
+[data-theme] .bg-yellow-900\/60 { background-color: color-mix(in srgb, var(--t-yellow) 18%, var(--t-surface)) !important; }
+[data-theme] .bg-red-900\/30 { background-color: color-mix(in srgb, var(--t-red) 12%, var(--t-surface)) !important; }
+[data-theme] .bg-green-900 { background-color: color-mix(in srgb, var(--t-green) 18%, var(--t-surface)) !important; }
+[data-theme] .bg-red-900 { background-color: color-mix(in srgb, var(--t-red) 18%, var(--t-surface)) !important; }
+[data-theme] .bg-blue-900 { background-color: color-mix(in srgb, var(--t-accent) 18%, var(--t-surface)) !important; }
+[data-theme] .bg-purple-600\/20 { background-color: color-mix(in srgb, var(--t-purple) 20%, transparent) !important; }
+[data-theme] .bg-blue-500\/20 { background-color: color-mix(in srgb, var(--t-accent) 20%, transparent) !important; }
+
+/* Text colors on semantic backgrounds */
+[data-theme] .text-red-300 { color: var(--t-red) !important; }
+[data-theme] .text-red-200 { color: var(--t-red) !important; }
+[data-theme] .text-blue-300 { color: var(--t-accent) !important; }
+[data-theme] .text-green-300 { color: var(--t-green) !important; }
+
+/* Border accent on semantic backgrounds */
+[data-theme] .border-yellow-700\/50 { border-color: color-mix(in srgb, var(--t-yellow) 50%, transparent) !important; }
+[data-theme] .border-red-500\/50 { border-color: color-mix(in srgb, var(--t-red) 50%, transparent) !important; }
+[data-theme] .border-red-700 { border-color: color-mix(in srgb, var(--t-red) 60%, var(--t-border)) !important; }
+
+/* ============================================================
+   MODERN THEME — contrast fixes for light background
+   ============================================================ */
+
+/* text-white must become dark on light surfaces */
+[data-theme="modern"] .text-white { color: var(--t-text) !important; }
+
+/* Saturated-color buttons keep white text */
+[data-theme="modern"] .bg-blue-600,
+[data-theme="modern"] .bg-green-600,
+[data-theme="modern"] .bg-red-600,
+[data-theme="modern"] .bg-purple-600,
+[data-theme="modern"] .bg-yellow-600,
+[data-theme="modern"] .bg-orange-600 { color: #fff !important; }
+
+/* Gray buttons get dark text — they're light in modern theme */
+[data-theme="modern"] .bg-gray-600 { color: var(--t-text) !important; }
+[data-theme="modern"] .bg-gray-700 { color: var(--t-text) !important; }
+
+/* Muted text needs more contrast on light bg */
+[data-theme="modern"] .text-gray-400 { color: #6B6B6B !important; }
+[data-theme="modern"] .text-gray-500 { color: #888 !important; }
+
+/* Green/yellow text needs darker variants on light bg for legibility */
+[data-theme="modern"] .text-green-400,
+[data-theme="modern"] .text-green-500,
+[data-theme="modern"] .text-green-300 { color: #15803d !important; }
+[data-theme="modern"] .text-yellow-300,
+[data-theme="modern"] .text-yellow-400 { color: #92400e !important; }
+[data-theme="modern"] .text-red-400 { color: #dc2626 !important; }
+[data-theme="modern"] .text-orange-400 { color: #c2410c !important; }
+
+/* Hover: bg-red-900/30 menu items — light red tint on hover */
+[data-theme="modern"] .hover\:bg-red-900\/30:hover { background-color: rgba(239,68,68,0.1) !important; }
+
+/* Ensure hover:bg-red-800 stays themed */
+[data-theme="modern"] .hover\:bg-red-800:hover { background-color: color-mix(in srgb, var(--t-red) 25%, var(--t-surface)) !important; }
+
+/* ============================================================
+   MODERN THEME extras
+   ============================================================ */
+[data-theme="modern"] body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 60% 50% at 15% 20%, rgba(123,97,255,0.06) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 40% at 80% 30%, rgba(56,189,248,0.05) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 50% at 50% 80%, rgba(34,197,94,0.04) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+/* Hover states need visible contrast on light bg */
+[data-theme="modern"] .hover\:bg-gray-800:hover { background-color: var(--t-surface3) !important; }
+
+[data-theme="modern"] .rounded-lg { box-shadow: var(--t-shadow); }
+
+/* ============================================================
+   BRUTALIST THEME extras
+   ============================================================ */
+[data-theme="brutalist"] * { border-radius: 0 !important; }
+[data-theme="brutalist"] .rounded-full { border-radius: 0 !important; }
+
+[data-theme="brutalist"] h1,
+[data-theme="brutalist"] h2,
+[data-theme="brutalist"] h3 {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Brutalist: border-only buttons with hover invert — only for action buttons */
+[data-theme="brutalist"] button.btn-brutal:not(.xterm-helper-textarea) {
+  background: transparent !important;
+  border: 1px solid var(--t-border) !important;
+  color: var(--t-text) !important;
+  transition: all 0.1s ease !important;
+}
+[data-theme="brutalist"] button.btn-brutal:hover:not(.xterm-helper-textarea) {
+  background: var(--t-accent) !important;
+  border-color: var(--t-accent) !important;
+  color: #000 !important;
+}
+
+/* Brutalist: accent buttons get accent border at rest */
+[data-theme="brutalist"] .bg-blue-600 {
+  background: var(--t-accent) !important;
+  color: #000 !important;
+  border-color: var(--t-accent) !important;
+}
+[data-theme="brutalist"] .bg-green-600 {
+  background: transparent !important;
+  border-color: var(--t-green) !important;
+  color: var(--t-green) !important;
+}
+[data-theme="brutalist"] .bg-green-600:hover {
+  background: var(--t-green) !important;
+  color: #000 !important;
+}
+[data-theme="brutalist"] .bg-red-600 {
+  background: transparent !important;
+  border-color: var(--t-red) !important;
+  color: var(--t-red) !important;
+}
+[data-theme="brutalist"] .bg-red-600:hover {
+  background: var(--t-red) !important;
+  color: #000 !important;
+}
+
+/* Brutalist: status dot glow */
+[data-theme="brutalist"] .bg-green-500 { box-shadow: 0 0 8px var(--t-green); }
+[data-theme="brutalist"] .bg-red-500 { box-shadow: 0 0 8px var(--t-red); }
+
+/* ============================================================
+   KIOSK LAYOUT — larger text and tap targets for TV/car screens
+   Activated via data-layout="kiosk" on <html>.
+   ============================================================ */
+[data-layout="kiosk"] .text-xs       { font-size: 0.85rem !important; line-height: 1.25rem !important; }
+[data-layout="kiosk"] .text-\[10px\] { font-size: 0.75rem !important; line-height: 1rem !important; }
+[data-layout="kiosk"] .text-sm       { font-size: 1.05rem !important; line-height: 1.5rem !important; }
+[data-layout="kiosk"] .text-base     { font-size: 1.2rem !important; line-height: 1.75rem !important; }
+[data-layout="kiosk"] .text-lg       { font-size: 1.4rem !important; line-height: 1.85rem !important; }
+[data-layout="kiosk"] .text-2xl      { font-size: 2rem !important; line-height: 2.25rem !important; }
+
+/* Bigger buttons/inputs for touch */
+[data-layout="kiosk"] .py-0\.5 { padding-top: 0.35rem !important; padding-bottom: 0.35rem !important; }
+[data-layout="kiosk"] .py-1    { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; }
+[data-layout="kiosk"] .py-2    { padding-top: 0.75rem !important; padding-bottom: 0.75rem !important; }
+[data-layout="kiosk"] .px-2    { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+[data-layout="kiosk"] .gap-1   { gap: 0.375rem !important; }
+[data-layout="kiosk"] .gap-2   { gap: 0.625rem !important; }
+
+/* ============================================================
+   TOUCH FEEDBACK — visible press state for mobile and kiosk
+   ============================================================ */
+
+/* Universal touch feedback: any button in mobile/kiosk gets a visible press */
+[data-layout="mobile"] button:active,
+[data-layout="kiosk"] button:active {
+  opacity: 0.7 !important;
+  transform: scale(0.97) !important;
+}
+
+/* Explicit btn-touch class: stronger feedback + transition */
+.btn-touch {
+  transition: transform 0.1s ease, opacity 0.1s ease;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+.btn-touch:active {
+  opacity: 0.65 !important;
+  transform: scale(0.95) !important;
+}
+
+/* Terminal areas stay dark across all themes */
+[data-theme] .xterm { background: var(--t-terminal-bg) !important; }
+
+/* Force visible scrollbar on xterm viewport (mobile/macOS hide overlay scrollbars) */
+.xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+.xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+/* rrweb Replayer — raw Replayer (no Svelte wrapper) */
+.replayer-wrapper {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  transform-origin: top left !important;
+}
+.replayer-wrapper > iframe {
+  border: none !important;
+}
+.replayer-mouse {
+  z-index: 10 !important;
+}
+
+/* ============================================================
+   INPUT & FORM STYLES
+   ============================================================ */
+.input-cls {
+  @apply w-full border px-3 py-1.5 text-sm outline-none;
+  background-color: var(--t-surface-deep, #181b20);
+  border-color: var(--t-border, #3f4550);
+  border-radius: var(--t-radius-sm, 4px);
+  color: var(--t-text, #eaedf2);
+}
+.input-cls:focus {
+  border-color: var(--t-accent, #5b9cf6);
+}
+
+[data-theme] select,
+[data-theme] input,
+[data-theme] textarea {
+  background-color: var(--t-surface-deep) !important;
+  color: var(--t-text) !important;
+  border-color: var(--t-border) !important;
+}
+[data-theme] select:focus,
+[data-theme] input:focus,
+[data-theme] textarea:focus {
+  border-color: var(--t-accent) !important;
+}
+[data-theme="brutalist"] select:focus,
+[data-theme="brutalist"] input:focus,
+[data-theme="brutalist"] textarea:focus {
+  box-shadow: none !important;
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}

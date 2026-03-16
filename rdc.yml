@@ -1,0 +1,6 @@
+# RDC process configuration for remote-dev-ctrl itself
+processes:
+  - name: server
+    command: .venv/bin/rdc server start
+    description: RDC Command Center
+    port: 8420

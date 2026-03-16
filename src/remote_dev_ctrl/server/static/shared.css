@@ -1,0 +1,698 @@
+/* ADT Shared Design Tokens & Components
+   Used by both desktop dashboard and mobile page.
+   Keep this file focused on reusable tokens and utility classes. */
+
+:root {
+    /* Slightly lighter palette */
+    --bg: #1e2128;
+    --surface: #272b33;
+    --surface2: #31363f;
+    --border: #3f4550;
+    --text: #eaedf2;
+    --text2: #9099a8;
+    --accent: #5b9cf6;
+    --green: #34d399;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --orange: #fb923c;
+}
+
+/* Status colors — semantic classes for process/task/agent status */
+.status-working,
+.status-in_progress,
+.status-running { color: var(--green); }
+
+.status-idle,
+.status-ready { color: var(--accent); }
+
+.status-error,
+.status-failed { color: var(--red); }
+
+.status-stopped { color: var(--text2); }
+
+.status-pending,
+.status-starting { color: var(--yellow); }
+
+.status-blocked,
+.status-awaiting_review { color: var(--orange); }
+
+.status-completed { color: var(--green); }
+
+/* Shared animations */
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.pulse { animation: pulse 1.5s infinite; }
+.fade-in { animation: fadeIn 0.3s ease-in; }
+
+/* Status dot indicator */
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.status-dot.connected { background: var(--green); }
+.status-dot.disconnected { background: var(--red); animation: pulse 1.5s infinite; }
+.status-dot.connecting { background: var(--yellow); animation: pulse 1s infinite; }
+
+/* Badge — inline status label */
+.badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.badge.pending { background: rgba(234, 179, 8, 0.2); color: var(--yellow); }
+.badge.in_progress { background: rgba(91, 156, 246, 0.2); color: var(--accent); }
+.badge.blocked { background: rgba(249, 115, 22, 0.2); color: var(--orange); }
+.badge.completed { background: rgba(52, 211, 153, 0.2); color: var(--green); }
+.badge.failed { background: rgba(248, 113, 113, 0.2); color: var(--red); }
+.badge.cancelled { background: rgba(144, 153, 168, 0.2); color: var(--text2); }
+
+/* ============================================================
+   NAMED THEMES — activated via data-theme attribute on <html>
+   Each theme overrides the :root design tokens so both desktop
+   (Tailwind overrides) and mobile (CSS-var based) adapt automatically.
+   ============================================================ */
+
+/* Default — current dark palette (mirrors :root, explicit for switcher) */
+[data-theme="default"] {
+    --bg: #1e2128;
+    --surface: #272b33;
+    --surface2: #31363f;
+    --border: #3f4550;
+    --text: #eaedf2;
+    --text2: #9099a8;
+    --accent: #5b9cf6;
+    --green: #34d399;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --orange: #fb923c;
+
+    --t-bg: #1e2128;
+    --t-surface: #272b33;
+    --t-surface2: #31363f;
+    --t-surface3: #3a404a;
+    --t-surface-deep: #181b20;
+    --t-border: #3f4550;
+    --t-text: #eaedf2;
+    --t-text2: #9099a8;
+    --t-text3: #6b7280;
+    --t-accent: #5b9cf6;
+    --t-accent-hover: #4a8be5;
+    --t-green: #34d399;
+    --t-green-hover: #2ab885;
+    --t-red: #f87171;
+    --t-red-hover: #e55b5b;
+    --t-yellow: #fbbf24;
+    --t-purple: #a78bfa;
+    --t-orange: #fb923c;
+    --t-radius: 8px;
+    --t-radius-sm: 4px;
+    --t-shadow: none;
+    --t-terminal-bg: #1a1a2e;
+    --t-terminal-accent: #5b9cf6;
+}
+
+/* Modern — light, rounded, Design 3 + Bauhaus accent palette */
+[data-theme="modern"] {
+    --bg: #F2F2F2;
+    --surface: #FFFFFF;
+    --surface2: #F7F7F7;
+    --border: #E0E0E0;
+    --text: #1A1A1A;
+    --text2: #6B6B6B;
+    --accent: #7B61FF;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --orange: #f97316;
+
+    --t-bg: #F2F2F2;
+    --t-surface: #FFFFFF;
+    --t-surface2: #F7F7F7;
+    --t-surface3: #ECECEC;
+    --t-surface-deep: #E8E8E8;
+    --t-border: #E0E0E0;
+    --t-text: #1A1A1A;
+    --t-text2: #6B6B6B;
+    --t-text3: #999999;
+    --t-accent: #7B61FF;
+    --t-accent-hover: #6A4FEE;
+    --t-green: #22c55e;
+    --t-green-hover: #16a34a;
+    --t-red: #ef4444;
+    --t-red-hover: #dc2626;
+    --t-yellow: #eab308;
+    --t-purple: #7B61FF;
+    --t-orange: #f97316;
+    --t-radius: 24px;
+    --t-radius-sm: 12px;
+    --t-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    --t-terminal-bg: #0D0D0D;
+    --t-terminal-accent: #7B61FF;
+}
+
+/* Brutalist — black, orange accent, sharp edges, Design 2 */
+[data-theme="brutalist"] {
+    --bg: #050505;
+    --surface: #111111;
+    --surface2: #262626;
+    --border: #444444;
+    --text: #FFFFFF;
+    --text2: #999999;
+    --accent: #FF4D00;
+    --green: #00FF66;
+    --yellow: #FFCC00;
+    --red: #FF0033;
+    --orange: #FF6600;
+
+    --t-bg: #050505;
+    --t-surface: #111111;
+    --t-surface2: #262626;
+    --t-surface3: #383838;
+    --t-surface-deep: #000000;
+    --t-border: #444444;
+    --t-text: #FFFFFF;
+    --t-text2: #999999;
+    --t-text3: #666666;
+    --t-accent: #FF4D00;
+    --t-accent-hover: #E64500;
+    --t-green: #00FF66;
+    --t-green-hover: #00DD55;
+    --t-red: #FF0033;
+    --t-red-hover: #DD002B;
+    --t-yellow: #FFCC00;
+    --t-purple: #FF4D00;
+    --t-orange: #FF6600;
+    --t-radius: 0px;
+    --t-radius-sm: 0px;
+    --t-shadow: none;
+    --t-terminal-bg: #000000;
+    --t-terminal-accent: #FF4D00;
+}
+
+/* Theme-specific body styles */
+[data-theme="modern"] body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+        radial-gradient(ellipse 60% 50% at 15% 20%, rgba(123,97,255,0.06) 0%, transparent 70%),
+        radial-gradient(ellipse 50% 40% at 80% 30%, rgba(56,189,248,0.05) 0%, transparent 70%),
+        radial-gradient(ellipse 40% 50% at 50% 80%, rgba(34,197,94,0.04) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+[data-theme="brutalist"] * {
+    border-radius: 0 !important;
+}
+[data-theme="brutalist"] .badge,
+[data-theme="brutalist"] .status-dot {
+    border-radius: 0 !important;
+}
+[data-theme="brutalist"] .card,
+[data-theme="brutalist"] .proc-item,
+[data-theme="brutalist"] .ctx-item {
+    border-width: 2px;
+}
+
+/* ============================================================
+   TAILWIND OVERRIDE RULES — maps Tailwind utility classes to
+   theme variables when a data-theme is active.
+   ============================================================ */
+
+/* Surfaces */
+[data-theme] .bg-gray-900,
+[data-theme] .bg-gray-950 { background-color: var(--t-surface-deep) !important; }
+[data-theme] .bg-gray-800 { background-color: var(--t-surface) !important; }
+[data-theme] .bg-gray-700 { background-color: var(--t-surface2) !important; }
+[data-theme] .bg-gray-600 { background-color: var(--t-surface3) !important; }
+[data-theme] .hover\:bg-gray-700:hover { background-color: var(--t-surface2) !important; }
+[data-theme] .hover\:bg-gray-600:hover { background-color: var(--t-surface3) !important; }
+[data-theme] .hover\:bg-gray-500:hover { background-color: var(--t-border) !important; }
+
+/* Text */
+[data-theme] .text-gray-100 { color: var(--t-text) !important; }
+[data-theme] .text-gray-200 { color: var(--t-text) !important; }
+[data-theme] .text-gray-300 { color: var(--t-text2) !important; }
+[data-theme] .text-gray-400 { color: var(--t-text2) !important; }
+[data-theme] .text-gray-500 { color: var(--t-text3) !important; }
+[data-theme] .hover\:text-white:hover { color: var(--t-text) !important; }
+
+/* Borders */
+[data-theme] .border-gray-700 { border-color: var(--t-border) !important; }
+[data-theme] .border-gray-600 { border-color: var(--t-border) !important; }
+
+/* Accent buttons */
+[data-theme] .bg-blue-600 { background-color: var(--t-accent) !important; color: #fff !important; }
+[data-theme] .hover\:bg-blue-700:hover { background-color: var(--t-accent-hover) !important; }
+[data-theme] .bg-green-600 { background-color: var(--t-green) !important; color: #fff !important; }
+[data-theme] .hover\:bg-green-700:hover { background-color: var(--t-green-hover) !important; }
+[data-theme] .bg-red-600 { background-color: var(--t-red) !important; color: #fff !important; }
+[data-theme] .hover\:bg-red-700:hover { background-color: var(--t-red-hover) !important; }
+[data-theme] .bg-green-500 { background-color: var(--t-green) !important; }
+[data-theme] .bg-gray-500 { background-color: var(--t-text3) !important; }
+
+/* Text accent colors */
+[data-theme] .text-blue-400,
+[data-theme] .text-blue-500 { color: var(--t-accent) !important; }
+[data-theme] .text-green-400 { color: var(--t-green) !important; }
+[data-theme] .text-red-400 { color: var(--t-red) !important; }
+[data-theme] .text-yellow-400 { color: var(--t-yellow) !important; }
+[data-theme] .text-purple-400 { color: var(--t-purple) !important; }
+[data-theme] .text-orange-400 { color: var(--t-orange) !important; }
+[data-theme] .text-cyan-400 { color: var(--t-accent) !important; }
+
+/* Body */
+[data-theme] body { background: var(--t-bg) !important; color: var(--t-text) !important; }
+
+/* Dividers & separators */
+[data-theme] .bg-gray-600.w-px,
+[data-theme] .divide-gray-700 > * + * { border-color: var(--t-border) !important; }
+
+/* Radius */
+[data-theme] .rounded-lg { border-radius: var(--t-radius) !important; }
+[data-theme] .rounded-md { border-radius: var(--t-radius-sm) !important; }
+
+/* Terminal areas stay dark */
+[data-theme] .embedded-terminal-area { background: var(--t-terminal-bg) !important; }
+
+/* Tailwind opacity variants — not caught by standard class overrides */
+[data-theme] .bg-gray-700\/50 { background-color: var(--t-surface2) !important; }
+[data-theme] .bg-red-900\/30 { background-color: rgba(248, 113, 113, 0.15) !important; }
+[data-theme="brutalist"] .bg-red-900\/30 { background-color: rgba(255, 0, 51, 0.2) !important; }
+[data-theme="modern"] .bg-red-900\/30 { background-color: rgba(239, 68, 68, 0.1) !important; }
+[data-theme] .bg-gray-900\/80 { background-color: var(--t-surface-deep) !important; }
+
+/* Focus ring */
+[data-theme] select:focus,
+[data-theme] input:focus,
+[data-theme] textarea:focus {
+    border-color: var(--t-accent) !important;
+    box-shadow: 0 0 0 2px rgba(123, 97, 255, 0.2) !important;
+}
+[data-theme="default"] select:focus,
+[data-theme="default"] input:focus,
+[data-theme="default"] textarea:focus {
+    box-shadow: 0 0 0 2px rgba(91, 156, 246, 0.2) !important;
+}
+[data-theme="brutalist"] select:focus,
+[data-theme="brutalist"] input:focus,
+[data-theme="brutalist"] textarea:focus {
+    box-shadow: none !important;
+    border-color: var(--t-accent) !important;
+}
+
+/* Shadow on cards for modern theme */
+[data-theme="modern"] .card,
+[data-theme="modern"] .task-card,
+[data-theme="modern"] .proc-item {
+    box-shadow: var(--t-shadow);
+}
+
+/* Tab accent */
+[data-theme] .tab-active { border-bottom-color: var(--t-accent) !important; color: var(--t-text) !important; }
+[data-theme] .bottom-tab.active { color: var(--t-text) !important; border-bottom-color: var(--t-accent) !important; }
+
+/* ============================================================
+   BRUTALIST BUTTON STYLE — border-only, hover-invert
+   Inspired by design_4 quick-action-btn pattern
+   ============================================================ */
+[data-theme="brutalist"] button,
+[data-theme="brutalist"] .btn {
+    background: transparent !important;
+    border: 1px solid var(--t-border) !important;
+    color: var(--t-text) !important;
+    transition: all 0.1s ease !important;
+}
+[data-theme="brutalist"] button:hover,
+[data-theme="brutalist"] .btn:hover {
+    background: var(--t-accent) !important;
+    border-color: var(--t-accent) !important;
+    color: #000 !important;
+}
+
+/* Accent buttons get accent border at rest */
+[data-theme="brutalist"] .bg-blue-600,
+[data-theme="brutalist"] .btn-primary {
+    border-color: var(--t-accent) !important;
+    color: var(--t-accent) !important;
+}
+[data-theme="brutalist"] .bg-green-600,
+[data-theme="brutalist"] .bg-green-500 {
+    background: transparent !important;
+    border-color: var(--t-green) !important;
+    color: var(--t-green) !important;
+}
+[data-theme="brutalist"] .bg-green-600:hover,
+[data-theme="brutalist"] .bg-green-500:hover {
+    background: var(--t-green) !important;
+    color: #000 !important;
+}
+[data-theme="brutalist"] .bg-red-600 {
+    background: transparent !important;
+    border-color: var(--t-red) !important;
+    color: var(--t-red) !important;
+}
+[data-theme="brutalist"] .bg-red-600:hover {
+    background: var(--t-red) !important;
+    color: #000 !important;
+}
+
+/* Active/selected states — filled accent */
+[data-theme="brutalist"] .bg-blue-600 {
+    background: var(--t-accent) !important;
+    color: #000 !important;
+    border-color: var(--t-accent) !important;
+}
+
+/* Process dot glow for active/running */
+[data-theme="brutalist"] .proc-dot.running,
+[data-theme="brutalist"] .status-dot.connected,
+[data-theme="brutalist"] .term-dot.running {
+    box-shadow: 0 0 8px var(--t-green);
+}
+[data-theme="brutalist"] .proc-dot.failed,
+[data-theme="brutalist"] .proc-dot.error,
+[data-theme="brutalist"] .status-dot.disconnected {
+    box-shadow: 0 0 8px var(--t-red);
+}
+[data-theme="brutalist"] .term-dot.waiting {
+    box-shadow: 0 0 8px var(--t-orange);
+}
+
+/* Brutalist: port modal inputs need visible border */
+[data-theme="brutalist"] input[type="number"] {
+    border: 1px solid var(--t-border) !important;
+}
+
+/* Brutalist: active log/terminal tabs — accent underline for visibility */
+[data-theme="brutalist"] .bg-gray-700.text-white {
+    background: transparent !important;
+    border-bottom: 2px solid var(--t-accent) !important;
+    border-radius: 0 !important;
+}
+
+/* ============================================================
+   FLOATING LOGS PANEL
+   Always-dark console panel (like terminal). Outer frame adapts
+   to theme, internals stay dark for readability.
+   High-specificity selectors to survive theme button resets.
+   ============================================================ */
+.logs-floating-panel {
+    position: fixed;
+    bottom: 48px;
+    left: 16px;
+    right: 16px;
+    z-index: 45;
+    display: flex;
+    flex-direction: column;
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255,255,255,0.05);
+    overflow: hidden;
+}
+
+.logs-floating-panel.maximized {
+    top: 8px;
+    bottom: 48px;
+    height: auto !important;
+    border-radius: 8px;
+}
+
+.logs-panel-resize-handle {
+    height: 6px;
+    cursor: ns-resize;
+    background: #2a2a4a;
+    flex-shrink: 0;
+    transition: background 0.15s;
+}
+.logs-panel-resize-handle:hover {
+    background: var(--t-accent, #5b9cf6);
+}
+
+.logs-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 10px;
+    background: #12121f;
+    border-bottom: 1px solid #2a2a4a;
+    flex-shrink: 0;
+    gap: 8px;
+    min-height: 40px;
+}
+
+.logs-panel-tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    overflow-x: auto;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+}
+
+/* Tab buttons — hardcoded dark colors, !important to beat theme overrides */
+.logs-floating-panel .logs-panel-tab {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    padding: 8px 14px !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    color: #888 !important;
+    background: transparent !important;
+    border: none !important;
+    border-bottom: 2px solid transparent !important;
+    border-radius: 0 !important;
+    cursor: pointer !important;
+    white-space: nowrap !important;
+    transition: color 0.15s, border-color 0.15s, background 0.15s !important;
+}
+.logs-floating-panel .logs-panel-tab:hover {
+    color: #ddd !important;
+    background: rgba(255,255,255,0.05) !important;
+    border-bottom-color: transparent !important;
+}
+.logs-floating-panel .logs-panel-tab.active {
+    color: #fff !important;
+    background: rgba(255,255,255,0.08) !important;
+    border-bottom: 2px solid var(--t-accent, #5b9cf6) !important;
+}
+
+.logs-floating-panel .logs-panel-tab-close {
+    font-size: 12px !important;
+    color: #666 !important;
+    cursor: pointer !important;
+    padding: 1px 3px !important;
+    line-height: 1 !important;
+    border: none !important;
+    background: none !important;
+}
+.logs-floating-panel .logs-panel-tab-close:hover {
+    color: #f87171 !important;
+    background: none !important;
+}
+
+/* Control buttons — compact, always visible on dark header */
+.logs-floating-panel .logs-panel-header button:not(.logs-panel-tab):not(.logs-panel-tab-close) {
+    font-size: 12px !important;
+    padding: 4px 10px !important;
+    border-radius: 4px !important;
+    border: 1px solid #3a3a5a !important;
+    background: #22223a !important;
+    color: #aaa !important;
+    cursor: pointer !important;
+    white-space: nowrap !important;
+}
+.logs-floating-panel .logs-panel-header button:not(.logs-panel-tab):not(.logs-panel-tab-close):hover {
+    background: #2e2e4e !important;
+    color: #fff !important;
+    border-color: var(--t-accent, #5b9cf6) !important;
+}
+
+.logs-panel-content {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px 14px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    background: #0a0a14;
+    color: #34d399;
+}
+
+/* Logs pill in command bar — must beat brutalist button override */
+button.logs-pill {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    padding: 5px 12px !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    color: var(--t-text2, #9099a8) !important;
+    background: var(--t-surface2, #31363f) !important;
+    border: 1px solid var(--t-border, #3f4550) !important;
+    border-radius: var(--t-radius-sm, 4px) !important;
+    cursor: pointer !important;
+    transition: all 0.15s !important;
+    height: 34px !important;
+}
+button.logs-pill:hover {
+    color: var(--t-text, #eaedf2) !important;
+    border-color: var(--t-accent, #5b9cf6) !important;
+    background: var(--t-surface3, #3a404a) !important;
+}
+button.logs-pill.active {
+    color: #fff !important;
+    background: var(--t-accent, #5b9cf6) !important;
+    border-color: var(--t-accent, #5b9cf6) !important;
+}
+
+.logs-pill-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    background: var(--t-accent, #5b9cf6);
+    border-radius: 9px;
+    line-height: 1;
+}
+button.logs-pill.active .logs-pill-count {
+    background: rgba(255, 255, 255, 0.25);
+}
+
+/* ============================================================
+   TOAST NOTIFICATIONS — always readable across themes
+   Uses hardcoded dark bg so text-white always works.
+   ============================================================ */
+.adt-toast {
+    position: fixed;
+    bottom: 64px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    z-index: 100;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    color: #fff;
+    background: #1e293b;
+    border: 1px solid #334155;
+}
+.adt-toast-error   { background: #991b1b; border-color: #b91c1c; }
+.adt-toast-success { background: #065f46; border-color: #047857; }
+.adt-toast-warning { background: #78350f; border-color: #92400e; }
+.adt-toast-info    { background: #1e293b; border-color: #334155; }
+
+[data-theme="modern"] .adt-toast { border-radius: 12px; }
+[data-theme="brutalist"] .adt-toast { border-radius: 0 !important; border-width: 2px; }
+
+/* --- Theme: Modern --- outer frame only */
+[data-theme="modern"] .logs-floating-panel {
+    box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0,0,0,0.1);
+    border-radius: 12px;
+    border-color: rgba(0,0,0,0.2);
+}
+[data-theme="modern"] button.logs-pill {
+    border-radius: var(--t-radius-sm) !important;
+}
+
+/* --- Theme: Brutalist --- outer frame only */
+[data-theme="brutalist"] .logs-floating-panel {
+    border: 2px solid var(--t-accent, #FF4D00);
+    border-radius: 0 !important;
+    box-shadow: 4px 4px 0 rgba(255, 77, 0, 0.2);
+}
+[data-theme="brutalist"] button.logs-pill {
+    border-radius: 0 !important;
+}
+[data-theme="brutalist"] .logs-pill-count {
+    border-radius: 0 !important;
+}
+
+/* ============================================================
+   CHAT PANEL — theme-aware with strong visual separation
+   ============================================================ */
+.chat-panel {
+    background: var(--t-surface, #272b33);
+    border: 2px solid var(--t-accent, #5b9cf6);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="modern"] .chat-panel {
+    background: var(--t-surface, #FFFFFF);
+    border: 2px solid var(--t-accent, #7B61FF);
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.15);
+    border-radius: 12px;
+}
+[data-theme="brutalist"] .chat-panel {
+    border: 2px solid var(--t-accent, #FF4D00);
+    border-radius: 0 !important;
+    box-shadow: 4px 4px 0 rgba(255, 77, 0, 0.2);
+}
+
+/* ============================================================
+   THEME PICKER — inline button group in command bar
+   ============================================================ */
+.theme-picker {
+    display: inline-flex;
+    border-radius: var(--t-radius-sm, 4px);
+    overflow: hidden;
+    border: 1px solid var(--t-border, #3f4550);
+}
+.theme-picker-btn {
+    padding: 4px 10px !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    color: var(--t-text3, #6b7280) !important;
+    background: transparent !important;
+    border: none !important;
+    border-right: 1px solid var(--t-border, #3f4550) !important;
+    border-radius: 0 !important;
+    cursor: pointer !important;
+    transition: all 0.15s !important;
+}
+.theme-picker-btn:last-child {
+    border-right: none !important;
+}
+.theme-picker-btn:hover {
+    color: var(--t-text, #eaedf2) !important;
+    background: var(--t-surface2, #31363f) !important;
+}
+.theme-picker-btn.active {
+    color: #fff !important;
+    background: var(--t-accent, #5b9cf6) !important;
+}
+
+[data-theme="brutalist"] .theme-picker {
+    border-radius: 0 !important;
+    border-color: var(--t-border);
+}
+[data-theme="brutalist"] .theme-picker-btn.active {
+    background: var(--t-accent) !important;
+    color: #000 !important;
+}

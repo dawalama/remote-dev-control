@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "remote-dev-ctrl": {
+      "command": "rdc-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

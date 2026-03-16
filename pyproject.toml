@@ -1,0 +1,75 @@
+[project]
+name = "remote-dev-ctrl"
+version = "0.1.0"
+description = "Remote development command center for AI-assisted development"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "pydantic>=2.5.0",
+    "watchdog>=4.0.0",
+    "pyyaml>=6.0.0",
+    "mcp>=1.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "httpx>=0.27.0",
+    "websockets>=12.0",
+    "twilio>=9.10.1",
+    "transitions>=0.9.3",
+    "duckdb>=1.4.4",
+    "openai>=2.16.0",
+    "psutil>=7.2.2",
+    "aiofiles>=25.1.0",
+    "python-telegram-bot>=22.6",
+    "playwright>=1.40.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.3.0",
+]
+telegram = [
+    "python-telegram-bot>=21.0",
+]
+livekit = [
+    "livekit-agents[silero,turn-detector]~=1.3",
+    "livekit-plugins-openai~=1.0",
+    "python-dotenv>=1.0.0",
+]
+compress = [
+    "llmlingua>=0.2.0",
+    "accelerate>=0.25.0",
+]
+twilio = [
+    "twilio>=9.0.0",
+]
+all = [
+    "python-telegram-bot>=21.0",
+    "livekit-agents[silero,turn-detector]~=1.3",
+    "livekit-plugins-openai~=1.0",
+    "python-dotenv>=1.0.0",
+    "llmlingua>=0.2.0",
+    "accelerate>=0.25.0",
+    "twilio>=9.0.0",
+]
+
+[project.scripts]
+rdc = "remote_dev_ctrl.cli:app"
+rdc-mcp = "remote_dev_ctrl.mcp.server:main"
+gwd = "gwd.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/remote_dev_ctrl", "src/gwd"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
