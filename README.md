@@ -1,5 +1,7 @@
 # Remote Dev Ctrl (RDC)
 
+Some of the best ideas hit when you're away from your desk — on a coffee run, taking a walk, or just stepping outside for a break. RDC was built so you can act on that inspiration immediately, from any device. Pull up the dashboard on your phone, kick off a build, check on an agent, or start a task — without needing to rush back to your workstation.
+
 A command center for AI-assisted development. Manage multiple projects, orchestrate AI agents, run tasks, and control everything from a responsive web dashboard or CLI.
 
 ## What It Does
