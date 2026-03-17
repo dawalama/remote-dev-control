@@ -12,7 +12,7 @@ A command center for AI-assisted development. Manage multiple projects, orchestr
 
 **Task System** — Create tasks with recipes, assign LLM models, track progress, review outputs. Built-in recipes for common workflows like code audits.
 
-**Process Orchestration** — Auto-discover and manage project processes (dev servers, watchers, builds). Start, stop, attach, view logs.
+**Actions** — Auto-discover and manage project actions: services (long-running dev servers, APIs) and commands (builds, tests, lints). Start, stop, attach, view logs.
 
 **AI Orchestrator** — Natural language control via chat or voice. "Start a terminal for my-project", "show tasks", "switch to kiosk mode".
 
@@ -265,7 +265,7 @@ Three responsive layouts, all first-class:
 - **Project switcher** with collection support and activity indicators
 - **Terminal management** — spawn, kill, restart with preset agents
 - **Task management** — create, run, review, approve/reject, view output
-- **Process monitoring** — start, stop, attach, view logs
+- **Action management** — services (start, stop, restart, attach) and commands (run, view logs)
 - **Chat/orchestrator** — natural language commands and AI responses
 - **Browser sessions** — shared browser preview with rrweb recording
 - **Attention alerts** — terminals waiting for input highlighted prominently
@@ -359,8 +359,13 @@ The server exposes a REST + WebSocket API. Key endpoints:
 | `/tasks` | GET/POST | List/create tasks |
 | `/tasks/{id}/run` | POST | Execute a task |
 | `/tasks/{id}/review` | POST | Approve/reject task |
-| `/processes` | GET | List processes |
-| `/processes/{id}/start` | POST | Start a process |
+| `/processes` | GET | List actions (services + commands) |
+| `/processes/register` | POST | Register a new action |
+| `/processes/suggest` | POST | AI-suggest an action from description |
+| `/processes/{id}/start` | POST | Start/run an action |
+| `/processes/{id}/stop` | POST | Stop an action |
+| `/processes/{id}/attach` | POST | Attach to orphaned process |
+| `/processes/{id}/logs` | GET | Get action output logs |
 | `/orchestrator` | POST | Send message to AI orchestrator |
 | `/models` | GET | List available LLM models |
 | `/recipes` | GET | List task recipes |

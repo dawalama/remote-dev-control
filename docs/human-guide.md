@@ -10,7 +10,7 @@ Complete guide for developers using RDC (Remote Dev Ctrl).
 4. [Managing Projects](#managing-projects)
 5. [Terminals](#terminals)
 6. [Tasks & Recipes](#tasks--recipes)
-7. [Processes](#processes)
+7. [Actions](#actions)
 8. [Chat & Orchestrator](#chat--orchestrator)
 9. [Knowledge Management](#knowledge-management)
 10. [Skills & Tools](#skills--tools)
@@ -203,17 +203,27 @@ Custom recipes can be created via the API or database.
 
 ---
 
-## Processes
+## Actions
 
-RDC auto-discovers processes defined in your project (from `package.json` scripts, `Makefile`, `Procfile`, etc.).
+RDC auto-discovers actions defined in your project (from `package.json` scripts, `Makefile`, `Procfile`, etc.). Actions come in two kinds:
 
-### Process Actions
+- **Services** — Long-running processes like dev servers, APIs, and workers. They have ports, and support start, stop, restart, and attach.
+- **Commands** — One-off operations like builds, tests, lints, and migrations. They have a Run button and show output logs on completion.
 
-- **Start** — Launch the process
-- **Stop** — Kill the process
+You can also add actions manually or use **Ask AI** to suggest the right command for your project.
+
+### Service Controls
+
+- **Start** — Launch the service
+- **Stop** — Kill the service
 - **Restart** — Stop then start
 - **Attach** — Reconnect to an orphaned process (e.g., after server restart when a dev server is still running on its port)
 - **View Logs** — See stdout/stderr output
+
+### Command Controls
+
+- **Run** — Execute the command
+- **Logs** — View output after completion or failure
 
 ---
 

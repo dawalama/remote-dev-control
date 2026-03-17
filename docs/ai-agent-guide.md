@@ -92,15 +92,23 @@ POST /tasks/{id}/review               → Approve/reject
 GET  /tasks/{id}/output               → Get task output
 ```
 
-### Processes
+### Actions (Services & Commands)
+
+Actions have a `kind` field: `"service"` (long-running) or `"command"` (one-off).
 
 ```
-GET  /processes                       → [{id, name, status, port, ...}]
-POST /processes/{id}/start            → Start process
-POST /processes/{id}/stop             → Stop process
-POST /processes/{id}/restart          → Restart process
+GET  /processes                       → [{id, name, kind, status, port, ...}]
+POST /processes/register              → Register a new action
+     body: {project, name, command, cwd, port?, kind?}
+POST /processes/suggest               → AI-suggest an action
+     body: {project, description}
+     → {name, command, kind, port, cwd}
+POST /processes/{id}/start            → Start/run action
+POST /processes/{id}/stop             → Stop action
+POST /processes/{id}/restart          → Restart service
 POST /processes/{id}/attach?port=N    → Attach to orphaned process
-GET  /processes/{id}/logs             → Get process logs
+GET  /processes/{id}/logs             → Get action output logs
+POST /processes/{id}/create-fix-task  → Create fix task from error
 ```
 
 ### Orchestrator

@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A command center for AI-assisted development. Server + dashboard + CLI for managing projects, terminals, tasks, processes, and AI agents.
+A command center for AI-assisted development. Server + dashboard + CLI for managing projects, terminals, tasks, actions (services and commands), and AI agents.
 
 ## Architecture
 
