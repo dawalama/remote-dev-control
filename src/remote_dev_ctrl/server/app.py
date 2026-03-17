@@ -6972,12 +6972,6 @@ async def create_project(req: CreateProjectRequest):
 
     event_repo.log("project.created", project=project_name, message=f"Project registered: {project_name}")
 
-    # Invalidate knowledge cache
-    try:
-        from .knowledge import invalidate_cache
-        invalidate_cache()
-    except Exception:
-        pass
 
     # Create and run setup task in-process (stack detection, process discovery, profile)
     try:
@@ -7225,12 +7219,6 @@ async def delete_project(name: str):
         
     event_repo.log("project.deleted", project=name, message=f"Project disconnected: {name}")
 
-    # Invalidate knowledge cache
-    try:
-        from .knowledge import invalidate_cache
-        invalidate_cache()
-    except Exception:
-        pass
 
     return {"success": True, "message": f"Project {name} removed from tracking."}
 
@@ -7438,12 +7426,6 @@ async def update_project_metadata(name: str, req: UpdateProjectRequest):
 
     event_repo.log("project.updated", project=db_proj.name, message=f"Project metadata updated")
 
-    # Invalidate knowledge cache
-    try:
-        from .knowledge import invalidate_cache
-        invalidate_cache()
-    except Exception:
-        pass
 
     return {
         "name": db_proj.name,
@@ -7919,110 +7901,6 @@ async def caddy_restart():
             await cm.add_route(p.id, sub, p.port)
 
     return {"success": True, "routes": cm.list_routes()}
-
-
-# =============================================================================
-# KNOWLEDGE / WIKI
-# =============================================================================
-
-@app.get("/knowledge")
-async def get_knowledge_tree():
-    """Return the full knowledge index tree as compact JSON."""
-    from .knowledge import get_knowledge_index
-    try:
-        index = get_knowledge_index()
-        return index.to_compact_json()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/knowledge/project/{name}")
-async def get_project_knowledge(name: str):
-    """Return the knowledge subtree for a single project."""
-    from .knowledge import get_project_knowledge as _get_project_knowledge
-    node = _get_project_knowledge(name)
-    if not node:
-        raise HTTPException(status_code=404, detail=f"Project not found: {name}")
-    return node.to_compact_json()
-
-
-@app.get("/knowledge/node/{node_id}")
-async def get_knowledge_node(node_id: str):
-    """Return a single node with its raw markdown content."""
-    from .knowledge import get_knowledge_index
-    index = get_knowledge_index()
-    node = index.find_by_id(node_id)
-    if not node:
-        raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
-
-    result = node.to_compact_json()
-
-    # Read file content for document/section nodes
-    if node.file_path and node.file_path.is_file():
-        try:
-            text = node.file_path.read_text(encoding="utf-8")
-            if node.start_line is not None and node.end_line is not None:
-                lines = text.split("\n")
-                result["content"] = "\n".join(lines[node.start_line:node.end_line + 1])
-            else:
-                result["content"] = text
-        except Exception:
-            result["content"] = None
-
-    return result
-
-
-@app.get("/knowledge/search")
-async def search_knowledge(q: str = "", project: str | None = None):
-    """Search nodes by name/summary text."""
-    if not q.strip():
-        return []
-    from .knowledge import search_index
-    return search_index(q.strip(), project=project)
-
-
-@app.post("/knowledge/refresh")
-async def refresh_knowledge():
-    """Force rebuild the knowledge index cache."""
-    from .knowledge import get_knowledge_index, invalidate_cache
-    invalidate_cache()
-    index = get_knowledge_index(force=True)
-    from ..models import NodeType
-    return {"success": True, "documents": len(index.find_by_type(NodeType.DOCUMENT))}
-
-
-class CreateDocRequest(BaseModel):
-    project: str
-    filename: str
-    content: str
-
-
-class UpdateDocRequest(BaseModel):
-    content: str
-
-
-@app.post("/knowledge/docs")
-async def create_knowledge_doc(req: CreateDocRequest):
-    """Create a new .ai/ document in a project."""
-    from .knowledge import create_doc
-    try:
-        return create_doc(req.project, req.filename, req.content)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.put("/knowledge/docs/{node_id:path}")
-async def update_knowledge_doc(node_id: str, req: UpdateDocRequest):
-    """Update a knowledge document's content."""
-    from .knowledge import update_doc
-    try:
-        return update_doc(node_id, req.content)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================

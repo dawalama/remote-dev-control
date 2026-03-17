@@ -28,7 +28,7 @@ The **review agent** can be Greptile, CodeRabbit, CodeQL + policy, custom LLM, o
 | **2. Risk-aware checks** | No CI in repo (no `.github/`). `rdc run skill review` does **staged** review only. Tasks can `requires_review` → human approval. | No **pre-merge** gate: tests/lint/security not enforced at merge. |
 | **3. Review agent** | `/review` skill (staged diff); `task_block` / `task_review` for human review. No PR-level, pluggable review **service**. | No abstraction for “run review agent on this PR” or “review agent X vs Y”. |
 | **4. Machine-verifiable evidence** | Browser preview (VNC), task result/artifacts, events in DB. | No **single evidence bundle** (tests + browser run + review result) that can be stored/compared. |
-| **5. Findings → harness** | Learnings (`.ai/learnings`), rules. | No automatic promotion of review/CI findings into regression tests or policy. |
+| **5. Findings → harness** | Rules (`.ai/rules`). | No automatic promotion of review/CI findings into regression tests or policy. |
 
 ---
 
@@ -85,7 +85,7 @@ Deliverable: Merge is blocked until risk-aware checks (+ optional review agent) 
 - **Review adapter layer**: one interface (e.g. `run_review(diff, context) -> ReviewResult`); implement for Greptile, CodeRabbit, CodeQL, custom LLM. Config (e.g. in `.ai/` or env) selects provider.
 - **Findings → harness**: when a review finding or CI failure is “accepted” (e.g. human confirms or policy says “treat as regression”):
   - Option A: add a test or lint rule that would have caught it; run it in CI from then on.
-  - Option B: add to `.ai/` rules or learnings so future agent runs avoid the same issue.
+  - Option B: add to `.ai/` rules so future agent runs avoid the same issue.
   - Option C: store in DB as “harness case” (e.g. “PR pattern X must trigger finding Y”) for future review/agent tuning.
 
 Deliverable: Swap review provider without changing the loop; selected findings become repeatable checks or knowledge.
@@ -94,7 +94,7 @@ Deliverable: Swap review provider without changing the loop; selected findings b
 
 ## Conventions to Preserve
 
-- **Skills vs tools**: keep “run pre-merge checks” and “run review agent” as skills that call tools; review adapter can be a tool or internal to a skill.
+- **Separation of concerns**: keep “run pre-merge checks” and “run review agent” as distinct steps; review adapter can be internal or external.
 - **State machine**: `task_block` / `task_review` stay the human gate; evidence bundle can be attached to the task or a new “check_run” entity.
 - **No vector DB**: harness/rules stay in files or DB tables, not embeddings-only.
 - **Git-friendly**: evidence bundle format (e.g. JSON) can be committed or stored server-side; avoid blocking normal git flow.
@@ -105,7 +105,7 @@ Deliverable: Swap review provider without changing the loop; selected findings b
 
 1. **Where does the control plane live?** RDC server (API that CI calls) vs repo-only (CI workflow that calls review APIs directly). RDC gives one place for evidence and task/review state; repo-only keeps CI self-contained.
 2. **Evidence storage:** DB only, artifact only, or both? DB supports “pending review” and recall; artifact supports audit and third-party tools.
-3. **Harness format:** New `.ai/harness/` (e.g. “PR checks”), or extend learnings/rules, or separate DB table. Depends on whether harness = “run this test” vs “apply this rule next time.”
+3. **Harness format:** New `.ai/harness/` (e.g. “PR checks”), or extend rules, or separate DB table. Depends on whether harness = “run this test” vs “apply this rule next time.”
 4. **Blog reference:** Done — [Harness engineering](https://openai.com/index/harness-engineering/) is linked and summarized below.
 
 ---
@@ -117,7 +117,7 @@ The [OpenAI post](https://openai.com/index/harness-engineering/) describes build
 | Post concept | Our loop |
 |--------------|----------|
 | **Ralph Wiggum loop** — agent reviews its own changes, requests agent reviews (local + cloud), iterates until reviewers satisfied | Same idea: review agent validates PR; control plane runs the loop and decides pass/fail. |
-| **Repository knowledge as system of record** — AGENTS.md as map, structured docs, exec plans, quality/design docs | We use `.ai/` (rules, learnings, context); same idea of “map + pointers” and versioned, repo-local truth. |
+| **Repository knowledge as system of record** — AGENTS.md as map, structured docs, exec plans, quality/design docs | We use `.ai/` (rules, context); same idea of “map + pointers” and versioned, repo-local truth. |
 | **Agent legibility** — app per worktree, CDP, DOM/screenshots/navigation so the agent can reason about UI | Our evidence bundle: tests + browser (e.g. RDC preview/screenshots) + review; machine-verifiable and legible to agents. |
 | **Enforcing architecture** — custom linters, structural tests, “taste invariants”; promote rules into code when docs fall short | Our risk-aware checks + “findings → harness”: failures become lints/tests or `.ai/` rules so they don’t recur. |
 | **Evaluation harnesses** (agent-produced) | Our “findings → repeatable harness cases”: review/CI findings become regression tests or policy. |

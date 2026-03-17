@@ -16,9 +16,7 @@ A command center for AI-assisted development. Manage multiple projects, orchestr
 
 **AI Orchestrator** — Natural language control via chat or voice. "Start a terminal for my-project", "show tasks", "switch to kiosk mode".
 
-**Knowledge Management** — Hierarchical rules and learnings for AI agents. Global and per-project context that travels with your workflow.
-
-**MCP Server** — Model Context Protocol integration for AI assistants (Cursor, Claude, etc.).
+**MCP Server** — Model Context Protocol integration exposing browser context to AI assistants (Cursor, Claude, etc.).
 
 ## Quick Start
 
@@ -282,41 +280,12 @@ rdc remove <name>            # Unregister project
 rdc list                     # List registered projects
 ```
 
-### Knowledge & AI Context
-
-```bash
-rdc init                     # Initialize ~/.ai/ knowledge base
-rdc context [-p project]     # Get AI context for a project
-rdc tree                     # View knowledge hierarchy
-rdc learn "Title" -i "issue" -c "correction"   # Record a learning
-```
-
-### Skills & Tools
-
-```bash
-rdc skill list               # List available skills
-rdc run skill techdebt       # Find code issues
-rdc run skill review         # Review staged changes
-rdc run tool find_todos      # Find TODO comments
-rdc run tool git_status_summary --json
-```
-
 ### Secrets & Config
 
 ```bash
 rdc config set-secret KEY VALUE    # Store API key securely
 rdc config get KEY                 # Read config value
 ```
-
-## Built-in Skills
-
-| Skill | Trigger | Description |
-|-------|---------|-------------|
-| Tech Debt | `/techdebt` | Find TODOs, duplicates, code issues |
-| Code Review | `/review` | Review staged changes |
-| Commit Helper | `/commit` | Generate commit message |
-| Context Dump | `/context` | Generate comprehensive context |
-| Parallel Work | `/parallel` | Set up git worktrees for parallel tasks |
 
 ## Task Recipes
 

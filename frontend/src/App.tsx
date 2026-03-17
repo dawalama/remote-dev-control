@@ -14,9 +14,6 @@ const MobileLayout = lazy(() =>
 const KioskLayout = lazy(() =>
   import("@/layouts/kiosk").then((m) => ({ default: m.KioskLayout }))
 )
-const DocsPage = lazy(() =>
-  import("@/features/wiki/docs-page").then((m) => ({ default: m.DocsPage }))
-)
 
 function LoginPage() {
   const login = useAuthStore((s) => s.login)
@@ -121,17 +118,6 @@ function AppRoutes() {
   // /pair-approve is a special route — it handles its own auth state
   if (normalizedPath === "/pair-approve") {
     return <PairApprovePage />
-  }
-
-  // /kb — full-page knowledge base
-  if (normalizedPath === "/kb" || normalizedPath.startsWith("/kb/")) {
-    return (
-      <AuthGuard>
-        <Suspense fallback={<LoadingFallback />}>
-          <DocsPage />
-        </Suspense>
-      </AuthGuard>
-    )
   }
 
   return (

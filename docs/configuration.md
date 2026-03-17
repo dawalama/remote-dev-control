@@ -65,7 +65,6 @@ visual:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RDC_HOME` | `~/.rdc` | RDC home directory |
-| `RDC_GLOBAL_DIR` | `~/.ai` | Global knowledge directory |
 
 Config values support `${VAR_NAME}` syntax for environment variable substitution.
 

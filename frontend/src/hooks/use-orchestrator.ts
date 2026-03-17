@@ -70,7 +70,6 @@ const TAB_ALIASES: Record<string, string> = {
   chat: "chat", conversation: "chat",
   pinchtab: "pinchtab",
   attachments: "attachments", attachment: "attachments", contexts: "attachments", context: "attachments",
-  docs: "docs", knowledge: "docs", wiki: "docs",
   project: "project",
 }
 

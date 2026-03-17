@@ -554,47 +554,8 @@ def cleanup_legacy_state_files():
 
 
 def migrate_yaml_projects_to_db():
-    """One-time migration: copy projects from YAML config.json into SQLite.
-
-    Reads from ~/.config/remote-dev-ctrl/config.json (or legacy agent-dev-tool)
-    and inserts any projects not already present in the DB (matched by path).
-    """
-    try:
-        from ...store import load_config as load_yaml_config
-    except Exception:
-        return  # store module not available
-
-    try:
-        yaml_cfg = load_yaml_config()
-    except Exception:
-        return  # No config file or parse error
-
-    if not yaml_cfg.projects:
-        return
-
-    from .repositories import ProjectRepository
-    from .models import Project
-
-    repo = ProjectRepository()
-    db_projects = repo.list()
-    db_paths = {p.path for p in db_projects}
-    db_names = {p.name for p in db_projects}
-
-    migrated = 0
-    for yp in yaml_cfg.projects:
-        ypath = str(yp.path)
-        if ypath in db_paths or yp.name in db_names:
-            continue
-        repo.create(Project(
-            name=yp.name,
-            path=ypath,
-            description=yp.description or "",
-            tags=yp.tags if yp.tags else [],
-        ))
-        migrated += 1
-
-    if migrated:
-        logger.info(f"Migrated {migrated} project(s) from YAML config to SQLite.")
+    """Legacy migration stub — YAML config store was removed (now in dotai)."""
+    return
 
 
 def ensure_database():

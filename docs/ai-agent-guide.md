@@ -26,31 +26,12 @@ RDC is a command center for AI-assisted development:
 # Project management
 rdc list                              # List registered projects
 rdc add <path> [-n name]              # Register a project
-rdc context --project <name>          # Get AI context for a project
 
 # Server
 rdc server start                      # Start server (foreground)
 rdc server start -d                   # Start as daemon
 rdc server status                     # Check if running
 rdc server stop                       # Stop
-
-# Skills (high-level workflows)
-rdc run skill techdebt                # Find code issues
-rdc run skill techdebt --path=src     # Scope to directory
-rdc run skill review                  # Review staged changes
-rdc run skill commit                  # Generate commit message
-rdc run skill context                 # Dump project context
-
-# Tools (specific functions)
-rdc run tool git_status_summary       # Git status as JSON
-rdc run tool find_todos path=src      # Find TODO/FIXME comments
-rdc run tool git_staged_files         # List staged files
-rdc run tool git_log_summary count=10 # Recent commits
-
-# Knowledge
-rdc tree                              # View knowledge structure
-rdc learn "Title" -i "issue" -c "correction"  # Record learning
-rdc index --refresh                   # Rebuild knowledge index
 
 # Secrets
 rdc config set-secret KEY VALUE       # Store API key
@@ -138,20 +119,6 @@ WS   /ws/state                        → Real-time state updates
 
 ## When to Use What
 
-### Use `rdc run skill` for:
-- High-level analysis (code review, tech debt, context generation)
-- Multi-step workflows
-- When the user says `/techdebt`, `/review`, etc.
-
-### Use `rdc run tool` for:
-- Single operations returning structured data
-- Git operations, file analysis
-- When you need JSON output (`--json` flag)
-
-### Use `rdc learn` for:
-- Recording corrections from the user
-- **Always ask first**: "Should I add this to learnings?"
-
 ### Use the REST API for:
 - Creating/managing tasks programmatically
 - Spawning terminals for specific projects
@@ -189,19 +156,6 @@ Recipes are task templates with pre-filled prompts. The `recipe_id` field links 
 ---
 
 ## Project Context
-
-Before working on a project, check its context:
-
-```bash
-# Get full AI context
-rdc context --project myproject
-
-# Check project rules
-cat ~/myproject/.ai/rules.md
-
-# Check learnings (past corrections)
-cat ~/myproject/.ai/learnings.md
-```
 
 The dashboard's Project Settings page shows auto-detected stack info.
 
@@ -261,29 +215,14 @@ When sending messages to `/orchestrator`, the server may return `actions` or `ex
   terminal_sessions.json   # Persisted terminal metadata
   secrets.json             # Encrypted API keys
 
-~/.ai/                     # Knowledge base
-  rules.md                 # Global AI rules
-  learnings.md             # Cross-project corrections
-  skills/                  # Skill definitions (markdown)
-  tools/                   # Tool definitions (Python)
-
-project/.ai/               # Per-project knowledge
-  rules.md                 # Project conventions
-  learnings.md             # Project-specific lessons
-  context.md               # Quick reference
 ```
 
 ---
 
 ## Best Practices
 
-1. **Check context first** — Run `rdc context` or read `.ai/rules.md` before starting work
-2. **Record learnings** — Always offer to record corrections with `rdc learn`
-3. **Use appropriate scope** — Pass `--path` to limit analysis scope
-4. **Prefer JSON output** — Use `--json` when processing tool output
-5. **Respect project rules** — Check `.ai/rules.md` for conventions
-6. **Use recipes for common tasks** — Don't reinvent the wheel
-7. **Check task status** — Before creating duplicate tasks, check existing ones
+1. **Use recipes for common tasks** — Don't reinvent the wheel
+2. **Check task status** — Before creating duplicate tasks, check existing ones
 
 ---
 
@@ -291,15 +230,7 @@ project/.ai/               # Per-project knowledge
 
 | Task | Command |
 |------|---------|
-| Find code issues | `rdc run skill techdebt` |
-| Code review | `rdc run skill review` |
-| Generate commit | `rdc run skill commit` |
-| Git status (JSON) | `rdc run tool git_status_summary --json` |
-| Find TODOs | `rdc run tool find_todos path=src` |
-| List skills | `rdc skill list` |
-| List tools | `rdc tool list` |
-| View knowledge | `rdc tree` |
-| Record learning | `rdc learn "Title" -i "..." -c "..."` |
 | Server status | `rdc server status` |
 | List projects | `rdc list` |
-| Project context | `rdc context --project <name>` |
+| Add project | `rdc add <path> -n <name>` |
+| Remove project | `rdc remove <name>` |

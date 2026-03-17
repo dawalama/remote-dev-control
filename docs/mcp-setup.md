@@ -7,9 +7,8 @@ Set up Remote Dev Ctrl with Model Context Protocol for direct AI integration.
 [Model Context Protocol](https://modelcontextprotocol.io/) allows AI assistants to directly call tools and read resources without going through the command line.
 
 **Benefits:**
-- AI can call tools directly (no shell commands needed)
+- AI can access browser context directly (no shell commands needed)
 - Structured data exchange
-- Access to knowledge resources
 
 **When to use MCP vs CLI:**
 - **MCP**: Cursor IDE, Claude Desktop, other MCP-compatible clients
@@ -52,9 +51,7 @@ Completely quit and reopen Cursor for changes to take effect.
 ### 4. Verify
 
 In Cursor, the AI should now have access to:
-- All registered tools
-- Knowledge resources (rules, learnings)
-- Skill definitions
+- Browser context tools (list, get, capture browser contexts)
 
 ---
 
@@ -81,37 +78,11 @@ This requires `rdc-mcp` to be in your PATH.
 
 ### Tools
 
-All registered tools are available for direct AI invocation:
-
 | Tool | Description |
 |------|-------------|
-| `git_staged_files` | Get list of staged files |
-| `git_status_summary` | Get git status as JSON |
-| `git_log_summary` | Get recent commits |
-| `find_todos` | Find TODO/FIXME comments |
-| `find_duplicates` | Find duplicate code |
-| `worktree_list` | List git worktrees |
-| `worktree_add` | Create a worktree |
-| `worktree_remove` | Remove a worktree |
-| `parallel_task_setup` | Set up parallel work |
-| `parallel_task_merge` | Merge parallel tasks |
-
-Plus any custom tools you've created.
-
-### Resources
-
-Resources are readable content the AI can access:
-
-| URI | Description |
-|-----|-------------|
-| `rdc://global/rules` | Global AI rules |
-| `rdc://global/learnings` | Global learnings |
-| `rdc://skills/{id}` | Skill definition |
-| `rdc://projects/{name}/rules` | Project-specific rules |
-| `rdc://projects/{name}/learnings` | Project learnings |
-| `rdc://projects/{name}/context` | Project context |
-| `rdc://index` | Full knowledge tree |
-| `rdc://tools/docs` | Tool documentation |
+| `list_browser_contexts` | List all active browser contexts |
+| `get_browser_context` | Get details of a specific browser context |
+| `capture_browser_context` | Capture a screenshot/state from a browser context |
 
 ---
 
@@ -124,18 +95,6 @@ Check if the module can be imported:
 ```bash
 PYTHONPATH=/path/to/remote-dev-ctrl/src python -c "from remote_dev_ctrl.mcp.server import main; print('OK')"
 ```
-
-### Tools Not Showing
-
-1. Rebuild the index:
-   ```bash
-   rdc index --refresh
-   ```
-
-2. Check tool registration:
-   ```bash
-   rdc tool list
-   ```
 
 ### Cursor Not Detecting MCP
 

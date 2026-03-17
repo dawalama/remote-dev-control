@@ -12,11 +12,9 @@ Complete guide for developers using RDC (Remote Dev Ctrl).
 6. [Tasks & Recipes](#tasks--recipes)
 7. [Actions](#actions)
 8. [Chat & Orchestrator](#chat--orchestrator)
-9. [Knowledge Management](#knowledge-management)
-10. [Skills & Tools](#skills--tools)
-11. [MCP Integration](#mcp-integration)
-12. [Configuration](#configuration)
-13. [Troubleshooting](#troubleshooting)
+9. [MCP Integration](#mcp-integration)
+10. [Configuration](#configuration)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -256,62 +254,6 @@ Tap the microphone button to dictate. Voice input is routed to:
 
 ---
 
-## Knowledge Management
-
-### Two-Tier System
-
-```
-~/.ai/               # Global — applies to all projects
-  rules.md           # AI behavior rules
-  learnings.md       # Cross-project corrections
-  skills/            # Reusable workflows
-  tools/             # Python utility functions
-
-project/.ai/         # Per-project
-  rules.md           # Project-specific conventions
-  learnings.md       # Project-specific lessons
-  context.md         # Quick reference
-```
-
-### Commands
-
-```bash
-rdc init                              # Create ~/.ai/ with defaults
-rdc tree                              # View knowledge hierarchy
-rdc context --project myproject       # Get AI context
-rdc learn "Title" -i "issue" -c "fix" # Record a learning
-rdc index --refresh                   # Rebuild knowledge index
-```
-
----
-
-## Skills & Tools
-
-### Skills (High-Level Workflows)
-
-```bash
-rdc skill list                   # List available
-rdc run skill techdebt           # Find code issues
-rdc run skill review             # Review staged changes
-rdc run skill commit             # Generate commit message
-rdc run skill context            # Dump project context
-```
-
-### Tools (Code Functions)
-
-```bash
-rdc tool list                    # List available
-rdc run tool find_todos path=src
-rdc run tool git_status_summary --json
-rdc run tool git_log_summary count=10
-```
-
-### Custom Skills & Tools
-
-Create custom skills in `~/.ai/skills/` (markdown) and tools in `~/.ai/tools/` (Python). See the main README for examples.
-
----
-
 ## MCP Integration
 
 Add to your AI assistant's MCP config:
@@ -330,7 +272,7 @@ Add to your AI assistant's MCP config:
 }
 ```
 
-This gives AI assistants access to RDC's tools, knowledge, and project context.
+This gives AI assistants access to RDC's browser context tools.
 
 ---
 
