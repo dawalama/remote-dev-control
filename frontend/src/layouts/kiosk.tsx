@@ -542,7 +542,7 @@ function KioskSideTabs({
           />
         )}
         {/* PinchTab merged into Browser */}
-        {sideTab === "attachments" && <ContextsCard />}
+        {sideTab === "attachments" && <ContextsCard defaultExpanded />}
         {sideTab === "chat" && (
           <KioskChatPanel
             onOpenTerminal={onOpenTerminal}

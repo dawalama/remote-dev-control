@@ -426,7 +426,7 @@ class ProcessManager:
             logging.error(f"Error getting port process info: {e}")
             return None
 
-    def attach_to_port(self, process_id: str, port: int) -> ProcessConfig | None:
+    def attach_to_port(self, process_id: str, port: int) -> tuple[ProcessConfig | None, bool]:
         """Attach to an existing process running on a port.
 
         Args:
@@ -434,25 +434,24 @@ class ProcessManager:
             port: Port the process is running on
 
         Returns:
-            Updated ProcessConfig or None if failed
+            Tuple of (Updated ProcessConfig or None, verified: True if PID found on port)
         """
         state = self._processes.get(process_id)
         if not state:
             logging.warning(f"Process {process_id} not found in our records (known: {list(self._processes.keys())})")
-            return None
+            return None, False
 
         info = self.get_port_process_info(port)
         if not info:
             logging.warning(f"No process found listening on port {port} (lsof found nothing)")
-            # Still allow attach if we have the process config — just mark it
-            # as running on the given port without PID info
-            state.port = port
-            state.status = ProcessStatus.RUNNING
-            state.started_at = datetime.now()
-            self._repo.upsert(state)
-            logging.info(f"Attached {process_id} to port {port} (no local PID found — may be remote)")
-            self._emit("started", process_id, state)
-            return state
+            return None, False
+
+        # Verify the PID is alive
+        try:
+            os.kill(info["pid"], 0)
+        except (ProcessLookupError, PermissionError):
+            logging.warning(f"PID {info['pid']} found on port {port} but process is not alive/accessible")
+            return None, False
 
         # Update state to track this external process
         state.pid = info["pid"]
@@ -466,7 +465,7 @@ class ProcessManager:
 
         # Note: We can't capture stdout/stderr of an already-running process,
         # but we can monitor if it's still alive
-        return state
+        return state, True
 
     def kill_port(self, port: int, force: bool = False) -> dict:
         """Kill any process using the given port.

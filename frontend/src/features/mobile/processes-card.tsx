@@ -124,7 +124,10 @@ export function ProcessesCard({
                           try {
                             await POST(`/processes/${encodeURIComponent(p.id)}/attach?port=${p.port}`)
                             toast("Attached to running process", "success")
-                          } catch { toast("Failed to attach", "error") }
+                          } catch (err: unknown) {
+                            const msg = err instanceof Error ? err.message : "Failed to attach"
+                            toast(msg, "error")
+                          }
                         }}>Attach</button>
                     )}
                   </>

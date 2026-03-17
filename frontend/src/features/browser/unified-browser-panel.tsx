@@ -368,6 +368,7 @@ export function UnifiedBrowserFullscreen({
   const ptPerformAction = usePinchTabStore((s) => s.performAction)
 
   const processes = useStateStore((s) => s.processes)
+  const currentProject = useProjectStore((s) => s.currentProject)
   const toast = useUIStore((s) => s.toast)
   const toggleAgentPanel = useUIStore((s) => s.toggleAgentPanel)
 
@@ -406,7 +407,9 @@ export function UnifiedBrowserFullscreen({
   const handleCapture = async () => {
     if (!activeSession) return
     try {
-      await POST(`/context/capture?session_id=${encodeURIComponent(activeSession.id)}`)
+      const params = new URLSearchParams({ session_id: activeSession.id })
+      if (currentProject && currentProject !== "all") params.set("project", currentProject)
+      await POST(`/context/capture?${params}`)
       toast("Context captured", "success")
     } catch { toast("Capture failed", "error") }
   }

@@ -28,7 +28,6 @@ from .audit import audit, AuditAction, get_audit_logger
 from .middleware import AuthMiddleware
 from .db import init_databases, close_databases, TaskRepository, EventRepository
 from .db.repositories import get_project_repo, get_event_repo, resolve_project_id
-from .db.models import ActionKind
 from .orchestrator import Orchestrator, set_orchestrator
 
 
@@ -2157,118 +2156,6 @@ class ProcessRegisterRequest(BaseModel):
     port: int | None = None
 
 
-# =============================================================================
-# ACTIONS (unified view over services + commands)
-# =============================================================================
-
-
-class ActionRegisterRequest(BaseModel):
-    project: str
-    name: str
-    command: str
-    cwd: str
-    kind: str = "service"
-    port: int | None = None
-
-
-@app.get("/actions")
-async def list_actions(project: str | None = None, kind: str | None = None):
-    """List all actions (services + commands), optionally filtered."""
-    actions = process_manager.list(project=project)
-    if kind:
-        actions = [a for a in actions if a.kind.value == kind]
-    return [_action_to_dict(a) for a in actions]
-
-
-@app.post("/actions/{action_id}/execute")
-async def execute_action(action_id: str):
-    """Execute an action (start service or run command)."""
-    from .actions import get_action_manager
-    try:
-        state = get_action_manager().execute(action_id)
-        event_repo.log(
-            "action.executed",
-            project=state.project,
-            message=f"Executed {state.kind.value} '{state.name}': {state.command}",
-        )
-        machine = get_state_machine()
-        await machine._broadcast_state()
-        return {"success": True, "action": _action_to_dict(state)}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/actions/{action_id}/stop")
-async def stop_action(action_id: str, force: bool = False):
-    """Stop any kind of action."""
-    from .actions import get_action_manager
-    try:
-        state = get_action_manager().stop(action_id, force=force)
-        event_repo.log(
-            "action.stopped",
-            project=state.project,
-            message=f"Stopped {state.name}",
-        )
-        machine = get_state_machine()
-        await machine._broadcast_state()
-        return {"success": True, "action": _action_to_dict(state)}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.get("/actions/{action_id}/logs")
-async def get_action_logs(action_id: str, lines: int = 200):
-    """Get logs for any action."""
-    logs = process_manager.get_logs(action_id, lines=lines)
-    return {"logs": logs}
-
-
-@app.post("/actions/register")
-async def register_action(req: ActionRegisterRequest):
-    """Register a new action."""
-    state = process_manager.register(
-        project=req.project,
-        name=req.name,
-        command=req.command,
-        cwd=req.cwd,
-        port=req.port,
-        kind=ActionKind(req.kind),
-    )
-    machine = get_state_machine()
-    await machine._broadcast_state()
-    return {"success": True, "action": _action_to_dict(state)}
-
-
-def _action_to_dict(p) -> dict:
-    """Serialize a ProcessConfig as an action dict.
-
-    Shape matches what _enrich_processes produces for the WebSocket snapshot
-    so REST and WS consumers see the same keys.
-    """
-    from .caddy import get_caddy_manager
-    cm = get_caddy_manager()
-    return {
-        "id": p.id,
-        "project": p.project,
-        "name": p.name,
-        "kind": p.kind.value,
-        "process_type": p.process_type.value,
-        "command": p.command,
-        "status": p.status.value,
-        "pid": p.pid,
-        "port": p.port,
-        "started_at": p.started_at.isoformat() if p.started_at else None,
-        "completed_at": p.completed_at.isoformat() if p.completed_at else None,
-        "error": p.error,
-        "preview_url": cm.get_preview_url(p.id) if cm else None,
-    }
-
-
-# =============================================================================
-# PROCESSES (legacy — kept for backward compat)
-# =============================================================================
-
-
 @app.get("/processes")
 async def list_processes(project: str | None = None):
     """List all managed processes."""
@@ -2278,14 +2165,12 @@ async def list_processes(project: str | None = None):
             "id": p.id,
             "project": p.project,
             "name": p.name,
-            "kind": p.kind.value,
             "type": p.process_type.value,
             "command": p.command,
             "status": p.status.value,
             "pid": p.pid,
             "port": p.port,
             "started_at": p.started_at.isoformat() if p.started_at else None,
-            "completed_at": p.completed_at.isoformat() if p.completed_at else None,
             "error": p.error,
         }
         for p in processes
@@ -2406,14 +2291,17 @@ async def kill_port(port: int, force: bool = False):
 @app.post("/processes/{process_id}/attach")
 async def attach_to_process(process_id: str, port: int):
     """Attach to an existing process running on a port.
-    
+
     Args:
         process_id: Our internal process ID
         port: Port the external process is running on
     """
-    state = process_manager.attach_to_port(process_id, port)
-    if not state:
-        raise HTTPException(status_code=400, detail=f"Could not attach to process on port {port}")
+    state, verified = process_manager.attach_to_port(process_id, port)
+    if not state or not verified:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No running process found on port {port} — nothing to attach to",
+        )
 
     event_repo.log(
         "process.attached",
@@ -2566,7 +2454,6 @@ async def detect_project_processes(project: str, use_llm: bool = True, force_red
                 id=f"{project}-{proc.name}",
                 project_id=proj_uuid,
                 name=proc.name,
-                kind=ActionKind(proc.kind),
                 command=proc.command,
                 cwd=proc.cwd,
                 port=proc.default_port,
@@ -2585,7 +2472,6 @@ async def detect_project_processes(project: str, use_llm: bool = True, force_red
                         description=cfg.description or "",
                         default_port=cfg.port,
                         cwd=cfg.cwd,
-                        kind=cfg.kind.value,
                     )
                     for cfg in configs
                 ]
@@ -2602,7 +2488,6 @@ async def detect_project_processes(project: str, use_llm: bool = True, force_red
                         id=f"{project}-{proc.name}",
                         project_id=proj_uuid,
                         name=proc.name,
-                        kind=ActionKind(proc.kind),
                         command=proc.command,
                         cwd=proc.cwd,
                         port=proc.default_port,
@@ -2634,7 +2519,6 @@ async def detect_project_processes(project: str, use_llm: bool = True, force_red
             command=cmd,
             cwd=cwd,
             port=port,
-            kind=ActionKind(proc.kind),
             force_update=True,
         )
         registered.append({
@@ -3499,9 +3383,9 @@ async def capture_context(
     if not project and process_id and "-" in process_id:
         project = process_id.rsplit("-", 1)[0]
 
-    proj_id = resolve_project_id(project) if project else ""
+    proj_id = resolve_project_id(project) if project else None
     snapshot = await bm.capture_context(
-        session_id, project_id=proj_id or "", description=description,
+        session_id, project_id=proj_id, description=description,
     )
     if not snapshot:
         raise HTTPException(
@@ -7138,7 +7022,6 @@ async def _run_project_setup(task_id: str, project_name: str, project_path: str)
                         id=f"{project_name}-{proc.name}",
                         project_id=proj_uuid,
                         name=proc.name,
-                        kind=ActionKind(proc.kind),
                         command=proc.command,
                         cwd=proc.cwd,
                         port=proc.default_port,
@@ -7153,8 +7036,7 @@ async def _run_project_setup(task_id: str, project_name: str, project_path: str)
                         cmd = process_manager._adjust_command_port(proc.command, port)
                     process_manager.register(
                         project=project_name, name=proc.name,
-                        command=cmd, cwd=cwd, port=port,
-                        kind=ActionKind(proc.kind), force_update=True,
+                        command=cmd, cwd=cwd, port=port, force_update=True,
                     )
                 await emit(f"Discovered {len(discovered)} process(es)")
                 for proc in discovered:

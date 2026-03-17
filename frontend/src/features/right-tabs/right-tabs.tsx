@@ -753,6 +753,7 @@ interface ContextSnapshot {
   url?: string
   timestamp: string
   screenshot_url?: string
+  screenshot_path?: string
   description?: string
 }
 
@@ -798,29 +799,10 @@ function ContextsTab() {
     setContexts((prev) => prev.filter((c) => c.id !== id))
   }
 
-  const handleMCP = (id: string) => {
-    const instruction = `Use the get_browser_context tool with context_id="${id}" to see the current browser state`
-    POST("/chat/message", { message: instruction, mode: "orchestrator" }).catch(() => {})
-    toast("Sent context via MCP", "success")
-  }
-
-  const handleRaw = async (ctx: ContextSnapshot) => {
-    const detail = await GET<{ url?: string; timestamp?: string; screenshot_path?: string; a11y?: unknown[] }>(`/context/${ctx.id}`).catch(() => null)
-    if (!detail) return
-    const text = [
-      `[Context: ${ctx.title || ctx.id}]`,
-      detail.url && `URL: ${detail.url}`,
-      detail.timestamp && `Captured: ${detail.timestamp}`,
-      detail.screenshot_path && `Screenshot: ${detail.screenshot_path}`,
-      detail.a11y && `A11y nodes: ${JSON.stringify(detail.a11y).slice(0, 500)}`,
-    ].filter(Boolean).join("\n")
-    POST("/chat/message", { message: text, mode: "orchestrator" }).catch(() => {})
-    toast("Sent raw context", "success")
-  }
-
-  const handleCopyPath = (id: string) => {
-    navigator.clipboard.writeText(`/context/${id}/screenshot`).then(
-      () => toast("Path copied", "success"),
+  const handleCopyPath = (ctx: ContextSnapshot) => {
+    const path = ctx.screenshot_path || `/context/${ctx.id}/screenshot`
+    navigator.clipboard.writeText(path).then(
+      () => toast(`Copied: ${path}`, "success"),
       () => toast("Copy failed", "error")
     )
   }
@@ -876,25 +858,11 @@ function ContextsTab() {
               </div>
               <div className="absolute top-1 right-1 hidden group-hover:flex gap-1">
                 <button
-                  className="px-1.5 py-0.5 text-[10px] rounded bg-green-600/80 text-white"
-                  onClick={(e) => { e.stopPropagation(); handleMCP(ctx.id) }}
-                  title="Send via MCP"
+                  className="px-1.5 py-0.5 text-[10px] rounded bg-blue-600/80 text-white"
+                  onClick={(e) => { e.stopPropagation(); handleCopyPath(ctx) }}
+                  title="Copy file path to clipboard"
                 >
-                  MCP
-                </button>
-                <button
-                  className="px-1.5 py-0.5 text-[10px] rounded bg-indigo-600/80 text-white"
-                  onClick={(e) => { e.stopPropagation(); handleRaw(ctx) }}
-                  title="Send raw context"
-                >
-                  Raw
-                </button>
-                <button
-                  className="px-1.5 py-0.5 text-[10px] rounded bg-gray-600/80 text-white"
-                  onClick={(e) => { e.stopPropagation(); handleCopyPath(ctx.id) }}
-                  title="Copy path"
-                >
-                  Copy
+                  Copy Path
                 </button>
                 <button
                   className="px-1.5 py-0.5 text-[10px] rounded bg-red-600/80 text-white"

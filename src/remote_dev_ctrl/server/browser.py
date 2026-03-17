@@ -1172,7 +1172,10 @@ class BrowserManager:
             screenshot_path=str(ss_path), a11y_path=str(a11y_path),
             meta_path=str(meta_path), description=description,
         )
-        self._save_context(snapshot)
+        if project_id:
+            self._save_context(snapshot)
+        else:
+            logger.warning(f"Context {ctx_id} captured but not persisted to DB (no project_id)")
         return snapshot
 
     async def capture_url(self, url: str, port: int = 0, project_id: str = "") -> Optional[ContextSnapshot]:

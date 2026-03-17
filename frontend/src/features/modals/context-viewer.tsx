@@ -7,6 +7,7 @@ interface ContextDetail {
   title?: string
   url?: string
   timestamp?: string
+  screenshot_path?: string
   a11y_tree?: A11yNode[]
 }
 
@@ -123,10 +124,14 @@ export function ContextViewerModal({
                 <button
                   className="flex-1 px-3 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white"
                   onClick={() => {
-                    toast("Send to Agent: Use MCP tool with context ID " + contextId, "info")
+                    const path = detail?.screenshot_path || `/context/${contextId}/screenshot`
+                    navigator.clipboard.writeText(path).then(
+                      () => toast(`Copied: ${path}`, "success"),
+                      () => toast("Copy failed", "error")
+                    )
                   }}
                 >
-                  Send to Agent
+                  Copy Path
                 </button>
                 <button
                   className="px-3 py-1.5 text-xs rounded bg-red-600 hover:bg-red-700 text-white"

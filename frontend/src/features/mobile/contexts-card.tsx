@@ -9,15 +9,21 @@ interface ContextSnapshot {
   title?: string
   url?: string
   timestamp?: string
+  screenshot_path?: string
 }
 
-export function ContextsCard() {
+export function ContextsCard({ defaultExpanded = false }: { defaultExpanded?: boolean } = {}) {
   const currentProject = useProjectStore((s) => s.currentProject)
   const toast = useUIStore((s) => s.toast)
   const [contexts, setContexts] = useState<ContextSnapshot[]>([])
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(defaultExpanded)
   const [viewId, setViewId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Expand when defaultExpanded changes to true (e.g. Ctx button clicked)
+  useEffect(() => {
+    if (defaultExpanded) setExpanded(true)
+  }, [defaultExpanded])
 
   const load = () => {
     const params = new URLSearchParams({ limit: "20" })
@@ -119,6 +125,19 @@ export function ContextsCard() {
                 <p className="text-xs text-gray-200 truncate">{ctx.title || ctx.id}</p>
                 {ctx.url && <p className="text-[10px] text-gray-500 truncate">{ctx.url}</p>}
               </div>
+              <button
+                className="text-[10px] text-blue-400 hover:text-blue-300 flex-shrink-0"
+                onClick={() => {
+                  const path = ctx.screenshot_path || `/context/${ctx.id}/screenshot`
+                  navigator.clipboard.writeText(path).then(
+                    () => toast(`Copied: ${path}`, "success"),
+                    () => toast("Copy failed", "error")
+                  )
+                }}
+                title="Copy file path"
+              >
+                Copy
+              </button>
               <button
                 className="text-gray-500 hover:text-red-400 text-sm flex-shrink-0"
                 onClick={() => handleDelete(ctx.id)}

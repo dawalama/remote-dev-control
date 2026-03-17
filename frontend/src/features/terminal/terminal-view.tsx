@@ -2,6 +2,10 @@ import { useEffect, useRef, useCallback, useState, type PointerEvent as ReactPoi
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { WebLinksAddon } from "@xterm/addon-web-links"
+import { useProjectStore } from "@/stores/project-store"
+import { useUIStore } from "@/stores/ui-store"
+import { api, GET } from "@/lib/api"
+import type { TabId } from "@/types"
 import "@xterm/xterm/css/xterm.css"
 
 const XTERM_THEME = {
@@ -430,6 +434,45 @@ export function TerminalToolbar({
   mode?: TerminalMode
   onModeChange?: (mode: TerminalMode) => void
 }) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const currentProject = useProjectStore((s) => s.currentProject)
+  const toast = useUIStore((s) => s.toast)
+  const setTab = useUIStore((s) => s.setTab)
+  const [ctxCount, setCtxCount] = useState(0)
+
+  // Load attachment count
+  useEffect(() => {
+    const params = new URLSearchParams({ limit: "100" })
+    if (currentProject !== "all") params.set("project", currentProject)
+    GET<{ id: string }[]>(`/context?${params}`)
+      .then((list) => setCtxCount(list.length))
+      .catch(() => {})
+  }, [currentProject])
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ""
+    const form = new FormData()
+    form.append("file", file)
+    if (currentProject && currentProject !== "all") form.append("project", currentProject)
+    try {
+      const res = await api<{ id: string; path: string }>("/context/upload", {
+        method: "POST",
+        body: form,
+      })
+      await navigator.clipboard.writeText(res.path).catch(() => {})
+      toast(`Uploaded — path copied: ${res.path}`, "success")
+      setCtxCount((c) => c + 1)
+    } catch {
+      toast("Upload failed", "error")
+    }
+  }
+
+  const handleOpenAttachments = () => {
+    setTab("attachments" as TabId)
+  }
+
   return (
     <div className="flex items-center justify-between px-3 py-1.5 bg-gray-800 flex-shrink-0">
       <div className="flex items-center gap-2">
@@ -439,6 +482,35 @@ export function TerminalToolbar({
         <span className="text-sm font-medium text-gray-200">{project}</span>
       </div>
       <div className="flex items-center gap-1">
+        {/* Attachment / Context buttons */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="*/*"
+          className="hidden"
+          onChange={handleUpload}
+        />
+        <button
+          className="px-2 py-0.5 text-xs rounded bg-gray-600 hover:bg-gray-500 text-white"
+          onClick={() => fileInputRef.current?.click()}
+          title="Upload file to context"
+        >
+          📎
+        </button>
+        <button
+          className="relative px-2 py-0.5 text-xs rounded bg-gray-600 hover:bg-gray-500 text-white"
+          onClick={handleOpenAttachments}
+          title="View attachments"
+        >
+          Ctx
+          {ctxCount > 0 && (
+            <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-blue-500 text-[10px] text-white flex items-center justify-center leading-none">
+              {ctxCount}
+            </span>
+          )}
+        </button>
+        <span className="w-px h-4 bg-gray-600" />
+
         {/* Mode buttons */}
         {onModeChange && (
           <>

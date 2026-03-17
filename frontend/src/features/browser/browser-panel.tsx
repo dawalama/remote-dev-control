@@ -376,7 +376,9 @@ function BrowserFullscreen({ onClose }: { onClose: () => void }) {
   const handleCapture = async () => {
     if (!activeSession) return
     try {
-      await POST(`/context/capture?session_id=${encodeURIComponent(activeSession.id)}`)
+      const params = new URLSearchParams({ session_id: activeSession.id })
+      if (currentProject && currentProject !== "all") params.set("project", currentProject)
+      await POST(`/context/capture?${params}`)
       toast("Context captured", "success")
     } catch {
       toast("Capture failed", "error")
