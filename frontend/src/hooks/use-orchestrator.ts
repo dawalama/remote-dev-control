@@ -62,7 +62,7 @@ interface Command {
 
 const TAB_ALIASES: Record<string, string> = {
   tasks: "tasks", task: "tasks",
-  processes: "processes", process: "processes", procs: "processes",
+  processes: "processes", process: "processes", procs: "processes", actions: "processes", action: "processes",
   activity: "activity", activities: "activity", events: "activity",
   workers: "workers", worker: "workers",
   browser: "browser", preview: "browser",

@@ -82,7 +82,7 @@ export function ProcessesCard({
       {commands.length > 0 && (
         <div>
           <h4 className="text-[10px] uppercase text-gray-500 mb-1.5 tracking-wider">Commands</h4>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="space-y-1.5">
             {commands.map((p) => (
               <CommandChip key={p.id} p={p} onRun={handleRunCommand} onStop={handleAction} onLogs={onLogs} />
             ))}
@@ -177,7 +177,7 @@ function ServiceItem({
   )
 }
 
-/** Command: compact chip with run/stop + logs access */
+/** Command: card with run/stop + logs access */
 function CommandChip({
   p,
   onRun,
@@ -192,69 +192,37 @@ function CommandChip({
   const label = p.name || p.id.split("-").pop() || p.id
   const logName = `${p.project}/${p.name || p.id}`
 
-  if (p.status === "running") {
-    return (
-      <div className="inline-flex items-center rounded-lg bg-blue-600/15 border border-blue-500/30 overflow-hidden">
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-blue-300 text-[11px] font-medium">
-          <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse flex-shrink-0" />
-          {label}
-        </span>
-        {onLogs && (
-          <button
-            className="px-1.5 py-1.5 text-[10px] text-blue-400 hover:bg-blue-500/20 border-l border-blue-500/30"
-            onClick={() => onLogs(p.id, logName)}
-          >
-            Logs
-          </button>
-        )}
-        <button
-          className="px-1.5 py-1.5 text-[10px] text-red-400 hover:bg-red-500/20 border-l border-blue-500/30"
-          onClick={() => onStop(p.id, "stop")}
-        >
-          Stop
-        </button>
-      </div>
-    )
-  }
-
+  const isRunning = p.status === "running"
   const isError = p.status === "error" || p.status === "failed"
   const isDone = p.status === "completed"
 
-  const borderStyle =
-    isDone ? "border-green-500/30" :
-    isError ? "border-red-500/30" :
-    "border-gray-600"
-
-  const labelStyle =
-    isDone ? "text-green-400" :
-    isError ? "text-red-400" :
-    "text-gray-300"
-
-  const icon =
-    isDone ? "✓" :
-    isError ? "✕" :
-    "▶"
+  const ringStyle = isRunning ? "ring-1 ring-blue-500/30" : isError ? "ring-1 ring-red-500/30" : ""
 
   return (
-    <div className={`inline-flex items-center rounded-lg bg-gray-700/50 border overflow-hidden ${borderStyle}`}>
-      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium ${labelStyle}`} title={p.command || label}>
-        <span className="text-[9px]">{icon}</span>
-        {label}
-      </span>
-      {(isDone || isError) && onLogs && (
-        <button
-          className="px-1.5 py-1.5 text-[10px] text-gray-500 hover:text-gray-300 hover:bg-gray-600/50 border-l border-gray-600"
-          onClick={() => onLogs(p.id, logName)}
-        >
-          Logs
-        </button>
-      )}
-      <button
-        className="px-2 py-1.5 text-[10px] text-green-400 hover:bg-green-500/20 border-l border-gray-600 font-medium"
-        onClick={() => onRun(p.id, logName)}
-      >
-        Run
-      </button>
+    <div className={`border border-gray-700 rounded-lg p-2.5 ${ringStyle}`}>
+      <div className="flex items-center gap-2 mb-1">
+        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+          isRunning ? "bg-blue-400 animate-pulse" :
+          isError ? "bg-red-400" :
+          isDone ? "bg-green-400" :
+          "bg-gray-500"
+        }`} />
+        <span className="text-sm text-gray-200 flex-1 truncate" title={label}>{label}</span>
+      </div>
+      {p.command && <p className="text-[10px] text-gray-500 truncate mb-1 ml-4">{p.command}</p>}
+      <div className="flex gap-1 ml-4 flex-wrap">
+        {isRunning ? (
+          <button className="px-2 py-0.5 text-[10px] rounded bg-red-600/20 text-red-400"
+            onClick={() => onStop(p.id, "stop")}>Stop</button>
+        ) : (
+          <button className="px-2 py-0.5 text-[10px] rounded bg-green-600/20 text-green-400"
+            onClick={() => onRun(p.id, logName)}>Run</button>
+        )}
+        {(isRunning || isDone || isError) && onLogs && (
+          <button className="px-2 py-0.5 text-[10px] rounded bg-gray-600/20 text-gray-400"
+            onClick={() => onLogs(p.id, logName)}>Logs</button>
+        )}
+      </div>
     </div>
   )
 }

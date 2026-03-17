@@ -102,7 +102,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "start_process",
-            "description": "Start a service process (dev server, database, etc.)",
+            "description": "Start a service action (dev server, database, etc.)",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -130,7 +130,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "stop_process",
-            "description": "Stop a running process",
+            "description": "Stop a running action/service",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -343,14 +343,14 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "show_tab",
-            "description": "Switch to a dashboard tab. Use 'browser' to show browser sessions/recordings.",
+            "description": "Switch to a dashboard tab. Use 'processes' for actions (services and commands). Use 'browser' for browser sessions/recordings. Use 'activity' for audit log.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "tab": {
                         "type": "string",
                         "enum": ["processes", "tasks", "browser", "contexts", "workers", "system", "chat", "pinchtab", "project", "activity"],
-                        "description": "Tab to show",
+                        "description": "Tab to show. 'processes' = actions (services + commands), 'activity' = audit event log",
                     }
                 },
                 "required": ["tab"],
@@ -361,7 +361,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "show_logs",
-            "description": "Open the live logs panel. Can show system logs or logs for a specific process. To show process logs, pass the process ID exactly as shown in the process list.",
+            "description": "Open the live logs panel. Can show system logs or logs for a specific action. To show action logs, pass the action/process ID exactly as shown in the actions list.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -377,7 +377,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "show_activity",
-            "description": "Open the activity / audit log panel showing recent events and actions",
+            "description": "Open the activity / audit log panel showing recent system events. NOT for showing actions/services — use show_tab(tab='processes') for that.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -393,7 +393,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "open_preview",
-            "description": "Open browser preview for a process",
+            "description": "Open browser preview for a running service action",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -624,7 +624,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "restart_process",
-            "description": "Restart a running process (stop then start).",
+            "description": "Restart a running service action (stop then start).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1496,17 +1496,18 @@ def build_system_prompt(
             profile_lines.append(f"  Test dir: {pp['test_dir']}")
         context_parts.append("\n".join(profile_lines))
 
-    # Processes
+    # Actions (services + commands)
     if ctx.processes:
         proc_lines = []
         for p in ctx.processes:
             status = p.get("status", "unknown")
             pid = p.get("id", "?")
             name = p.get("name", pid)
+            kind = p.get("kind", "service")
             port = p.get("port")
             port_str = f" (port {port})" if port else ""
-            proc_lines.append(f"  {pid}: {name} [{status}]{port_str}")
-        context_parts.append("Processes:\n" + "\n".join(proc_lines))
+            proc_lines.append(f"  {pid}: {name} [{status}] ({kind}){port_str}")
+        context_parts.append("Actions (services + commands, shown on 'processes' tab):\n" + "\n".join(proc_lines))
 
     # Tasks
     if ctx.tasks:
