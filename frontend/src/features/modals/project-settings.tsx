@@ -25,6 +25,7 @@ interface ProcessDef {
   cwd?: string | null
   description?: string | null
   discovered_by?: string
+  kind?: string
 }
 
 type Section = "general" | "profile" | "terminal" | "processes" | "danger"
@@ -68,7 +69,7 @@ export function ProjectSettingsModal({
     { id: "general", label: "General" },
     { id: "profile", label: "Profile" },
     { id: "terminal", label: "Terminal" },
-    { id: "processes", label: "Processes" },
+    { id: "processes", label: "Actions" },
     { id: "danger", label: "Danger" },
   ]
 
@@ -386,7 +387,7 @@ function ProcessesSection({
   }
 
   const addProcess = () => {
-    setLocal((prev) => [...prev, { name: "", command: "", port: null, cwd: null, description: null, discovered_by: "manual" }])
+    setLocal((prev) => [...prev, { name: "", command: "", port: null, cwd: null, description: null, discovered_by: "manual", kind: "command" }])
   }
 
   const removeProcess = (idx: number) => {
@@ -396,7 +397,7 @@ function ProcessesSection({
   const save = async () => {
     const valid = local.filter((p) => p.name && p.command)
     if (valid.length !== local.length) {
-      toast("Each process needs a name and command", "error")
+      toast("Each action needs a name and command", "error")
       return
     }
     setSaving(true)
@@ -405,7 +406,7 @@ function ProcessesSection({
       const updated = await GET<ProcessDef[]>(`/projects/${encodeURIComponent(currentName)}/processes`).catch(() => local)
       setLocal(updated)
       onUpdate(updated)
-      toast("Processes saved", "success")
+      toast("Actions saved", "success")
     } catch {
       toast("Failed to save", "error")
     }
@@ -440,13 +441,13 @@ function ProcessesSection({
           className="px-2 py-1 text-xs rounded bg-green-600 hover:bg-green-700 text-white"
           onClick={addProcess}
         >
-          + Add Process
+          + Add Action
         </button>
       </div>
 
       {local.length === 0 ? (
         <p className="text-xs text-gray-500 text-center py-4">
-          No processes configured. Click "Add Process" or "Re-discover" to get started.
+          No actions configured. Click "Add Action" or "Re-discover" to get started.
         </p>
       ) : (
         <div className="space-y-2">
@@ -466,6 +467,24 @@ function ProcessesSection({
                   onChange={(e) => updateField(i, "port", e.target.value ? parseInt(e.target.value) : null)}
                   placeholder="Port"
                 />
+                <div className="flex rounded overflow-hidden border border-gray-600 flex-shrink-0">
+                  <button
+                    className={`px-1.5 py-0.5 text-[10px] font-medium ${
+                      (p.kind || "service") === "service" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400"
+                    }`}
+                    onClick={() => updateField(i, "kind", "service")}
+                  >
+                    Svc
+                  </button>
+                  <button
+                    className={`px-1.5 py-0.5 text-[10px] font-medium ${
+                      p.kind === "command" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400"
+                    }`}
+                    onClick={() => updateField(i, "kind", "command")}
+                  >
+                    Cmd
+                  </button>
+                </div>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                   p.discovered_by === "manual" ? "bg-blue-900 text-blue-300" : "bg-gray-600 text-gray-400"
                 }`}>
@@ -510,7 +529,7 @@ function ProcessesSection({
           onClick={save}
           disabled={saving}
         >
-          {saving ? "Saving..." : "Save Processes"}
+          {saving ? "Saving..." : "Save Actions"}
         </button>
       </div>
     </div>

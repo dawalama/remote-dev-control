@@ -515,6 +515,14 @@ function AgentLauncherButton({
 
 // --- Log content viewer ---
 
+// Strip ANSI escape codes (colors, cursor movement, etc.)
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\r/g
+
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, "")
+}
+
 function LogContent({ pane }: { pane: { id: string; content: string; paused: boolean } }) {
   const contentRef = useRef<HTMLPreElement>(null)
 
@@ -529,7 +537,7 @@ function LogContent({ pane }: { pane: { id: string; content: string; paused: boo
       ref={contentRef}
       className="flex-1 text-xs font-mono text-gray-300 whitespace-pre-wrap overflow-auto p-3"
     >
-      {pane.content || "No output."}
+      {stripAnsi(pane.content) || "No output."}
     </pre>
   )
 }

@@ -13,6 +13,7 @@ import { UnifiedBrowserPanel } from "@/features/browser/unified-browser-panel"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { ContextViewerModal } from "@/features/modals/context-viewer"
 import { useModels, ModelSelector, CreateTaskForm } from "@/features/tasks/create-task-form"
+import { AddActionForm } from "@/features/processes/add-action-form"
 import type { ActivityEvent, Task } from "@/types"
 
 type RightTab = "activity" | "processes" | "tasks" | "browser" | "attachments" | "system" | "dictation"
@@ -216,9 +217,12 @@ function ProcessesTab() {
     } catch { /* */ }
   }
 
-  const handleExecute = async (id: string) => {
+  const handleExecute = async (id: string, name: string) => {
     try {
-      await POST(`/actions/${encodeURIComponent(id)}/execute`)
+      await POST(`/processes/${encodeURIComponent(id)}/start`)
+      toast("Running...", "success")
+      // Auto-open logs for commands so user sees output
+      openProcessLog(id, name)
     } catch { toast("Execute failed", "error") }
   }
 
@@ -291,32 +295,76 @@ function ProcessesTab() {
     </div>
   )
 
-  const renderCommand = (p: typeof filtered[0]) => (
-    <div key={p.id} className={`bg-gray-700 rounded-lg p-2.5 ${p.status === "error" || p.status === "failed" ? "ring-1 ring-red-500/30" : ""}`}>
-      <div className="flex items-center gap-2">
-        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor(p.status)} ${p.status === "running" ? "animate-pulse" : ""}`} />
-        <span className="text-xs font-medium flex-1 min-w-0 truncate">{p.project}/{p.name || p.id}</span>
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-600 text-gray-400">cmd</span>
+  const renderCommandChip = (p: typeof filtered[0]) => {
+    const label = p.name || p.id.split("-").pop() || p.id
+    const logName = `${p.project}/${p.name || p.id}`
+
+    if (p.status === "running") {
+      return (
+        <div key={p.id} className="inline-flex items-center rounded-lg bg-blue-600/15 border border-blue-500/30 overflow-hidden">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-blue-300 text-[11px] font-medium">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse flex-shrink-0" />
+            {label}
+          </span>
+          <button
+            className="px-1.5 py-1.5 text-[10px] text-blue-400 hover:bg-blue-500/20 border-l border-blue-500/30"
+            onClick={() => openProcessLog(p.id, logName)}
+            title="View output"
+          >
+            Logs
+          </button>
+          <button
+            className="px-1.5 py-1.5 text-[10px] text-red-400 hover:bg-red-500/20 border-l border-blue-500/30"
+            onClick={() => handleAction("stop", p.id)}
+            title="Stop"
+          >
+            Stop
+          </button>
+        </div>
+      )
+    }
+
+    const isError = p.status === "error" || p.status === "failed"
+    const isDone = p.status === "completed"
+
+    const borderStyle =
+      isDone ? "border-green-500/30" :
+      isError ? "border-red-500/30" :
+      "border-gray-600"
+
+    const labelStyle =
+      isDone ? "text-green-400" :
+      isError ? "text-red-400" :
+      "text-gray-300"
+
+    const icon =
+      isDone ? "✓" :
+      isError ? "✕" :
+      "▶"
+
+    return (
+      <div key={p.id} className={`inline-flex items-center rounded-lg bg-gray-700/50 border overflow-hidden ${borderStyle}`}>
+        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium ${labelStyle}`} title={p.command || label}>
+          <span className="text-[9px]">{icon}</span>
+          {label}
+        </span>
+        {(isDone || isError) && (
+          <button
+            className="px-1.5 py-1.5 text-[10px] text-gray-500 hover:text-gray-300 hover:bg-gray-600/50 border-l border-gray-600"
+            onClick={() => openProcessLog(p.id, logName)}
+          >
+            Logs
+          </button>
+        )}
+        <button
+          className="px-2 py-1.5 text-[10px] text-green-400 hover:bg-green-500/20 border-l border-gray-600 font-medium"
+          onClick={() => handleExecute(p.id, logName)}
+        >
+          Run
+        </button>
       </div>
-      {p.command && <div className="text-[10px] text-gray-500 truncate mt-0.5">{p.command}</div>}
-      <div className="flex gap-1 mt-1 flex-wrap">
-        {p.status === "running" ? (
-          <Btn color="red" onClick={() => handleAction("stop", p.id)}>Stop</Btn>
-        ) : (
-          <Btn color="green" onClick={() => handleExecute(p.id)}>
-            {p.status === "completed" || p.status === "failed" ? "Re-run" : "Run"}
-          </Btn>
-        )}
-        <Btn color="gray" onClick={() => openProcessLog(p.id, `${p.project}/${p.name || p.id}`)}>Logs</Btn>
-        {p.status === "completed" && (
-          <span className="text-[10px] text-blue-400 self-center ml-auto">completed</span>
-        )}
-        {(p.status === "error" || p.status === "failed") && (
-          <span className="text-[10px] text-red-400 self-center ml-auto">failed</span>
-        )}
-      </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div className="space-y-2">
@@ -351,6 +399,8 @@ function ProcessesTab() {
         </button>
       </div>
 
+      <AddActionForm />
+
       {services.length > 0 && (
         <div>
           <h4 className="text-[10px] uppercase text-gray-500 mb-1">Services</h4>
@@ -361,7 +411,7 @@ function ProcessesTab() {
       {commands.length > 0 && (
         <div>
           <h4 className="text-[10px] uppercase text-gray-500 mb-1">Commands</h4>
-          <div className="space-y-1.5">{commands.map(renderCommand)}</div>
+          <div className="flex flex-wrap gap-1.5">{commands.map(renderCommandChip)}</div>
         </div>
       )}
 

@@ -2154,6 +2154,7 @@ class ProcessRegisterRequest(BaseModel):
     command: str
     cwd: str
     port: int | None = None
+    kind: str = "service"
 
 
 @app.get("/processes")
@@ -2180,16 +2181,87 @@ async def list_processes(project: str | None = None):
 @app.post("/processes/register")
 async def register_process(req: ProcessRegisterRequest):
     """Register a new process configuration."""
+    from .db.models import ActionKind
+    kind = ActionKind.COMMAND if req.kind == "command" else ActionKind.SERVICE
     state = process_manager.register(
         project=req.project,
         name=req.name,
         command=req.command,
         cwd=req.cwd,
         port=req.port,
+        kind=kind,
     )
     machine = get_state_machine()
     await machine._broadcast_state()
     return {"success": True, "process": {"id": state.id, "status": state.status.value}}
+
+
+class SuggestActionRequest(BaseModel):
+    project: str
+    description: str
+
+
+@app.post("/processes/suggest")
+async def suggest_action(req: SuggestActionRequest):
+    """Ask LLM to suggest an action based on a natural language description."""
+    from .process_discovery import read_project_files
+    from ..llm import llm_generate
+
+    project_repo = get_project_repo()
+    project = project_repo.get(req.project)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{req.project}' not found")
+
+    # Read project files for context
+    files = read_project_files(project.path)
+    files_text = ""
+    for filename, content in files.items():
+        files_text += f"\n--- {filename} ---\n{content}\n"
+
+    # Get existing actions for dedup awareness
+    existing = process_manager.list(project=req.project)
+    existing_text = ", ".join(f"{p.name} ({p.command})" for p in existing) if existing else "none"
+
+    prompt = f"""A user wants to add an action to their project. Based on the project files, suggest the right command.
+
+User request: "{req.description}"
+
+Project: {req.project}
+Project path: {project.path}
+Existing actions: {existing_text}
+
+Project files:
+{files_text}
+
+Return ONLY valid JSON (no markdown, no explanation):
+{{
+  "name": "short-name (e.g. lint, test, build, migrate)",
+  "command": "the shell command to run (e.g. npm run lint, pytest, make lint)",
+  "kind": "service or command (use service only for long-running servers with ports, command for everything else)",
+  "port": null,
+  "cwd": "subdirectory to run from, or null for project root. IMPORTANT: if the command relates to a package.json in a subdirectory like frontend/, set cwd to that subdirectory"
+}}
+
+Rules:
+- kind should be "command" for build, test, lint, migrate, format, typecheck, etc.
+- kind should be "service" only for long-running dev servers, APIs, workers
+- port should only be set for services that listen on a port
+- Use the actual commands from package.json scripts, Makefile targets, pyproject.toml scripts, etc.
+- If unsure about cwd, use null (project root)
+"""
+
+    result = llm_generate(prompt, format_json=True)
+    if not result or not isinstance(result, dict):
+        raise HTTPException(status_code=500, detail="LLM failed to suggest an action")
+
+    # Ensure required fields
+    return {
+        "name": result.get("name", "action"),
+        "command": result.get("command", ""),
+        "kind": result.get("kind", "command"),
+        "port": result.get("port"),
+        "cwd": result.get("cwd"),
+    }
 
 
 @app.post("/processes/{process_id}/start")
@@ -7398,6 +7470,7 @@ async def get_project_processes(name: str):
             "port": cfg.port,
             "description": cfg.description,
             "discovered_by": cfg.discovered_by,
+            "kind": cfg.kind.value if hasattr(cfg.kind, 'value') else cfg.kind,
         }
         for cfg in configs
     ]
@@ -7410,6 +7483,7 @@ class ProcessConfigItem(BaseModel):
     port: int | None = None
     description: str | None = None
     discovered_by: str | None = "manual"
+    kind: str = "service"
 
 
 @app.put("/projects/{name}/processes")
@@ -7428,7 +7502,9 @@ async def save_project_processes(name: str, processes: list[ProcessConfigItem]):
     # Replace all process configs for this project with the submitted list
     process_config_repo.delete_by_project(proj_uuid)
 
+    from .db.models import ActionKind as AK
     for proc in processes:
+        proc_kind = AK.COMMAND if proc.kind == "command" else AK.SERVICE
         process_config_repo.upsert(ProcessConfig(
             id=f"{name}-{proc.name}",
             project_id=proj_uuid,
@@ -7438,6 +7514,7 @@ async def save_project_processes(name: str, processes: list[ProcessConfigItem]):
             port=proc.port,
             description=proc.description,
             discovered_by=proc.discovered_by or "manual",
+            kind=proc_kind,
         ))
 
     # Sync ProcessManager: remove old entries for this project, then re-register kept ones
@@ -7465,12 +7542,15 @@ async def save_project_processes(name: str, processes: list[ProcessConfigItem]):
         port = None
         if proc.port:
             port = port_manager.assign_port(name, proc.name, preferred=proc.port)
+        from .db.models import ActionKind as AK
+        proc_kind = AK.COMMAND if proc.kind == "command" else AK.SERVICE
         state = pm.register(
             project=name,
             name=proc.name,
             command=proc.command,
             cwd=cwd,
             port=port,
+            kind=proc_kind,
             force_update=True,
         )
         state.description = proc.description
