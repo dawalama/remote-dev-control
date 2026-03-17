@@ -3,6 +3,7 @@ import { GET, POST, PATCH, PUT } from "@/lib/api"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
+import { CollectionPicker } from "@/components/collection-picker"
 import type { Collection, ProjectProfile } from "@/types"
 
 interface ProjectDetail {
@@ -252,11 +253,11 @@ function GeneralSection({
       </div>
       <div>
         <Label>Collection</Label>
-        <select className="input-cls" value={collectionId} onChange={(e) => setCollectionId(e.target.value)}>
-          {collections.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
+        <CollectionPicker
+          value={collectionId}
+          onChange={setCollectionId}
+          collections={collections}
+        />
       </div>
       <div className="flex justify-end">
         <button

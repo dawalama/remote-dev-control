@@ -4,6 +4,7 @@ import { useStateStore } from "@/stores/state-store"
 import { useUIStore } from "@/stores/ui-store"
 import { GET } from "@/lib/api"
 import { CollectionsManagerModal } from "@/features/modals/collections-manager"
+import { CollectionPicker } from "@/components/collection-picker"
 
 export function ProjectBar() {
   const { projects, collections, currentProject, currentCollection, selectProject, selectCollection, scaffoldProject, loadProjects, activeOnly, toggleActiveFilter } =
@@ -391,21 +392,14 @@ function AddProjectModal({
 
         <div className="p-4 space-y-3">
           {/* Collection picker (shared between tabs) */}
-          {collections.length > 0 && (
-            <div>
-              <label className="text-xs text-gray-400 mb-1 block">Collection</label>
-              <select
-                value={collectionId}
-                onChange={(e) => setCollectionId(e.target.value)}
-                className="input-cls"
-              >
-                <option value="general">General</option>
-                {collections.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
+          <div>
+            <label className="text-xs text-gray-400 mb-1 block">Collection</label>
+            <CollectionPicker
+              value={collectionId}
+              onChange={setCollectionId}
+              collections={collections}
+            />
+          </div>
 
           {tab === "create" ? (
             <>

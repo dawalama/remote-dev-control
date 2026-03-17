@@ -2,6 +2,7 @@ import { useState, useEffect } from "react"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { GET } from "@/lib/api"
+import { CollectionPicker } from "@/components/collection-picker"
 import { Sheet } from "./sheet"
 
 interface DirEntry {
@@ -125,21 +126,14 @@ export function AddProjectSheet({ onClose }: { onClose: () => void }) {
       </div>
 
       {/* Collection picker */}
-      {collections.length > 0 && (
-        <div className="mb-3">
-          <label className="text-xs text-gray-400 mb-1 block">Collection</label>
-          <select
-            value={collectionId}
-            onChange={(e) => setCollectionId(e.target.value)}
-            className="input-cls"
-          >
-            <option value="general">General</option>
-            {collections.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-        </div>
-      )}
+      <div className="mb-3">
+        <label className="text-xs text-gray-400 mb-1 block">Collection</label>
+        <CollectionPicker
+          value={collectionId}
+          onChange={setCollectionId}
+          collections={collections}
+        />
+      </div>
 
       {tab === "create" ? (
         <div className="space-y-3">
