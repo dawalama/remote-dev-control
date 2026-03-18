@@ -6,7 +6,7 @@ A command center for AI-assisted development. Manage multiple projects, orchestr
 
 ## What It Does
 
-**Command Center Dashboard** — Real-time web UI with three layouts (desktop, mobile, kiosk) for managing projects, terminals, tasks, processes, and AI agents from any device.
+**Command Center Dashboard** — Real-time web UI with three layouts (desktop, mobile, kiosk) for managing projects, terminals, tasks, actions, and AI agents from any device.
 
 **Terminal Management** — Spawn and control PTY sessions (shell, Claude, Cursor, etc.) with WebSocket streaming, auto-reconnect, and input detection alerts.
 
@@ -15,6 +15,12 @@ A command center for AI-assisted development. Manage multiple projects, orchestr
 **Actions** — Auto-discover and manage project actions: services (long-running dev servers, APIs) and commands (builds, tests, lints). Start, stop, attach, view logs.
 
 **AI Orchestrator** — Natural language control via chat or voice. "Start a terminal for my-project", "show tasks", "switch to kiosk mode".
+
+**AI Agents** — Spawn and manage AI coding agents (Claude, Cursor, etc.) per project. Assign tasks, view logs, stop or retry.
+
+**Voice & Phone Control** — Call your RDC instance via Twilio and control it by voice. Pair with a dashboard client for full remote control, or get verbal status updates hands-free.
+
+**Browser Preview** — Share a browser session with VNC, capture screenshots, and record sessions with rrweb for replay.
 
 **MCP Server** — Model Context Protocol integration exposing browser context to AI assistants (Cursor, Claude, etc.).
 
@@ -217,7 +223,7 @@ cloudflared tunnel run rdc
 rdc server start
 ```
 
-The dashboard is now at `https://rdc.yourdomain.com`. Process preview URLs are assigned automatically when you start dev servers.
+The dashboard is now at `https://rdc.yourdomain.com`. Preview URLs are assigned automatically when you start dev server actions.
 
 #### 5. (Recommended) Run the tunnel as a service
 
@@ -317,12 +323,14 @@ For AI assistants that support [Model Context Protocol](https://modelcontextprot
 
 ## API
 
-The server exposes a REST + WebSocket API. Key endpoints:
+The server exposes a REST + WebSocket API on port 8420. Interactive docs are available at `/docs` (Swagger UI) when the server is running.
+
+Key endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/ws/state` | WS | Real-time state updates |
-| `/projects` | GET | List projects |
+| `/projects` | GET/POST | List/create projects |
 | `/terminals` | POST | Spawn terminal session |
 | `/terminals/{id}/ws` | WS | Terminal I/O stream |
 | `/tasks` | GET/POST | List/create tasks |
@@ -335,6 +343,13 @@ The server exposes a REST + WebSocket API. Key endpoints:
 | `/processes/{id}/stop` | POST | Stop an action |
 | `/processes/{id}/attach` | POST | Attach to orphaned process |
 | `/processes/{id}/logs` | GET | Get action output logs |
+| `/agents/spawn` | POST | Spawn an AI coding agent |
+| `/agents/{project}/stop` | POST | Stop a running agent |
+| `/agents/{project}/logs` | GET | Get agent output logs |
+| `/browser/start/{id}` | POST | Start browser preview for a service |
+| `/browser/sessions` | GET | List active browser sessions |
+| `/voice/call` | POST | Initiate a phone call via Twilio |
+| `/voice/pair` | POST | Pair phone with a dashboard client |
 | `/orchestrator` | POST | Send message to AI orchestrator |
 | `/models` | GET | List available LLM models |
 | `/recipes` | GET | List task recipes |
@@ -350,7 +365,9 @@ The server exposes a REST + WebSocket API. Key endpoints:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
+                    Phone (Twilio)
+                         │
+┌────────────────────────┼────────────────────┐
 │              Web Dashboard                   │
 │     (React + Zustand + Tailwind + xterm)     │
 │     Desktop │ Mobile │ Kiosk layouts         │
@@ -359,21 +376,28 @@ The server exposes a REST + WebSocket API. Key endpoints:
 ┌──────────────────┴──────────────────────────┐
 │              FastAPI Server (:8420)           │
 │  ┌──────────┬──────────┬──────────────────┐  │
-│  │ Terminal  │  Task    │  Process         │  │
+│  │ Terminal  │  Task    │  Action          │  │
 │  │ Manager   │  Worker  │  Discovery       │  │
 │  ├──────────┼──────────┼──────────────────┤  │
 │  │ AI       │  Intent  │  Agent           │  │
 │  │ Orchestr.│  Engine  │  Manager         │  │
+│  ├──────────┼──────────┼──────────────────┤  │
+│  │ Voice/   │  Browser │  MCP             │  │
+│  │ Phone    │  Preview │  Server          │  │
 │  ├──────────┴──────────┴──────────────────┤  │
 │  │         SQLite (rdc, tasks, logs)       │  │
 │  └────────────────────────────────────────┘  │
+└──────────────┬───────────────────────────────┘
+               │ (optional)
+┌──────────────┴───────────────────────────────┐
+│  Caddy (:8888) → Cloudflare Tunnel → Internet │
 └──────────────────────────────────────────────┘
 ```
 
 ## Philosophy
 
-- **AI-first** — Designed for AI-assisted development workflows
-- **Multi-device** — Same tool from your desk, tablet, or phone
+- **Control from anywhere** — Phone, tablet, or desktop. Voice, chat, or CLI. No need to be at your workstation.
+- **Terminals that survive** — PTY sessions persist across server restarts and network drops. Pick up where you left off.
 - **Agent-agnostic** — Works with Claude, Cursor, OpenAI, Ollama, or any LLM
-- **Self-contained** — SQLite databases, no external services required
-- **Fast tooling** — Uses `uv` and `pnpm` for speed
+- **Self-contained** — SQLite databases, no external services required. One port, one process.
+- **AI-first** — Natural language orchestrator, task system with LLM execution, voice control built in
