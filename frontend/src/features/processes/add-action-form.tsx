@@ -44,7 +44,7 @@ export function AddActionForm({ onAdded }: { onAdded?: () => void }) {
         kind: string
         port: number | null
         cwd: string | null
-      }>("/processes/suggest", {
+      }>("/actions/suggest", {
         project: currentProject,
         description: prompt.trim(),
       })
@@ -64,7 +64,7 @@ export function AddActionForm({ onAdded }: { onAdded?: () => void }) {
     if (!name.trim() || !command.trim()) return
     setSubmitting(true)
     try {
-      await POST("/processes/register", {
+      await POST("/actions/register", {
         project: currentProject,
         name: name.trim(),
         command: command.trim(),

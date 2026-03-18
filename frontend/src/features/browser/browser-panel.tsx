@@ -28,7 +28,7 @@ export function BrowserPanel() {
   const startFromProcess = useBrowserStore((s) => s.startFromProcess)
   const setActiveSession = useBrowserStore((s) => s.setActiveSession)
 
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
   const toast = useUIStore((s) => s.toast)
 

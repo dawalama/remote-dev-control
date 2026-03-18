@@ -213,13 +213,13 @@ function ProcessesTab() {
 
   const handleAction = async (action: string, id: string) => {
     try {
-      await POST(`/processes/${encodeURIComponent(id)}/${action}`)
+      await POST(`/actions/${encodeURIComponent(id)}/${action}`)
     } catch { /* */ }
   }
 
   const handleExecute = async (id: string, name: string) => {
     try {
-      await POST(`/processes/${encodeURIComponent(id)}/start`)
+      await POST(`/actions/${encodeURIComponent(id)}/start`)
       toast("Running...", "success")
       // Auto-open logs for commands so user sees output
       openProcessLog(id, name)
@@ -230,7 +230,7 @@ function ProcessesTab() {
     if (currentProject === "all") { toast("Select a project first", "warning"); return }
     setDetecting(true)
     try {
-      await POST(`/projects/${encodeURIComponent(currentProject)}/detect-processes?force_rediscover=true`)
+      await POST(`/projects/${encodeURIComponent(currentProject)}/detect-actions?force_rediscover=true`)
       toast("Sync complete", "success")
     } catch { toast("Sync failed", "error") }
     setDetecting(false)
@@ -275,7 +275,7 @@ function ProcessesTab() {
             {p.port && (
               <Btn color="blue" onClick={async () => {
                 try {
-                  await POST(`/processes/${encodeURIComponent(p.id)}/attach?port=${p.port}`)
+                  await POST(`/actions/${encodeURIComponent(p.id)}/attach?port=${p.port}`)
                   toast("Attached to running process", "success")
                 } catch { toast("Failed to attach", "error") }
               }}>Attach</Btn>
@@ -287,7 +287,7 @@ function ProcessesTab() {
           <Btn color="purple" onClick={() => handlePreview(p.id)}>Preview</Btn>
         )}
         {p.status === "error" && (
-          <Btn color="purple" onClick={() => POST(`/processes/${encodeURIComponent(p.id)}/create-fix-task`).then(() => toast("Fix task created", "success")).catch(() => toast("Failed", "error"))}>
+          <Btn color="purple" onClick={() => POST(`/actions/${encodeURIComponent(p.id)}/create-fix-task`).then(() => toast("Fix task created", "success")).catch(() => toast("Failed", "error"))}>
             Fix with AI
           </Btn>
         )}
@@ -394,7 +394,7 @@ function SystemTab() {
   const serverState = useStateStore((s) => s.serverState)
   const timestamp = useStateStore((s) => s.timestamp)
   const terminals = useStateStore((s) => s.terminals)
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
   const toast = useUIStore((s) => s.toast)
   const openSystemLog = useLogsStore((s) => s.openSystemLog)
@@ -493,7 +493,7 @@ function SystemTab() {
       </div>
 
       {showSettings && currentProject !== "all" && (
-        <ProjectSettingsModal projectName={currentProject} onClose={() => setShowSettings(false)} />
+        <ProjectSettingsModal projectName={currentProject} onClose={() => setShowSettings(false)} fullPage />
       )}
       {showSystemSettings && (
         <SystemSettingsModal onClose={() => setShowSystemSettings(false)} />

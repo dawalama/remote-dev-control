@@ -3,7 +3,7 @@ import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { POST } from "@/lib/api"
 import { AddActionForm } from "@/features/processes/add-action-form"
-import type { Process } from "@/types"
+import type { Action } from "@/types"
 
 export function ProcessesCard({
   onLogs,
@@ -28,8 +28,8 @@ export function ProcessesCard({
 
   const handleAction = async (processId: string, action: string) => {
     try {
-      await POST(`/processes/${processId}/${action}`)
-      toast(`Process ${action}ed`, "success")
+      await POST(`/actions/${processId}/${action}`)
+      toast(`Action ${action === "stop" ? "stopped" : `${action}ed`}`, "success")
     } catch {
       toast(`Failed to ${action}`, "error")
     }
@@ -37,7 +37,7 @@ export function ProcessesCard({
 
   const handleRunCommand = async (id: string, name: string) => {
     try {
-      await POST(`/processes/${encodeURIComponent(id)}/start`)
+      await POST(`/actions/${encodeURIComponent(id)}/start`)
       toast("Running...", "success")
       onLogs?.(id, name)
     } catch { toast("Execute failed", "error") }
@@ -54,7 +54,7 @@ export function ProcessesCard({
             className="text-[10px] text-blue-400"
             onClick={async () => {
               try {
-                await POST(`/projects/${encodeURIComponent(currentProject)}/detect-processes?force_rediscover=true`)
+                await POST(`/projects/${encodeURIComponent(currentProject)}/detect-actions?force_rediscover=true`)
                 toast("Synced", "success")
               } catch { toast("Sync failed", "error") }
             }}
@@ -104,7 +104,7 @@ function ServiceItem({
   onLogs,
   toast,
 }: {
-  p: Process
+  p: Action
   onAction: (id: string, action: string) => void
   onLogs?: (id: string, name: string) => void
   toast: (msg: string, type?: "success" | "error" | "warning" | "info") => void
@@ -152,7 +152,7 @@ function ServiceItem({
               <button className="px-2 py-0.5 text-[10px] rounded bg-blue-600/20 text-blue-400"
                 onClick={async () => {
                   try {
-                    await POST(`/processes/${encodeURIComponent(p.id)}/attach?port=${p.port}`)
+                    await POST(`/actions/${encodeURIComponent(p.id)}/attach?port=${p.port}`)
                     toast("Attached to running process", "success")
                   } catch (err: unknown) {
                     const msg = err instanceof Error ? err.message : "Failed to attach"
@@ -168,7 +168,7 @@ function ServiceItem({
         )}
         {p.status === "error" && (
           <button className="px-2 py-0.5 text-[10px] rounded bg-purple-600/20 text-purple-400"
-            onClick={() => POST(`/processes/${encodeURIComponent(p.id)}/create-fix-task`).then(() => toast("Fix task created", "success")).catch(() => toast("Failed", "error"))}>
+            onClick={() => POST(`/actions/${encodeURIComponent(p.id)}/create-fix-task`).then(() => toast("Fix task created", "success")).catch(() => toast("Failed", "error"))}>
             Fix with AI
           </button>
         )}
@@ -184,7 +184,7 @@ function CommandChip({
   onStop,
   onLogs,
 }: {
-  p: Process
+  p: Action
   onRun: (id: string, name: string) => void
   onStop: (id: string, action: string) => void
   onLogs?: (id: string, name: string) => void

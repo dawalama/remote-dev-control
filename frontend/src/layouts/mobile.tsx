@@ -29,7 +29,7 @@ import { Sheet } from "@/features/mobile/sheet"
 import { POST } from "@/lib/api"
 import { getClientId, getClientName } from "@/lib/client-id"
 import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
-import type { BrowserSession, Process } from "@/types"
+import type { BrowserSession, Action } from "@/types"
 
 export function MobileLayout() {
   const layout = useUIStore((s) => s.layout)
@@ -44,7 +44,7 @@ export function MobileLayout() {
   const connected = useStateStore((s) => s.connected)
   const serverState = useStateStore((s) => s.serverState)
   const terminals = useStateStore((s) => s.terminals)
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
 
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
@@ -388,7 +388,7 @@ function BrowserUrlSheet({
   onClose,
   onShared,
 }: {
-  processesWithPorts: Process[]
+  processesWithPorts: Action[]
   onClose: () => void
   onShared: (session: BrowserSession) => void
 }) {

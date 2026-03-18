@@ -13,7 +13,7 @@ export function PinchTabPanel() {
     extractText, performAction, setActiveTab, startPinchTab,
   } = usePinchTabStore()
 
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
 
   const { agentInput, setAgentInput, sendingToAgent, sendToAgent, conversationHistory, clearHistory } = useBrowserAgent("desktop")

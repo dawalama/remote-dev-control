@@ -77,9 +77,8 @@ PUBLIC_PATHS = {
     "/kb",         # Knowledge base SPA route (auth via JS)
     "/v1",         # Legacy dashboard (auth via JS)
     "/debug",      # State machine debug page (auth via JS, WS requires token)
-    "/state",      # State endpoint for AI
-    "/health",     # Health check
-    "/status",     # Server status (for CLI)
+    "/health",     # Health check (minimal info, no secrets)
+    "/status",     # Server status (used by CLI from localhost)
     "/favicon.ico", # Browser favicon request
     "/docs",       # OpenAPI docs
     "/openapi.json",
@@ -106,11 +105,12 @@ OPTIONAL_AUTH_PATHS = {
     "/ws",         # WebSocket (auth via message)
     "/ws/state",   # State machine WebSocket (auth via query param)
     "/ws/logs",    # Server log streaming WebSocket
+    "/state",      # State endpoint (used by AI/MCP — returns full server state)
 }
 
 # WebSocket path prefixes that skip auth (can't send headers, auth via query param)
 OPTIONAL_AUTH_WS_PREFIXES = [
-    "/ws/process-logs/",  # Process log streaming WebSocket
+    "/ws/action-logs/",  # Action log streaming WebSocket
     "/ws/task-logs/",     # Task log streaming WebSocket
     "/stt/stream",        # Speech-to-text streaming
     "/terminals/",        # Terminal WebSocket I/O
@@ -159,10 +159,12 @@ ENDPOINT_PERMISSIONS: dict[tuple[str, str], Permission] = {
 
 def get_client_id(request: Request) -> str:
     """Get a unique identifier for the client."""
-    # Use token if available, otherwise IP
+    import hashlib
+    # Use token hash if available, otherwise IP
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
-        return f"token:{auth_header[7:20]}"  # First part of token
+        token_hash = hashlib.sha256(auth_header[7:].encode()).hexdigest()[:16]
+        return f"token:{token_hash}"
     
     # Fall back to IP
     forwarded = request.headers.get("X-Forwarded-For")

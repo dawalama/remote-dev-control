@@ -324,12 +324,12 @@ export function useOrchestrator(opts: {
         if (action.url) window.location.href = action.url
         break
 
-      case "start_process":
-        if (action.success) toast(`Started: ${action.process_id || action.process_name || "process"}`, "success")
+      case "start_action":
+        if (action.success) toast(`Started: ${action.process_id || action.process_name || "action"}`, "success")
         break
 
-      case "stop_process":
-        if (action.success) toast(`Stopped: ${action.process_id || action.process_name || "process"}`, "success")
+      case "stop_action":
+        if (action.success) toast(`Stopped: ${action.process_id || action.process_name || "action"}`, "success")
         break
 
       case "create_task":
@@ -382,7 +382,7 @@ export function useOrchestrator(opts: {
         break
 
       case "show_logs":
-      case "show_process_logs":
+      case "show_action_logs":
         toast(`Logs: ${action.process_name || action.process_id || "system"}`, "info")
         break
 
@@ -435,16 +435,16 @@ export function useOrchestrator(opts: {
         if (action.success) toast(`Terminal restarted: ${action.terminal_id || ""}`, "success")
         break
 
-      case "restart_process":
-        if (action.success) toast(`Restarted: ${action.process_id || "process"}`, "success")
+      case "restart_action":
+        if (action.success) toast(`Restarted: ${action.process_id || "action"}`, "success")
         break
 
-      case "stop_all_processes":
-        if (action.success) toast(`Stopped ${action.count || 0} processes`, "success")
+      case "stop_all_actions":
+        if (action.success) toast(`Stopped ${action.count || 0} actions`, "success")
         break
 
-      case "start_all_processes":
-        if (action.success) toast(`Started ${action.count || 0} processes`, "success")
+      case "start_all_actions":
+        if (action.success) toast(`Started ${action.count || 0} actions`, "success")
         break
 
       default:

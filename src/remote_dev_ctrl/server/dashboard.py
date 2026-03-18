@@ -1205,19 +1205,19 @@ ${context ? `Context: ${context}` : ''}`;
                     showNotification(`Switched to ${action.tab} tab`);
                     break;
                     
-                case 'start_process':
+                case 'start_action':
                     if (action.success) {
-                        showNotification(`Started process: ${action.process_id}`);
+                        showNotification(`Started action: ${action.process_id}`);
                         showTab('processes');
                         loadProcesses(true);
                     } else {
                         showNotification(`Failed to start: ${action.process_id}`, 'error');
                     }
                     break;
-                    
-                case 'stop_process':
+
+                case 'stop_action':
                     if (action.success) {
-                        showNotification(`Stopped process: ${action.process_id}`);
+                        showNotification(`Stopped action: ${action.process_id}`);
                         loadProcesses(true);
                     }
                     break;

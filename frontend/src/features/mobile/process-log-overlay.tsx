@@ -20,7 +20,7 @@ export function ProcessLogOverlay({
 
   useEffect(() => {
     const ws = new ManagedWebSocket(
-      `/ws/process-logs/${encodeURIComponent(processId)}`,
+      `/ws/action-logs/${encodeURIComponent(processId)}`,
       { reconnect: true, reconnectInterval: 3000 }
     )
 

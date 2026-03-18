@@ -12,7 +12,7 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
 
   // Subscribe to state-store for activity detection
   const terminals = useStateStore((s) => s.terminals)
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const tasks = useStateStore((s) => s.tasks)
   const agents = useStateStore((s) => s.agents)
 

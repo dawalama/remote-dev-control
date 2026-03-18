@@ -91,7 +91,7 @@ function ProcessItem({
   onRestart,
   onAttach,
 }: {
-  process: import("@/types").Process
+  process: import("@/types").Action
   isLoading?: boolean
   onStart: (force?: boolean) => void
   onStop: (force?: boolean) => void

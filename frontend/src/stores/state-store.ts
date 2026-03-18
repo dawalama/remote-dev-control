@@ -7,7 +7,7 @@ import { useProjectStore } from "@/stores/project-store"
 import { useTerminalStore } from "@/stores/terminal-store"
 import { useLogsStore } from "@/stores/logs-store"
 import { useUIStore } from "@/stores/ui-store"
-import type { Process, Task, Agent, TabId } from "@/types"
+import type { Action, Task, Agent, TabId } from "@/types"
 
 interface QueueStats {
   total: number
@@ -30,8 +30,7 @@ export interface Terminal {
 interface StateSnapshot {
   server_state: string
   tasks: Task[]
-  processes: Process[]
-  actions: Process[]
+  actions: Action[]
   agents: Agent[]
   sessions: unknown[]
   terminals: Terminal[]
@@ -44,8 +43,7 @@ interface StateSnapshot {
 interface StateStoreData {
   connected: boolean
   serverState: string
-  processes: Process[]
-  actions: Process[]
+  actions: Action[]
   tasks: Task[]
   agents: Agent[]
   terminals: Terminal[]
@@ -162,7 +160,7 @@ function executePhoneAction(action: Record<string, unknown>) {
       }
       break
     }
-    case "show_process_logs": {
+    case "show_action_logs": {
       useLogsStore.getState().openProcessLog(action.process_id as string, (action.process_name as string) || (action.process_id as string))
       break
     }
@@ -189,7 +187,6 @@ function executePhoneAction(action: Record<string, unknown>) {
 export const useStateStore = create<StateStoreData>((set) => ({
   connected: false,
   serverState: "unknown",
-  processes: [],
   actions: [],
   tasks: [],
   agents: [],
@@ -220,8 +217,7 @@ export const useStateStore = create<StateStoreData>((set) => ({
       const s = msg.data
       set({
         serverState: s.server_state,
-        processes: s.processes,
-        actions: s.actions || s.processes,
+        actions: s.actions || [],
         tasks: s.tasks,
         agents: s.agents,
         terminals: s.terminals,

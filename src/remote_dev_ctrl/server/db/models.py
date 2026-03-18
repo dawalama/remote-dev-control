@@ -19,6 +19,22 @@ class TaskStatus(str, Enum):
     BLOCKED = "blocked"
     AWAITING_REVIEW = "awaiting_review"  # Needs human approval
 
+    def can_transition_to(self, target: "TaskStatus") -> bool:
+        """Check if transitioning to the target status is valid."""
+        return target in _VALID_TASK_TRANSITIONS.get(self, set())
+
+
+# Valid state transitions for tasks
+_VALID_TASK_TRANSITIONS: dict["TaskStatus", set["TaskStatus"]] = {
+    TaskStatus.PENDING: {TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED, TaskStatus.AWAITING_REVIEW, TaskStatus.BLOCKED},
+    TaskStatus.IN_PROGRESS: {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.BLOCKED},
+    TaskStatus.BLOCKED: {TaskStatus.PENDING, TaskStatus.CANCELLED},
+    TaskStatus.AWAITING_REVIEW: {TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED},
+    TaskStatus.FAILED: {TaskStatus.PENDING},  # Allow retry
+    TaskStatus.COMPLETED: set(),  # Terminal
+    TaskStatus.CANCELLED: set(),  # Terminal
+}
+
 
 class TaskPriority(str, Enum):
     LOW = "low"

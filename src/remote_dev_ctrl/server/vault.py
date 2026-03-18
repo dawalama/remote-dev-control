@@ -1,15 +1,19 @@
 """Secrets management for RDC Command Center.
 
-Uses simple file-based encryption with age or falls back to base64 obfuscation.
+Uses simple file-based encryption with age. Falls back to base64 obfuscation
+with a loud warning if age is not installed.
 """
 
 import base64
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
 
 from .config import get_rdc_home
+
+logger = logging.getLogger(__name__)
 
 
 def get_secrets_path() -> Path:
@@ -53,6 +57,12 @@ class Vault:
         self._secrets: dict[str, str] = {}
         self._loaded = False
         self._use_age = _has_age()
+        if not self._use_age:
+            logger.warning(
+                "age encryption not available — secrets will be stored as base64 "
+                "(NOT encrypted). Install age for proper encryption: "
+                "https://github.com/FiloSottile/age"
+            )
     
     def _load(self) -> None:
         """Load secrets from file."""
@@ -128,7 +138,11 @@ class Vault:
             except Exception:
                 pass
         
-        # Fallback: base64 encode (obfuscation)
+        # Fallback: base64 encode (obfuscation, NOT encryption)
+        logger.warning(
+            "Saving secrets with base64 obfuscation (NOT encrypted). "
+            "Install age for proper encryption."
+        )
         encoded = base64.b64encode(data.encode()).decode()
         path.write_text(encoded)
         path.chmod(0o600)

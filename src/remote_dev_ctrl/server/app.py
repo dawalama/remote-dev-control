@@ -116,11 +116,11 @@ async def lifespan(app: FastAPI):
                     "status": state.status.value,
                     "error": state.error,
                 }
-                for client in connected_clients:
+                for client in list(connected_clients):
                     try:
                         asyncio.create_task(client.send_json(msg))
                     except Exception:
-                        pass
+                        connected_clients.discard(client)
         return handler
     
     process_manager.on("started", on_process_event("started"))
@@ -190,8 +190,8 @@ async def lifespan(app: FastAPI):
     async def broadcast_event(event: Event):
         if connected_clients:
             message = event.to_json()
-            dead_clients = set()
-            for client in connected_clients:
+            dead_clients: set[WebSocket] = set()
+            for client in list(connected_clients):
                 try:
                     await client.send_text(message)
                 except Exception:
@@ -499,27 +499,27 @@ async def handle_telegram_command(command: str, args: str, user_id: int) -> str:
             except Exception as e:
                 return f"Error reading logs: `{e}`"
         
-        elif command == "start_process":
+        elif command == "start_action":
             process_id = args.strip()
             if not process_id:
-                return "Usage: process_id required"
-            
+                return "Usage: action_id required"
+
             pm = get_process_manager()
             try:
                 pm.start(process_id)
-                return f"▶️ *Process Started*\n\n`{process_id}`"
+                return f"▶️ *Action Started*\n\n`{process_id}`"
             except Exception as e:
                 return f"❌ Failed to start: `{e}`"
-        
-        elif command == "stop_process":
+
+        elif command == "stop_action":
             process_id = args.strip()
             if not process_id:
-                return "Usage: process_id required"
-            
+                return "Usage: action_id required"
+
             pm = get_process_manager()
             try:
                 pm.stop(process_id)
-                return f"🛑 *Process Stopped*\n\n`{process_id}`"
+                return f"🛑 *Action Stopped*\n\n`{process_id}`"
             except Exception as e:
                 return f"❌ Failed to stop: `{e}`"
         
@@ -600,9 +600,9 @@ async def handle_telegram_command(command: str, args: str, user_id: int) -> str:
             if proc_match and "process" in text:
                 process_id = proc_match.group(1)
                 if "start" in text:
-                    return await handle_telegram_command("start_process", process_id, user_id)
+                    return await handle_telegram_command("start_action", process_id, user_id)
                 else:
-                    return await handle_telegram_command("stop_process", process_id, user_id)
+                    return await handle_telegram_command("stop_action", process_id, user_id)
             
             # Add task - "add task to project: description" or "add fix the bug to documaker"
             add_match = re.search(r'(?:add|create)\s+(?:task\s+)?(?:to\s+)?["\']?([a-zA-Z0-9_-]+)["\']?[:\s]+(.+)', text)
@@ -2157,7 +2157,7 @@ class ProcessRegisterRequest(BaseModel):
     kind: str = "service"
 
 
-@app.get("/processes")
+@app.get("/actions")
 async def list_processes(project: str | None = None):
     """List all managed processes."""
     processes = process_manager.list(project=project)
@@ -2178,7 +2178,7 @@ async def list_processes(project: str | None = None):
     ]
 
 
-@app.post("/processes/register")
+@app.post("/actions/register")
 async def register_process(req: ProcessRegisterRequest):
     """Register a new process configuration."""
     from .db.models import ActionKind
@@ -2201,7 +2201,7 @@ class SuggestActionRequest(BaseModel):
     description: str
 
 
-@app.post("/processes/suggest")
+@app.post("/actions/suggest")
 async def suggest_action(req: SuggestActionRequest):
     """Ask LLM to suggest an action based on a natural language description."""
     from .process_discovery import read_project_files
@@ -2264,7 +2264,7 @@ Rules:
     }
 
 
-@app.post("/processes/{process_id}/start")
+@app.post("/actions/{process_id}/start")
 async def start_process(process_id: str, force: bool = False):
     """Start a registered process.
 
@@ -2294,7 +2294,7 @@ async def start_process(process_id: str, force: bool = False):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/processes/{process_id}/stop")
+@app.post("/actions/{process_id}/stop")
 async def stop_process(process_id: str, force: bool = False):
     """Stop a running process."""
     try:
@@ -2311,7 +2311,7 @@ async def stop_process(process_id: str, force: bool = False):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/processes/{process_id}/restart")
+@app.post("/actions/{process_id}/restart")
 async def restart_process(process_id: str):
     """Restart a process."""
     try:
@@ -2360,7 +2360,7 @@ async def kill_port(port: int, force: bool = False):
     return result
 
 
-@app.post("/processes/{process_id}/attach")
+@app.post("/actions/{process_id}/attach")
 async def attach_to_process(process_id: str, port: int):
     """Attach to an existing process running on a port.
 
@@ -2407,7 +2407,7 @@ async def kill_pid(pid: int, force: bool = False):
         raise HTTPException(status_code=403, detail=f"Permission denied to kill PID: {pid}")
 
 
-@app.get("/processes/{process_id}/logs")
+@app.get("/actions/{process_id}/logs")
 async def get_process_logs(process_id: str, lines: int = 100):
     """Get logs for a process."""
     state = process_manager.get(process_id)
@@ -2418,7 +2418,7 @@ async def get_process_logs(process_id: str, lines: int = 100):
     return {"process_id": process_id, "logs": logs}
 
 
-@app.post("/processes/{process_id}/create-fix-task")
+@app.post("/actions/{process_id}/create-fix-task")
 async def create_fix_task_from_process(process_id: str):
     """Create a task to fix a failed process error."""
     from .db.models import TaskPriority as DBTaskPriority
@@ -2472,7 +2472,7 @@ Recent logs:
     }
 
 
-@app.post("/projects/{project}/detect-processes")
+@app.post("/projects/{project}/detect-actions")
 async def detect_project_processes(project: str, use_llm: bool = True, force_rediscover: bool = False):
     """Auto-detect and register dev processes for a project.
     
@@ -4999,10 +4999,10 @@ You help the user manage their development workflow by EXECUTING actions, not ju
 
 When the user wants to do something, include an ACTION block in your response. The backend will execute these:
 
-[ACTION:start_process:process_id]
-[ACTION:stop_process:process_id]  
+[ACTION:start_action:action_id]
+[ACTION:stop_action:action_id]
 [ACTION:create_task:title|description] or [ACTION:create_task:project:title|description]
-[ACTION:start_preview:process_id]
+[ACTION:start_preview:action_id]
 
 For UI-only actions (switching views, navigation), use UI_ACTION which the frontend handles:
 
@@ -5014,8 +5014,8 @@ For UI-only actions (switching views, navigation), use UI_ACTION which the front
 [UI_ACTION:open_task_modal]
 
 Examples:
-- "Start the frontend" -> [ACTION:start_process:mindshare-monitor-frontend] I'm starting the frontend now.
-- "Show me the processes" -> [UI_ACTION:show_tab:processes] Here are your processes.
+- "Start the frontend" -> [ACTION:start_action:mindshare-monitor-frontend] I'm starting the frontend now.
+- "Show me the actions" -> [UI_ACTION:show_tab:processes] Here are your actions.
 - "Switch to documaker project" -> [UI_ACTION:select_project:documaker] Switched to documaker.
 - "Create a task to fix login" -> [ACTION:create_task:Fix login bug|Investigate and fix the login issue] Created a task for the login fix.
 - "Add a task for documaker to add dark mode" -> [ACTION:create_task:documaker:Add dark mode|Implement dark mode toggle in settings] Created the task.
@@ -5360,17 +5360,17 @@ async def set_admin_setting(request: Request):
 async def _execute_chat_action(action_type: str, params: str) -> dict | None:
     """Execute an action from the chat AI."""
     try:
-        if action_type == "start_process":
+        if action_type == "start_action":
             from .processes import get_process_manager
             pm = get_process_manager()
             result = pm.start(params.strip())
-            return {"action": "start_process", "process_id": params, "success": result.get("success", False)}
-        
-        elif action_type == "stop_process":
+            return {"action": "start_action", "process_id": params, "success": result.get("success", False)}
+
+        elif action_type == "stop_action":
             from .processes import get_process_manager
             pm = get_process_manager()
             result = pm.stop(params.strip())
-            return {"action": "stop_process", "process_id": params, "success": result.get("success", False)}
+            return {"action": "stop_action", "process_id": params, "success": result.get("success", False)}
         
         elif action_type == "show_tab":
             # This is handled by the frontend
@@ -5521,7 +5521,7 @@ async def vnc_websocket_proxy(websocket: WebSocket, session_id: str):
             pass
 
 
-@app.get("/processes/{process_id}/vnc")
+@app.get("/actions/{process_id}/vnc")
 async def get_process_vnc(process_id: str):
     """Get VNC session for a specific process."""
     from .vnc import get_vnc_manager
@@ -6221,11 +6221,18 @@ async def logs_websocket(websocket: WebSocket):
         logging.error(f"Log streaming error: {e}")
 
 
-@app.websocket("/ws/process-logs/{process_id}")
+@app.websocket("/ws/action-logs/{process_id}")
 async def process_logs_websocket(websocket: WebSocket, process_id: str):
-    """WebSocket endpoint for streaming process logs in real-time."""
+    """WebSocket endpoint for streaming action logs in real-time."""
     import aiofiles
-    
+
+    # Validate token from query params
+    token = websocket.query_params.get("token", "")
+    if auth_manager:
+        if not token or not auth_manager.validate_token(token):
+            await websocket.close(code=4001, reason="Token required")
+            return
+
     await websocket.accept()
     
     state = process_manager.get(process_id)
@@ -6299,6 +6306,13 @@ async def task_logs_websocket(websocket: WebSocket, task_id: str):
     (gwd/web providers — subscribe to step events via stream manager).
     """
     import aiofiles
+
+    # Validate token from query params
+    token = websocket.query_params.get("token", "")
+    if auth_manager:
+        if not token or not auth_manager.validate_token(token):
+            await websocket.close(code=4001, reason="Token required")
+            return
 
     await websocket.accept()
 
@@ -7434,7 +7448,7 @@ async def update_project_metadata(name: str, req: UpdateProjectRequest):
     }
 
 
-@app.get("/projects/{name}/processes")
+@app.get("/projects/{name}/actions")
 async def get_project_processes(name: str):
     """Get process configs for a project."""
     from .db.repositories import get_process_config_repo
@@ -7468,7 +7482,7 @@ class ProcessConfigItem(BaseModel):
     kind: str = "service"
 
 
-@app.put("/projects/{name}/processes")
+@app.put("/projects/{name}/actions")
 async def save_project_processes(name: str, processes: list[ProcessConfigItem]):
     """Save manual process overrides for a project."""
     from .db.repositories import get_process_config_repo

@@ -4,7 +4,7 @@ import { useStateStore } from "@/stores/state-store"
 import { useUIStore } from "@/stores/ui-store"
 import { GET } from "@/lib/api"
 import { CollectionsManagerModal } from "@/features/modals/collections-manager"
-import { CollectionPicker } from "@/components/collection-picker"
+import { CollectionPicker, DEFAULT_COLLECTION_ID } from "@/components/collection-picker"
 
 export function ProjectBar() {
   const { projects, collections, currentProject, currentCollection, selectProject, selectCollection, scaffoldProject, loadProjects, activeOnly, toggleActiveFilter } =
@@ -15,7 +15,7 @@ export function ProjectBar() {
 
   // Subscribe to state-store fields that affect activity detection
   const terminals = useStateStore((s) => s.terminals)
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const tasks = useStateStore((s) => s.tasks)
   const agents = useStateStore((s) => s.agents)
 
@@ -128,7 +128,7 @@ export function CommandPalette() {
 
   // Subscribe to state-store for activity detection
   const terminals = useStateStore((s) => s.terminals)
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const tasks = useStateStore((s) => s.tasks)
   const agents = useStateStore((s) => s.agents)
 
@@ -285,7 +285,7 @@ function AddProjectModal({
   const [tab, setTab] = useState<"create" | "connect">("create")
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
-  const [collectionId, setCollectionId] = useState(currentCollection !== "all" ? currentCollection : "general")
+  const [collectionId, setCollectionId] = useState(currentCollection !== "all" ? currentCollection : DEFAULT_COLLECTION_ID)
   const [gitUrl, setGitUrl] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")

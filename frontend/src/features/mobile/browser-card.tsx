@@ -23,7 +23,7 @@ export function BrowserCard({
   onPlayRecording: (recordingId: string) => void
 }) {
   const toast = useUIStore((s) => s.toast)
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
   const startFromProcess = useBrowserStore((s) => s.startFromProcess)
   const [sessions, setSessions] = useState<BrowserSession[]>([])

@@ -1,6 +1,7 @@
 """Database connection management."""
 
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Optional
 from contextlib import contextmanager
@@ -12,12 +13,17 @@ _DB_NAME_ALIASES = {"main": "rdc", "adt": "rdc"}
 
 
 class DatabaseManager:
-    """Manages SQLite database connections for rdc.db, tasks.db, logs.db."""
+    """Manages SQLite database connections for rdc.db, tasks.db, logs.db.
+
+    All database operations are serialized through per-database locks to prevent
+    concurrent access issues with SQLite (which is not thread-safe by default).
+    """
 
     def __init__(self, db_dir: Optional[Path] = None):
         self.db_dir = db_dir or get_rdc_home() / "data"
         self.db_dir.mkdir(parents=True, exist_ok=True)
         self._connections: dict[str, sqlite3.Connection] = {}
+        self._locks: dict[str, threading.Lock] = {}
 
     def get_connection(self, db_name: str) -> sqlite3.Connection:
         """Get or create a connection to a database."""
@@ -36,19 +42,29 @@ class DatabaseManager:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
             self._connections[db_name] = conn
+            self._locks[db_name] = threading.Lock()
         return self._connections[db_name]
+
+    def get_lock(self, db_name: str) -> threading.Lock:
+        """Get the lock for a database (for external callers needing serialization)."""
+        db_name = _DB_NAME_ALIASES.get(db_name, db_name)
+        if db_name not in self._locks:
+            self._locks[db_name] = threading.Lock()
+        return self._locks[db_name]
 
     @contextmanager
     def transaction(self, db_name: str):
-        """Context manager for database transactions."""
+        """Context manager for database transactions (thread-safe)."""
         db_name = _DB_NAME_ALIASES.get(db_name, db_name)
         conn = self.get_connection(db_name)
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        lock = self.get_lock(db_name)
+        with lock:
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def close_all(self):
         """Close all database connections."""

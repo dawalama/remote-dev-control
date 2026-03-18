@@ -5,7 +5,7 @@ import type { Project, Collection } from "@/types"
 
 /** Returns sorted list of project names that have running terminals, processes, in-progress tasks, or active agents */
 export function getActiveProjectNames(): string[] {
-  const { terminals, processes, tasks, agents } = useStateStore.getState()
+  const { terminals, actions: processes, tasks, agents } = useStateStore.getState()
   const { projects } = useProjectStore.getState()
   const projectNames = new Set(projects.map((p) => p.name))
   const active = new Set<string>()

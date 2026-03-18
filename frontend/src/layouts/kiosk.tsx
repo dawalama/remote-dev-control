@@ -29,7 +29,7 @@ import { GlobalTextInput } from "@/components/global-text-input"
 import { useBrowserStore } from "@/stores/browser-store"
 import { useVoice } from "@/hooks/use-voice"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
-import type { BrowserSession, Process, TabId } from "@/types"
+import type { BrowserSession, Action, TabId } from "@/types"
 
 export function KioskLayout() {
   const loadProjects = useProjectStore((s) => s.loadProjects)
@@ -42,7 +42,7 @@ export function KioskLayout() {
   const connected = useStateStore((s) => s.connected)
   const serverState = useStateStore((s) => s.serverState)
   const terminals = useStateStore((s) => s.terminals)
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
   const openProcessLog = useLogsStore((s) => s.openProcessLog)
 
@@ -398,6 +398,7 @@ export function KioskLayout() {
         <ProjectSettingsModal
           projectName={currentProject}
           onClose={() => setProjectSettingsOpen(false)}
+          fullPage
         />
       )}
       {systemSettingsOpen && (
@@ -777,7 +778,7 @@ function BrowserUrlSheet({
   onClose,
   onShared,
 }: {
-  processesWithPorts: Process[]
+  processesWithPorts: Action[]
   onClose: () => void
   onShared: (session: BrowserSession) => void
 }) {

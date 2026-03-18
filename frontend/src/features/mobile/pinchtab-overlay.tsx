@@ -18,7 +18,7 @@ export function PinchTabOverlay({
     startPinchTab,
   } = usePinchTabStore()
 
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
   const toast = useUIStore((s) => s.toast)
 

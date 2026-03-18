@@ -27,7 +27,7 @@ export interface Collection {
 
 export type ActionKind = "service" | "command"
 
-export interface Process {
+export interface Action {
   id: string
   name: string
   project: string
@@ -40,6 +40,9 @@ export interface Process {
   preview_url?: string
   error?: string
 }
+
+/** @deprecated Use Action instead */
+export type Process = Action
 
 export interface Task {
   id: string

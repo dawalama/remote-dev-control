@@ -101,12 +101,12 @@ ORCHESTRATOR_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "start_process",
+            "name": "start_action",
             "description": "Start a service action (dev server, database, etc.)",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "process_id": {"type": "string", "description": "Process ID to start"}
+                    "process_id": {"type": "string", "description": "Action ID to start"}
                 },
                 "required": ["process_id"],
             },
@@ -116,7 +116,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "execute_action",
-            "description": "Execute an action — works for both services (start) and one-shot commands (run). Prefer this over start_process for commands.",
+            "description": "Execute an action — works for both services (start) and one-shot commands (run). Prefer this over start_action for commands.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -129,12 +129,12 @@ ORCHESTRATOR_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "stop_process",
+            "name": "stop_action",
             "description": "Stop a running action/service",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "process_id": {"type": "string", "description": "Process ID to stop"}
+                    "process_id": {"type": "string", "description": "Action ID to stop"}
                 },
                 "required": ["process_id"],
             },
@@ -623,12 +623,12 @@ ORCHESTRATOR_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "restart_process",
+            "name": "restart_action",
             "description": "Restart a running service action (stop then start).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "process_id": {"type": "string", "description": "Process ID to restart"},
+                    "process_id": {"type": "string", "description": "Action ID to restart"},
                 },
                 "required": ["process_id"],
             },
@@ -637,12 +637,12 @@ ORCHESTRATOR_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "stop_all_processes",
-            "description": "Stop all running processes, optionally filtered to a project.",
+            "name": "stop_all_actions",
+            "description": "Stop all running actions, optionally filtered to a project.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "description": "Only stop processes for this project (optional — omit to stop all)"},
+                    "project": {"type": "string", "description": "Only stop actions for this project (optional — omit to stop all)"},
                 },
             },
         },
@@ -650,12 +650,12 @@ ORCHESTRATOR_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "start_all_processes",
-            "description": "Start all stopped processes, optionally filtered to a project.",
+            "name": "start_all_actions",
+            "description": "Start all stopped actions, optionally filtered to a project.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "description": "Only start processes for this project (optional — omit to start all)"},
+                    "project": {"type": "string", "description": "Only start actions for this project (optional — omit to start all)"},
                 },
             },
         },
@@ -665,9 +665,9 @@ ORCHESTRATOR_TOOLS = [
 # Trimmed tool set for local models — fewer tools = less context = faster responses
 _LOCAL_TOOL_NAMES = {
     "navigate", "select_project", "show_tab", "open_terminal",
-    "start_process", "stop_process", "execute_action", "create_task", "create_project",
+    "start_action", "stop_action", "execute_action", "create_task", "create_project",
     "spawn_agent", "present_options", "select_collection",
-    "set_layout", "set_theme", "restart_server", "restart_process",
+    "set_layout", "set_theme", "restart_server", "restart_action",
     "kill_terminal", "restart_terminal", "toggle_sidebar", "toggle_chat",
 }
 ORCHESTRATOR_TOOLS_LOCAL = [t for t in ORCHESTRATOR_TOOLS if t["function"]["name"] in _LOCAL_TOOL_NAMES]
@@ -765,8 +765,8 @@ def fuzzy_match(query: str, candidates: list[str]) -> Optional[str]:
     return None
 
 
-def fuzzy_match_process(query: str, processes: list[dict]) -> Optional[str]:
-    """Fuzzy match a process query against available processes."""
+def fuzzy_match_action(query: str, processes: list[dict]) -> Optional[str]:
+    """Fuzzy match an action query against available actions."""
     ids = [p.get("id", "") for p in processes if p.get("id")]
     names = [p.get("name", "") for p in processes if p.get("name")]
 
@@ -1390,7 +1390,7 @@ def build_system_prompt(
             "",
             "When the user asks a QUESTION (how many tasks, what project am I on, what's running, etc.), "
             "answer it directly from the context data below. You have full visibility into projects, "
-            "processes, tasks, terminals, agents, and captured contexts — read the data and answer verbally.",
+            "actions, tasks, terminals, agents, and captured contexts — read the data and answer verbally.",
             "",
             "Use `enable_type_mode` when user says 'type mode', 'start typing', or 'dictation mode'.",
             "This sends all subsequent speech as raw text to the terminal. User says 'exit type mode' or 'chat mode' to return.",
@@ -1406,9 +1406,9 @@ def build_system_prompt(
             "IMPORTANT: User is on a PHONE CALL. You must respond CONVERSATIONALLY with spoken answers.",
             "DO NOT use tool calls to show tabs, navigate, or control the UI — the user cannot see a screen.",
             "Instead, READ the context data below and TELL the user the answer verbally.",
-            "You have full visibility into: projects, processes, tasks, terminals, agents, and captured browser contexts.",
+            "You have full visibility into: projects, actions, tasks, terminals, agents, and captured browser contexts.",
             "When asked about any of these, count them, list them, describe their status — answer from the data.",
-            "Only use tool calls for server-side actions (start_process, stop_process, create_task, spawn_agent, end_phone_call, pair_with_client).",
+            "Only use tool calls for server-side actions (start_action, stop_action, create_task, spawn_agent, end_phone_call, pair_with_client).",
             "Keep responses concise (2-3 sentences max) since this is a phone conversation.",
             "If the user wants UI actions (open terminal, show tabs, etc.) suggest pairing with a dashboard client first.",
             pairing_hint,
@@ -1760,10 +1760,10 @@ def _auto_confirm(actions: list[ToolCall]) -> str:
                 parts.append(f"Switched to {a.params.get('project', 'the project')}")
             case "select_collection":
                 parts.append(f"Switched to the {a.params.get('collection', '')} collection")
-            case "start_process":
-                parts.append(f"Starting {a.params.get('process_id', 'the process')}")
-            case "stop_process":
-                parts.append(f"Stopping {a.params.get('process_id', 'the process')}")
+            case "start_action":
+                parts.append(f"Starting {a.params.get('process_id', 'the action')}")
+            case "stop_action":
+                parts.append(f"Stopping {a.params.get('process_id', 'the action')}")
             case "execute_action":
                 parts.append(f"Executing {a.params.get('action_id', 'the action')}")
             case "create_task":
@@ -1945,7 +1945,7 @@ class ActionExecutor:
                     process_query = params.get("process_id") or params.get("process")
                     if process_query and ctx.processes:
                         # Strategy 1: fuzzy match against process IDs and names
-                        proc_id = fuzzy_match_process(process_query, ctx.processes)
+                        proc_id = fuzzy_match_action(process_query, ctx.processes)
 
                         # Strategy 2: if query looks like a project name, find first process for that project
                         if not proc_id:
@@ -1966,7 +1966,7 @@ class ActionExecutor:
                             proc = next((p for p in ctx.processes if p["id"] == proc_id), None)
                             if proc:
                                 return {
-                                    "action": "show_process_logs",
+                                    "action": "show_action_logs",
                                     "process_id": proc["id"],
                                     "process_name": proc.get("name", proc["id"]),
                                     "type": "client",
@@ -2002,28 +2002,28 @@ class ActionExecutor:
                     return {"action": "focus_input", "target": target, "type": "client"}
 
                 case "open_preview":
-                    process_id = fuzzy_match_process(params.get("process_id", ""), ctx.processes) or params.get("process_id", "")
+                    process_id = fuzzy_match_action(params.get("process_id", ""), ctx.processes) or params.get("process_id", "")
                     return {"action": "open_preview", "process_id": process_id, "type": "client"}
 
                 # --- Server-side actions (executed here) ---
-                case "start_process":
-                    process_id = fuzzy_match_process(params.get("process_id", ""), ctx.processes) or params.get("process_id", "")
+                case "start_action":
+                    process_id = fuzzy_match_action(params.get("process_id", ""), ctx.processes) or params.get("process_id", "")
                     from .processes import get_process_manager
                     pm = get_process_manager()
                     result = pm.start(process_id)
                     success = result.status.value == "running" if hasattr(result, "status") else True
-                    return {"action": "start_process", "process_id": process_id, "success": success, "type": "server"}
+                    return {"action": "start_action", "process_id": process_id, "success": success, "type": "server"}
 
-                case "stop_process":
-                    process_id = fuzzy_match_process(params.get("process_id", ""), ctx.processes) or params.get("process_id", "")
+                case "stop_action":
+                    process_id = fuzzy_match_action(params.get("process_id", ""), ctx.processes) or params.get("process_id", "")
                     from .processes import get_process_manager
                     pm = get_process_manager()
                     result = pm.stop(process_id)
                     success = result.status.value == "stopped" if hasattr(result, "status") else True
-                    return {"action": "stop_process", "process_id": process_id, "success": success, "type": "server"}
+                    return {"action": "stop_action", "process_id": process_id, "success": success, "type": "server"}
 
                 case "execute_action":
-                    action_id = fuzzy_match_process(params.get("action_id", ""), ctx.processes) or params.get("action_id", "")
+                    action_id = fuzzy_match_action(params.get("action_id", ""), ctx.processes) or params.get("action_id", "")
                     from .actions import get_action_manager
                     am = get_action_manager()
                     result = am.execute(action_id)
@@ -2248,18 +2248,18 @@ class ActionExecutor:
                 case "toggle_chat":
                     return {"action": "toggle_chat", "type": "client"}
 
-                case "restart_process":
-                    process_id = fuzzy_match_process(params.get("process_id", ""), ctx.processes) or params.get("process_id", "")
+                case "restart_action":
+                    process_id = fuzzy_match_action(params.get("process_id", ""), ctx.processes) or params.get("process_id", "")
                     from .processes import get_process_manager
                     pm = get_process_manager()
                     try:
                         result = pm.restart(process_id)
                         success = result.status.value == "running" if hasattr(result, "status") else True
-                        return {"action": "restart_process", "process_id": process_id, "success": success, "type": "server"}
+                        return {"action": "restart_action", "process_id": process_id, "success": success, "type": "server"}
                     except Exception as e:
-                        return {"action": "restart_process", "error": str(e), "success": False, "type": "server"}
+                        return {"action": "restart_action", "error": str(e), "success": False, "type": "server"}
 
-                case "stop_all_processes":
+                case "stop_all_actions":
                     project = params.get("project")
                     if project:
                         project = fuzzy_match(project, ctx.projects) or project
@@ -2276,9 +2276,9 @@ class ActionExecutor:
                             stopped.append(p["id"])
                         except Exception:
                             pass
-                    return {"action": "stop_all_processes", "stopped": stopped, "count": len(stopped), "success": True, "type": "server"}
+                    return {"action": "stop_all_actions", "stopped": stopped, "count": len(stopped), "success": True, "type": "server"}
 
-                case "start_all_processes":
+                case "start_all_actions":
                     project = params.get("project")
                     if project:
                         project = fuzzy_match(project, ctx.projects) or project
@@ -2295,7 +2295,7 @@ class ActionExecutor:
                             started.append(p["id"])
                         except Exception:
                             pass
-                    return {"action": "start_all_processes", "started": started, "count": len(started), "success": True, "type": "server"}
+                    return {"action": "start_all_actions", "started": started, "count": len(started), "success": True, "type": "server"}
 
                 case "disable_type_mode":
                     from .channels.phone import get_phone_channel

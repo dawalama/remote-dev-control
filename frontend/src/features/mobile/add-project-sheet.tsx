@@ -2,7 +2,7 @@ import { useState, useEffect } from "react"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { GET } from "@/lib/api"
-import { CollectionPicker } from "@/components/collection-picker"
+import { CollectionPicker, DEFAULT_COLLECTION_ID } from "@/components/collection-picker"
 import { Sheet } from "./sheet"
 
 interface DirEntry {
@@ -27,7 +27,7 @@ export function AddProjectSheet({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<"create" | "connect">("create")
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
-  const [collectionId, setCollectionId] = useState(currentCollection !== "all" ? currentCollection : "general")
+  const [collectionId, setCollectionId] = useState(currentCollection !== "all" ? currentCollection : DEFAULT_COLLECTION_ID)
   const [connectPath, setConnectPath] = useState("")
   const [loading, setLoading] = useState(false)
 

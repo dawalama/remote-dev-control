@@ -218,14 +218,14 @@ class TelegramBot:
                 result = await self.on_command("cancel_task", param, user_id)
                 await query.edit_message_text(result, parse_mode="Markdown")
         
-        elif action == "start_process":
+        elif action == "start_action":
             if self.on_command:
-                result = await self.on_command("start_process", param, user_id)
+                result = await self.on_command("start_action", param, user_id)
                 await query.edit_message_text(result, parse_mode="Markdown")
-        
-        elif action == "stop_process":
+
+        elif action == "stop_action":
             if self.on_command:
-                result = await self.on_command("stop_process", param, user_id)
+                result = await self.on_command("stop_action", param, user_id)
                 await query.edit_message_text(result, parse_mode="Markdown")
         
         elif action == "refresh_status":
@@ -266,11 +266,11 @@ class TelegramBot:
                 buttons = []
                 for proc_id, is_running in process_ids[:6]:
                     if is_running:
-                        buttons.append([(f"🛑 Stop {proc_id}", f"stop_process:{proc_id}")])
+                        buttons.append([(f"🛑 Stop {proc_id}", f"stop_action:{proc_id}")])
                     else:
-                        buttons.append([(f"▶️ Start {proc_id}", f"start_process:{proc_id}")])
+                        buttons.append([(f"▶️ Start {proc_id}", f"start_action:{proc_id}")])
                 buttons.append([("⬅️ Back", "refresh_status")])
-                
+
                 keyboard = self._make_keyboard(buttons)
                 await query.edit_message_text(result, parse_mode="Markdown", reply_markup=keyboard)
         
@@ -431,9 +431,9 @@ class TelegramBot:
                 buttons = []
                 for proc_id, is_running in process_ids[:6]:  # Limit to 6
                     if is_running:
-                        buttons.append([(f"🛑 Stop {proc_id}", f"stop_process:{proc_id}")])
+                        buttons.append([(f"🛑 Stop {proc_id}", f"stop_action:{proc_id}")])
                     else:
-                        buttons.append([(f"▶️ Start {proc_id}", f"start_process:{proc_id}")])
+                        buttons.append([(f"▶️ Start {proc_id}", f"start_action:{proc_id}")])
                 
                 keyboard = self._make_keyboard(buttons)
                 await update.message.reply_text(result, parse_mode="Markdown", reply_markup=keyboard)

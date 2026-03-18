@@ -36,7 +36,7 @@ export function UnifiedBrowserPanel() {
   const ptLoadStatus = usePinchTabStore((s) => s.loadStatus)
   const ptCloseTab = usePinchTabStore((s) => s.closeTab)
 
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
   const toast = useUIStore((s) => s.toast)
 
@@ -367,7 +367,7 @@ export function UnifiedBrowserFullscreen({
   const ptFindElements = usePinchTabStore((s) => s.findElements)
   const ptPerformAction = usePinchTabStore((s) => s.performAction)
 
-  const processes = useStateStore((s) => s.processes)
+  const processes = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
   const toast = useUIStore((s) => s.toast)
   const toggleAgentPanel = useUIStore((s) => s.toggleAgentPanel)

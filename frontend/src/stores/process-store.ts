@@ -1,11 +1,11 @@
 import { create } from "zustand"
 import { GET, POST } from "@/lib/api"
-import type { Process } from "@/types"
+import type { Action } from "@/types"
 
 type ToastFn = (msg: string, type?: "success" | "error" | "warning" | "info") => void
 
 interface ProcessState {
-  processes: Process[]
+  processes: Action[]
   loading: boolean
   actionInProgress: string | null
 
@@ -33,7 +33,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
   loadProcesses: async () => {
     set({ loading: true })
     try {
-      const data = await GET<Process[]>("/processes")
+      const data = await GET<Action[]>("/actions")
       set({ processes: data })
     } finally {
       set({ loading: false })
@@ -47,7 +47,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     set({ actionInProgress: id })
     try {
       const query = options?.force ? "?force=true" : ""
-      await POST(`/processes/${encodeURIComponent(id)}/start${query}`)
+      await POST(`/actions/${encodeURIComponent(id)}/start${query}`)
       options?.toast?.("Process started", "success")
       await get().loadProcesses()
       return true
@@ -74,7 +74,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     set({ actionInProgress: id })
     try {
       const query = options?.force ? "?force=true" : ""
-      await POST(`/processes/${encodeURIComponent(id)}/stop${query}`)
+      await POST(`/actions/${encodeURIComponent(id)}/stop${query}`)
       options?.toast?.("Process stopped", "success")
       await get().loadProcesses()
       return true
@@ -93,7 +93,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
 
     set({ actionInProgress: id })
     try {
-      await POST(`/processes/${encodeURIComponent(id)}/restart`)
+      await POST(`/actions/${encodeURIComponent(id)}/restart`)
       options?.toast?.("Process restarted", "success")
       await get().loadProcesses()
       return true
@@ -112,7 +112,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
 
     set({ actionInProgress: id })
     try {
-      await POST(`/processes/${encodeURIComponent(id)}/attach?port=${port}`)
+      await POST(`/actions/${encodeURIComponent(id)}/attach?port=${port}`)
       options?.toast?.("Attached to running process", "success")
       await get().loadProcesses()
       return true

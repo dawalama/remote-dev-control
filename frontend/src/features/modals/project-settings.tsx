@@ -57,7 +57,7 @@ export function ProjectSettingsModal({
     setLoading(true)
     Promise.all([
       GET<ProjectDetail>(`/projects/${encodeURIComponent(projectName)}`),
-      GET<ProcessDef[]>(`/projects/${encodeURIComponent(projectName)}/processes`).catch(() => []),
+      GET<ProcessDef[]>(`/projects/${encodeURIComponent(projectName)}/actions`).catch(() => []),
     ]).then(([proj, procs]) => {
       setProject(proj)
       setProcesses(procs || [])
@@ -403,8 +403,8 @@ function ProcessesSection({
     }
     setSaving(true)
     try {
-      await PUT(`/projects/${encodeURIComponent(currentName)}/processes`, local)
-      const updated = await GET<ProcessDef[]>(`/projects/${encodeURIComponent(currentName)}/processes`).catch(() => local)
+      await PUT(`/projects/${encodeURIComponent(currentName)}/actions`, local)
+      const updated = await GET<ProcessDef[]>(`/projects/${encodeURIComponent(currentName)}/actions`).catch(() => local)
       setLocal(updated)
       onUpdate(updated)
       toast("Actions saved", "success")
@@ -417,11 +417,11 @@ function ProcessesSection({
   const rediscover = async () => {
     setRediscovering(true)
     try {
-      await POST(`/projects/${encodeURIComponent(currentName)}/detect-processes?force_rediscover=true`)
-      const updated = await GET<ProcessDef[]>(`/projects/${encodeURIComponent(currentName)}/processes`).catch(() => [])
+      await POST(`/projects/${encodeURIComponent(currentName)}/detect-actions?force_rediscover=true`)
+      const updated = await GET<ProcessDef[]>(`/projects/${encodeURIComponent(currentName)}/actions`).catch(() => [])
       setLocal(updated)
       onUpdate(updated)
-      toast("Processes re-discovered", "success")
+      toast("Actions re-discovered", "success")
     } catch {
       toast("Discovery failed", "error")
     }
