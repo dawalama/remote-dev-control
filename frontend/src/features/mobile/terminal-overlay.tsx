@@ -149,7 +149,7 @@ export function TerminalOverlay({
         className="flex-1 min-h-0"
         onClick={activateTextInput}
       >
-        <TerminalView sessionId={sessionId} project="" fontSize={layout === "kiosk" ? 18 : 13} onSendReady={handleSendReady} onRedrawReady={handleRedrawReady} />
+        <TerminalView sessionId={sessionId} project="" fontSize={layout === "kiosk" ? 18 : 11} onSendReady={handleSendReady} onRedrawReady={handleRedrawReady} />
       </div>
 
       {/* Virtual key bar */}

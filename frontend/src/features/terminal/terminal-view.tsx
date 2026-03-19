@@ -228,7 +228,11 @@ export function TerminalView({
     term.loadAddon(new WebLinksAddon())
 
     term.open(containerRef.current)
-    fitAddon.fit()
+    // Defer first fit to next frame so the browser has fully computed
+    // the container layout (critical on mobile where viewport can shift).
+    requestAnimationFrame(() => {
+      try { fitAddon.fit() } catch {}
+    })
 
     termRef.current = term
     fitRef.current = fitAddon
@@ -322,7 +326,7 @@ export function TerminalView({
     <div className={`w-full h-full min-h-0 relative ${className}`}>
       <div
         ref={containerRef}
-        className="w-full h-full"
+        className="w-full h-full overflow-hidden"
         style={{ backgroundColor: XTERM_THEME.background }}
       />
       {/* Scroll controls — stopPropagation prevents parent onClick (e.g. text input activation) */}
