@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { ManagedWebSocket } from "@/lib/ws"
+import { stripAnsi } from "@/lib/utils"
 
 export function ProcessLogOverlay({
   processId,
@@ -71,7 +72,7 @@ export function ProcessLogOverlay({
         ref={contentRef}
         className="flex-1 overflow-auto p-3 font-mono text-xs text-gray-300 whitespace-pre-wrap min-h-0"
       >
-        {content || "Waiting for logs..."}
+        {stripAnsi(content) || "Waiting for logs..."}
       </pre>
     </div>
   )

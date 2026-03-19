@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react"
 import { GET } from "@/lib/api"
 import { ManagedWebSocket } from "@/lib/ws"
+import { stripAnsi } from "@/lib/utils"
 import { useStateStore } from "@/stores/state-store"
 
 export function TaskOutputOverlay({
@@ -118,7 +119,7 @@ export function TaskOutputOverlay({
         ref={contentRef}
         className="flex-1 overflow-auto p-3 font-mono text-xs text-gray-300 whitespace-pre-wrap min-h-0"
       >
-        {lines.join("\n")}
+        {stripAnsi(lines.join("\n"))}
       </pre>
     </div>
   )

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react"
+import { stripAnsi } from "@/lib/utils"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useTerminalStore } from "@/stores/terminal-store"
@@ -514,14 +515,6 @@ function AgentLauncherButton({
 }
 
 // --- Log content viewer ---
-
-// Strip ANSI escape codes (colors, cursor movement, etc.)
-// eslint-disable-next-line no-control-regex
-const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\r/g
-
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_RE, "")
-}
 
 function LogContent({ pane }: { pane: { id: string; content: string; paused: boolean } }) {
   const contentRef = useRef<HTMLPreElement>(null)
