@@ -59,6 +59,9 @@ export function TerminalView({
   })
   const intentionalCloseRef = useRef(false)
   const isAtBottomRef = useRef(true)
+  const pendingFitRef = useRef<number | null>(null)
+  const onSendReadyRef = useRef(onSendReady)
+  onSendReadyRef.current = onSendReady
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [hasNewOutput, setHasNewOutput] = useState(false)
 
@@ -148,8 +151,8 @@ export function TerminalView({
         }
       }, 300)
 
-      // Expose send function to parent
-      onSendReady?.((data: string) => {
+      // Expose send function to parent (use ref to avoid stale closure)
+      onSendReadyRef.current?.((data: string) => {
         if (ws.readyState === WebSocket.OPEN) ws.send(data)
       })
     }
@@ -248,18 +251,27 @@ export function TerminalView({
       }
     })
 
-    // ResizeObserver
-    const observer = new ResizeObserver(() => {
-      try {
-        fitAddon.fit()
-        const ws = wsRef.current
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }))
+    // ResizeObserver — debounce via rAF to avoid firing with stale/zero
+    // dimensions during layout transitions (e.g. embedded → fullscreen).
+    const debouncedFit = () => {
+      if (pendingFitRef.current) cancelAnimationFrame(pendingFitRef.current)
+      pendingFitRef.current = requestAnimationFrame(() => {
+        pendingFitRef.current = null
+        try {
+          fitAddon.fit()
+          // Guard: don't send zero dimensions to the PTY
+          if (term.cols > 0 && term.rows > 0) {
+            const ws = wsRef.current
+            if (ws?.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }))
+            }
+          }
+        } catch {
+          // fit() can throw if element is not visible
         }
-      } catch {
-        // fit() can throw if element is not visible
-      }
-    })
+      })
+    }
+    const observer = new ResizeObserver(debouncedFit)
     observer.observe(containerRef.current)
 
     // Touch scroll — xterm-screen captures touch events, preventing native scroll
@@ -309,6 +321,7 @@ export function TerminalView({
     return () => {
       intentionalCloseRef.current = true
       if (reconnectRef.current.timer) clearTimeout(reconnectRef.current.timer)
+      if (pendingFitRef.current) cancelAnimationFrame(pendingFitRef.current)
       wsRef.current?.close()
       observer.disconnect()
       if (screenEl) {

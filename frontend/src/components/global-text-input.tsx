@@ -187,17 +187,9 @@ export function GlobalTextInput() {
 
   const send = () => {
     if (!text) return
-    voice.stop()
     callback(text)
     setText("")
-    // Reset textarea height after clearing
-    setTimeout(() => {
-      const el = inputRef.current
-      if (el) {
-        el.style.height = "auto"
-        el.style.height = el.scrollHeight + "px"
-      }
-    }, 0)
+    fadeClose()
   }
 
   const clear = () => {
