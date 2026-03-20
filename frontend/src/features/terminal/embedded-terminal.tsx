@@ -6,6 +6,7 @@ import { useTerminalStore } from "@/stores/terminal-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useLogsStore } from "@/stores/logs-store"
 import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
+import { useMountEffect } from "@/hooks/use-mount-effect"
 import { TerminalView, TerminalToolbar } from "./terminal-view"
 
 const VIRTUAL_KEYS = [
@@ -82,9 +83,9 @@ export function EmbeddedTerminal({
   // Active tab: either a terminal id or a log pane id
   const [activeTab, setActiveTab] = useState<string | null>(null)
 
-  useEffect(() => {
+  useMountEffect(() => {
     loadPresets()
-  }, [loadPresets])
+  })
 
   useEffect(() => {
     if (logsOpen && activePaneId) {
@@ -99,12 +100,10 @@ export function EmbeddedTerminal({
     projectTerminals[0]?.id ||
     null
 
-  // Keep activeTerminalId in sync
-  useEffect(() => {
-    if (resolvedTerminalId && resolvedTerminalId !== activeTerminalId) {
-      setActiveTerminalId(resolvedTerminalId)
-    }
-  }, [resolvedTerminalId, activeTerminalId, setActiveTerminalId])
+  // Keep activeTerminalId in sync (derived — update store inline)
+  if (resolvedTerminalId && resolvedTerminalId !== activeTerminalId) {
+    setActiveTerminalId(resolvedTerminalId)
+  }
 
   // Determine what's actually shown
   const isLogTab = activeTab?.startsWith("log:")
@@ -226,7 +225,7 @@ export function EmbeddedTerminal({
           key={showingTerminalId}
           sessionId={showingTerminalId}
           project={showingTerminal?.project || currentProject}
-          fontSize={layout === "kiosk" ? 18 : 13}
+          fontSize={layout === "kiosk" ? 15 : 13}
           onDisconnect={() => setConnected(false)}
           onSendReady={handleSendReady}
           onRedrawReady={handleRedrawReady}

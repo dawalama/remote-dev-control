@@ -412,6 +412,12 @@
 /* Terminal areas stay dark across all themes */
 [data-theme] .xterm { background: var(--t-terminal-bg) !important; }
 
+/* Kiosk: force GPU compositing layer on xterm canvas to prevent
+   font jitter on embedded browsers (e.g. Tesla Chromium) */
+[data-layout="kiosk"] .xterm canvas {
+  will-change: transform;
+}
+
 /* Force visible scrollbar on xterm viewport (mobile/macOS hide overlay scrollbars) */
 .xterm-viewport::-webkit-scrollbar {
   width: 8px;

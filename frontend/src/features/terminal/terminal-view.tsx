@@ -2,8 +2,10 @@ import { useEffect, useRef, useCallback, useState, type PointerEvent as ReactPoi
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { WebLinksAddon } from "@xterm/addon-web-links"
+import { WebglAddon } from "@xterm/addon-webgl"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
+import { useMountEffect } from "@/hooks/use-mount-effect"
 import { api, GET } from "@/lib/api"
 import type { TabId } from "@/types"
 import "@xterm/xterm/css/xterm.css"
@@ -128,7 +130,6 @@ export function TerminalView({
       reconnectRef.current.attempts = 0
 
       const term = termRef.current
-      const fit = fitRef.current
 
       // Reset terminal state before buffer replay to avoid parser errors
       // (e.g. reconnecting mid-escape-sequence). ESC c = RIS (Reset to Initial State)
@@ -142,12 +143,21 @@ export function TerminalView({
       // After buffer replay, re-fit and re-send resize so the PTY
       // adopts the client's actual dimensions. This triggers SIGWINCH
       // so programs like Claude Code redraw their UI correctly.
+      // Use setTimeout to wait for buffer replay, then debounced fit
+      // to consolidate with any concurrent ResizeObserver events.
       setTimeout(() => {
         if (ws.readyState !== WebSocket.OPEN) return
         const t = termRef.current
-        if (t) {
-          try { fit?.fit() } catch {}
-          ws.send(JSON.stringify({ type: "resize", cols: t.cols, rows: t.rows }))
+        const f = fitRef.current
+        if (t && f) {
+          if (pendingFitRef.current) cancelAnimationFrame(pendingFitRef.current)
+          pendingFitRef.current = requestAnimationFrame(() => {
+            pendingFitRef.current = null
+            try { f.fit() } catch {}
+            if (t.cols > 0 && t.rows > 0 && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "resize", cols: t.cols, rows: t.rows }))
+            }
+          })
         }
       }, 300)
 
@@ -217,6 +227,9 @@ export function TerminalView({
   useEffect(() => {
     if (!containerRef.current) return
 
+    // Reset on re-run so reconnect logic works after effect cleanup/re-init
+    intentionalCloseRef.current = false
+
     const term = new Terminal({
       fontSize,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
@@ -231,6 +244,18 @@ export function TerminalView({
     term.loadAddon(new WebLinksAddon())
 
     term.open(containerRef.current)
+
+    // WebGL renderer: GPU-accelerated glyph rendering, eliminates canvas
+    // jitter on devices like Tesla browser. Falls back to default canvas
+    // renderer if WebGL is unavailable.
+    try {
+      const webgl = new WebglAddon()
+      webgl.onContextLoss(() => { webgl.dispose() })
+      term.loadAddon(webgl)
+    } catch {
+      // WebGL not available — canvas renderer remains active
+    }
+
     // Defer first fit to next frame so the browser has fully computed
     // the container layout (critical on mobile where viewport can shift).
     requestAnimationFrame(() => {
@@ -412,7 +437,7 @@ function ScrollButton({
     }, 300)
   }, [direction, doScrollLines, doScrollPages])
 
-  useEffect(() => stopScroll, [stopScroll])
+  useMountEffect(() => stopScroll)
 
   return (
     <button
