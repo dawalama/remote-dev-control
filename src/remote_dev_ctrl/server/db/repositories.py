@@ -983,6 +983,15 @@ class ProcessConfigRepository:
 
     def upsert(self, state: ProcessConfig) -> ProcessConfig:
         """Insert or update a process config/state."""
+        # If a row with the same (project_id, name) exists but a different id,
+        # reuse the existing id to avoid UNIQUE constraint violation.
+        existing = self.db.execute(
+            "SELECT id FROM process_configs WHERE project_id = ? AND name = ?",
+            (state.project_id, state.name),
+        ).fetchone()
+        if existing and existing[0] != state.id:
+            state.id = existing[0]
+
         self.db.execute("""
             INSERT INTO process_configs
                 (id, project_id, name, command, cwd, port, description,
