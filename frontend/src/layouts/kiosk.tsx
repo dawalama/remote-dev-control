@@ -18,6 +18,7 @@ import { ProjectSettingsModal } from "@/features/modals/project-settings"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { RecordingPlayer } from "@/features/browser/recording-player"
 import { EmbeddedTerminal } from "@/features/terminal/embedded-terminal"
+import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
 import { ProjectCard } from "@/features/mobile/project-card"
 import { useLogsStore } from "@/stores/logs-store"
 import { Sheet } from "@/features/mobile/sheet"
@@ -336,6 +337,7 @@ export function KioskLayout() {
         <TerminalOverlay
           sessionId={terminalOverlayId}
           onClose={() => setTerminalOverlayId(null)}
+          onSwitch={(id) => setTerminalOverlayId(id)}
         />
       )}
 
@@ -415,6 +417,7 @@ export function KioskLayout() {
         />
       )}
 
+      <FloatingAgentPanel channel="kiosk" />
       <GlobalTextInput />
     </div>
   )

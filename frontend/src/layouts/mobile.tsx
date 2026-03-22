@@ -25,6 +25,7 @@ import { PairedDevicesSheet } from "@/features/mobile/paired-devices-sheet"
 import { ProjectSettingsModal } from "@/features/modals/project-settings"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { RecordingPlayer } from "@/features/browser/recording-player"
+import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
 import { Sheet } from "@/features/mobile/sheet"
 import { POST } from "@/lib/api"
 import { getClientId, getClientName } from "@/lib/client-id"
@@ -281,6 +282,7 @@ export function MobileLayout() {
         <TerminalOverlay
           sessionId={terminalOverlayId}
           onClose={() => setTerminalOverlayId(null)}
+          onSwitch={(id) => setTerminalOverlayId(id)}
         />
       )}
 
@@ -371,6 +373,7 @@ export function MobileLayout() {
           onPlayRecording={(id) => { setBrowserFullscreen(false); setPlayingRecording(id) }}
         />
       )}
+      <FloatingAgentPanel channel="mobile" />
       <GlobalTextInput />
     </div>
   )

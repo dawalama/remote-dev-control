@@ -31,9 +31,11 @@ interface ContextSnapshot {
 export function TerminalOverlay({
   sessionId,
   onClose,
+  onSwitch,
 }: {
   sessionId: string
   onClose: () => void
+  onSwitch?: (newSessionId: string) => void
 }) {
   const killTerminal = useTerminalStore((s) => s.killTerminal)
   const restartTerminal = useTerminalStore((s) => s.restartTerminal)
@@ -45,6 +47,8 @@ export function TerminalOverlay({
   const sendRef = useRef<((data: string) => void) | null>(null)
   const redrawRef = useRef<(() => void) | null>(null)
   const [contextPickerOpen, setContextPickerOpen] = useState(false)
+  const [switcherOpen, setSwitcherOpen] = useState(false)
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const handleSendReady = useCallback((send: (data: string) => void) => {
     sendRef.current = send
@@ -83,12 +87,30 @@ export function TerminalOverlay({
     >
       {/* Header */}
       <div className={`flex items-center justify-between bg-gray-800 border-b border-gray-700 flex-shrink-0 ${layout === "kiosk" ? "px-4 py-3" : "px-3 py-2"}`}>
-        <button className={`text-blue-400 btn-touch ${layout === "kiosk" ? "text-base px-3 py-2" : "text-sm"}`} onClick={onClose}>
+        <button
+          className={`text-blue-400 btn-touch ${layout === "kiosk" ? "text-base px-3 py-2" : "text-sm"}`}
+          onClick={onClose}
+          onPointerDown={() => {
+            longPressTimer.current = setTimeout(() => setSwitcherOpen(true), 400)
+          }}
+          onPointerUp={() => {
+            if (longPressTimer.current) clearTimeout(longPressTimer.current)
+          }}
+          onPointerCancel={() => {
+            if (longPressTimer.current) clearTimeout(longPressTimer.current)
+          }}
+        >
           ← Back
         </button>
-        <span className={`text-gray-300 font-medium truncate mx-2 ${layout === "kiosk" ? "text-base" : "text-sm"}`}>
-          Terminal
-        </span>
+        <button
+          className={`text-gray-300 font-medium truncate mx-2 ${layout === "kiosk" ? "text-base" : "text-sm"}`}
+          onClick={() => setSwitcherOpen((o) => !o)}
+        >
+          {(() => {
+            const t = terminals.find((t) => t.id === sessionId)
+            return t?.project ? `${t.project} ▾` : `Terminal ▾`
+          })()}
+        </button>
         <div className={`flex ${layout === "kiosk" ? "gap-2" : "gap-1"}`}>
           <button
             className={`rounded btn-touch bg-gray-600 text-gray-300 ${layout === "kiosk" ? "px-4 py-2 text-sm" : "px-2 py-0.5 text-[10px]"}`}
@@ -135,6 +157,40 @@ export function TerminalOverlay({
           </button>
         </div>
       </div>
+
+      {/* Terminal switcher dropdown */}
+      {switcherOpen && (
+        <div className="bg-gray-800 border-b border-gray-700 px-3 py-2 max-h-[40vh] overflow-auto flex-shrink-0">
+          <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">Open Terminals</div>
+          <div className="space-y-1">
+            {terminals.map((t) => (
+              <button
+                key={t.id}
+                className={`w-full flex items-center gap-2 px-3 py-2 rounded text-left text-sm transition-colors ${
+                  t.id === sessionId
+                    ? "bg-blue-600/30 text-blue-300 border border-blue-500/40"
+                    : "bg-gray-700/50 text-gray-300 hover:bg-gray-700"
+                }`}
+                onClick={() => {
+                  setSwitcherOpen(false)
+                  if (t.id !== sessionId && onSwitch) {
+                    onSwitch(t.id)
+                  }
+                }}
+              >
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                  t.waiting_for_input ? "bg-yellow-400 animate-pulse" : "bg-green-500"
+                }`} />
+                <span className="font-medium truncate">{t.project || "shell"}</span>
+                <span className="text-[10px] text-gray-500 ml-auto flex-shrink-0">{t.id.slice(0, 8)}</span>
+              </button>
+            ))}
+          </div>
+          {terminals.length === 0 && (
+            <p className="text-xs text-gray-500 py-2 text-center">No terminals open</p>
+          )}
+        </div>
+      )}
 
       {/* Waiting for input banner */}
       {isWaiting && (

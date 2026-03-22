@@ -92,6 +92,13 @@ class ChannelsConfig(BaseModel):
     web: WebConfig = Field(default_factory=WebConfig)
 
 
+class BrowserConfig(BaseModel):
+    """Browser automation configuration."""
+    backend: str = "chrome"  # "chrome" (local, default) or "docker" (legacy browserless)
+    headless: bool = True
+    chrome_path: str = ""  # auto-detect if empty
+
+
 class NekoConfig(BaseModel):
     """Neko visual streaming configuration."""
     enabled: bool = False
@@ -164,6 +171,7 @@ class Config(BaseModel):
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     visual: VisualConfig = Field(default_factory=VisualConfig)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     projects: dict[str, ProjectOverride] = Field(default_factory=dict)
     caddy: CaddyConfig = Field(default_factory=CaddyConfig)
@@ -319,13 +327,19 @@ channels:
     enabled: true
     port: 8421
 
-# Visual Streaming
+# Browser Automation
+browser:
+  backend: chrome     # "chrome" (local, default) or "docker" (legacy browserless)
+  headless: true
+  # chrome_path: ""   # auto-detect Chrome/Chromium
+
+# Visual Streaming (legacy)
 visual:
   neko:
     enabled: false
     image: "ghcr.io/m1k1o/neko:firefox"
     port_range: [9000, 9010]
-  
+
   terminal:
     enabled: false
     provider: ttyd

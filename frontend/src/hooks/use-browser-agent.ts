@@ -10,10 +10,22 @@ interface AgentAction {
   params?: Record<string, unknown>
 }
 
-interface CdpAgentResponse {
+interface AgentLoopStep {
+  step: number
+  type: "act" | "done" | "error"
+  page?: { url: string; title: string }
+  actions?: AgentAction[]
   response?: string
+  results?: string[]
+  detail?: string
+}
+
+interface AgentLoopResponse {
+  response?: string
+  steps?: AgentLoopStep[]
   actions_taken?: AgentAction[]
   results?: string[]
+  done?: boolean
   model?: string
   spec?: Spec
 }
@@ -31,7 +43,7 @@ export function useBrowserAgent(_channel: "desktop" | "mobile" | "kiosk") {
   const [sendingToAgent, setSendingToAgent] = useState(false)
   const [conversationHistory, setConversationHistory] = useState<AgentHistoryEntry[]>([])
 
-  const { tabs, activeTabId, takeScreenshot, loadStatus } = usePinchTabStore()
+  const { tabs, activeTabId, loadStatus } = usePinchTabStore()
   const activeSession = useBrowserStore((s) => s.activeSession)
   const toast = useUIStore((s) => s.toast)
 
@@ -51,19 +63,38 @@ export function useBrowserAgent(_channel: "desktop" | "mobile" | "kiosk") {
     addMessage({ role: "user", content: instruction.trim() })
 
     try {
-      // Prefer CDP path when a Docker browser session is running
+      // Prefer CDP path when a browser session is running
       if (activeSession && activeSession.status === "running") {
-        const result = await POST<CdpAgentResponse>(
-          `/browser/sessions/${activeSession.id}/agent`,
-          { instruction: instruction.trim() },
+        // Use the observe->act loop endpoint for multi-step execution
+        const result = await POST<AgentLoopResponse>(
+          `/browser/sessions/${activeSession.id}/agent/loop`,
+          { instruction: instruction.trim(), max_steps: 10 },
         )
 
         const responseText = result?.response || "Done"
-        const results = result?.results || []
+        const steps = result?.steps || []
         const actionsTaken = result?.actions_taken || []
+        const allResults = result?.results || []
 
-        // Build json-render spec from action results
-        const spec = buildActionResultSpec(actionsTaken, results)
+        // Show intermediate steps if there were multiple
+        if (steps.length > 1) {
+          for (const step of steps) {
+            if (step.type === "act" && step.results && step.results.length > 0) {
+              const stepSpec = buildActionResultSpec(
+                step.actions || [],
+                step.results,
+              )
+              addMessage({
+                role: "assistant",
+                content: `Step ${step.step}: ${step.response || step.results.join("; ")}`,
+                spec: stepSpec,
+              })
+            }
+          }
+        }
+
+        // Final summary message
+        const spec = result?.spec ?? buildActionResultSpec(actionsTaken, allResults)
 
         addMessage({
           role: "assistant",
@@ -72,7 +103,8 @@ export function useBrowserAgent(_channel: "desktop" | "mobile" | "kiosk") {
           actions: actionsTaken.map((a) => ({ action: a.name || "", ...a.params })),
         })
 
-        toast(responseText.slice(0, 120) || results[0] || "Done", "success")
+        const statusType: "success" | "info" = result?.done ? "success" : "info"
+        toast(responseText.slice(0, 120) || allResults[0] || "Done", statusType)
         setAgentInput("")
         setSendingToAgent(false)
         return
@@ -175,9 +207,7 @@ export function useBrowserAgent(_channel: "desktop" | "mobile" | "kiosk") {
       toast(responseText.slice(0, 120) || allResults[0] || "Done", "success")
       setAgentInput("")
 
-      if (actions.length > 0) {
-        setTimeout(() => takeScreenshot(), 1500)
-      }
+      // Agent loop now verifies via observe — no need for delayed screenshot
     } catch (err) {
       console.error("[BrowserAgent] error:", err)
       addMessage({ role: "assistant", content: `Error: ${err}` })

@@ -233,7 +233,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         client_id = get_client_id(request)
         client_ip = request.client.host if request.client else None
         
-        # Rate limiting (always on)
+        # Rate limiting
         allowed, reason = self.rate_limiter.check(client_id)
         if not allowed:
             audit(

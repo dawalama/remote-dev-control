@@ -1,7 +1,7 @@
-"""Browser session management via browserless containers + CDP.
+"""Browser session management via local Chrome + CDP.
 
 Architecture:
-- A browserless Docker container runs headless Chromium.
+- A local Chrome process runs with --remote-debugging-port for CDP access.
 - We hold a persistent browser-level CDP WebSocket connection.
 - On session create, we create a page target and navigate to the app URL.
 - The user views/interacts with the page via a screencast viewer (canvas +
@@ -11,6 +11,10 @@ Architecture:
 - Both user and agent see the SAME page state. User interactions (typing,
   clicking, navigating) happen in the headless browser and are captured
   exactly as-is.
+
+Supports two backends via config:
+- "chrome" (default): Local Chrome subprocess managed by ChromeProcess.
+- "docker" (legacy): Docker browserless container (backward compat).
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import asyncio
 import base64
 import json
 import logging
+import platform
 import secrets
 import subprocess
 import time
@@ -28,9 +33,13 @@ from typing import Optional
 
 import websockets
 
-from .config import get_rdc_home
+from .chrome import ChromeProcess, find_available_chrome_port
+from .config import Config, get_rdc_home
 from .db.connection import get_db
 from .db.models import BrowserSession, BrowserStatus, ContextSnapshot
+
+# CDP modifier key for Select All: meta (4) on macOS, ctrl (2) elsewhere
+_SELECT_ALL_MODIFIER = 4 if platform.system() == "Darwin" else 2
 
 logger = logging.getLogger(__name__)
 
@@ -118,9 +127,13 @@ class _LiveConnection:
                     fut.set_exception(RuntimeError("CDP connection closed"))
             self._pending.clear()
 
-    async def connect(self, container_port: int, target_url: str):
+    async def connect(self, container_port: int, target_url: str, ws_url: str | None = None):
         self.container_port = container_port
-        ws_url = f"ws://localhost:{container_port}"
+
+        # Use provided ws_url or fall back to bare port (legacy Docker)
+        if not ws_url:
+            ws_url = f"ws://localhost:{container_port}"
+
         self._ws = await websockets.connect(
             ws_url, max_size=50 * 1024 * 1024,
             ping_interval=30, ping_timeout=20,
@@ -144,7 +157,7 @@ class _LiveConnection:
         # Set default desktop viewport for initial page load.
         self.device_override = {
             "width": 1280, "height": 900,
-            "deviceScaleFactor": 1, "mobile": False,
+            "deviceScaleFactor": 2, "mobile": False,
         }
         await self._cdp("Emulation.setDeviceMetricsOverride",
                          self.device_override, self._session_id)
@@ -598,14 +611,15 @@ class _LiveConnection:
                 }, sid)
             await asyncio.sleep(0.05)
 
-            # Select all (Ctrl+A — Docker Chrome runs Linux), then replace
+            # Select all (Ctrl+A on Linux/Windows, Cmd+A on macOS), then replace
+            _mod = _SELECT_ALL_MODIFIER
             await self._cdp("Input.dispatchKeyEvent", {
                 "type": "keyDown", "key": "a", "code": "KeyA",
-                "windowsVirtualKeyCode": 65, "modifiers": 2,
+                "windowsVirtualKeyCode": 65, "modifiers": _mod,
             }, sid)
             await self._cdp("Input.dispatchKeyEvent", {
                 "type": "keyUp", "key": "a", "code": "KeyA",
-                "windowsVirtualKeyCode": 65, "modifiers": 2,
+                "windowsVirtualKeyCode": 65, "modifiers": _mod,
             }, sid)
             await asyncio.sleep(0.05)
 
@@ -680,10 +694,13 @@ class _LiveConnection:
 
 
 class BrowserManager:
-    """Manages browserless containers and Playwright connections."""
+    """Manages browser sessions via local Chrome or Docker containers."""
 
     def __init__(self):
         self._connections: dict[str, _LiveConnection] = {}
+        self._chrome_processes: dict[str, ChromeProcess] = {}
+        self._config = Config.load()
+        self._backend = self._config.browser.backend  # "chrome" or "docker"
 
     # -- Session lifecycle --
 
@@ -698,17 +715,78 @@ class BrowserManager:
         existing = self._load_session_by_process(process_id)
         if existing:
             if existing.status == BrowserStatus.RUNNING:
-                if self._is_container_running(existing.container_id):
+                if self._is_session_alive(existing):
                     if existing.id not in self._connections:
                         await self._connect(existing)
                     return existing
             await self.stop_session(existing.id)
 
-        port = self._find_available_port(9500)
         session_id = f"browser-{process_id}"
-        container_name = f"rdc-browser-{process_id}"
 
-        # Remove leftover container
+        if self._backend == "chrome":
+            return await self._create_chrome_session(session_id, target_url, process_id=process_id)
+        else:
+            return await self._create_docker_session(session_id, target_url, process_id=process_id)
+
+    async def _create_chrome_session(
+        self, session_id: str, target_url: str,
+        process_id: str | None = None, project_id: str = "",
+    ) -> BrowserSession:
+        """Create a session backed by a local Chrome process."""
+        port = find_available_chrome_port()
+
+        chrome = ChromeProcess()
+        try:
+            chrome.start(
+                port=port,
+                headless=self._config.browser.headless,
+                chrome_path=self._config.browser.chrome_path or None,
+            )
+            await chrome.wait_for_ready()
+        except Exception as e:
+            chrome.stop()
+            session = BrowserSession(
+                id=session_id, process_id=process_id, project_id=project_id or None,
+                target_url=target_url, container_port=port,
+                status=BrowserStatus.FAILED, error=str(e),
+            )
+            self._save_session(session)
+            return session
+
+        self._chrome_processes[session_id] = chrome
+
+        session = BrowserSession(
+            id=session_id, process_id=process_id, project_id=project_id or None,
+            target_url=target_url,
+            container_id=f"chrome-pid-{chrome.pid}",  # store PID for reference
+            container_port=port,
+            status=BrowserStatus.STARTING,
+        )
+        self._save_session(session)
+
+        # No URL rewriting needed for local Chrome — localhost works directly
+        try:
+            ws_url = await self._discover_ws_url(port)
+            conn = _LiveConnection()
+            await conn.connect(port, target_url, ws_url=ws_url)
+            self._connections[session_id] = conn
+            session.status = BrowserStatus.RUNNING
+        except Exception as e:
+            logger.error(f"Failed to connect to local Chrome: {e}")
+            session.status = BrowserStatus.FAILED
+            session.error = str(e)
+
+        self._save_session(session)
+        return session
+
+    async def _create_docker_session(
+        self, session_id: str, target_url: str,
+        process_id: str | None = None, project_id: str = "",
+    ) -> BrowserSession:
+        """Legacy: create a session backed by a Docker browserless container."""
+        port = self._find_available_port(9500)
+        container_name = f"rdc-browser-{process_id or session_id}"
+
         subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
 
         cmd = [
@@ -726,23 +804,23 @@ class BrowserManager:
             container_id = result.stdout.strip()
         except Exception as e:
             session = BrowserSession(
-                id=session_id, process_id=process_id, target_url=target_url,
-                container_port=port, status=BrowserStatus.FAILED, error=str(e),
+                id=session_id, process_id=process_id, project_id=project_id or None,
+                target_url=target_url, container_port=port,
+                status=BrowserStatus.FAILED, error=str(e),
             )
             self._save_session(session)
             return session
 
-        # Rewrite localhost for docker
         docker_url = target_url.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
 
         session = BrowserSession(
-            id=session_id, process_id=process_id, target_url=target_url,
+            id=session_id, process_id=process_id, project_id=project_id or None,
+            target_url=target_url,
             container_id=container_id, container_port=port,
             status=BrowserStatus.STARTING,
         )
         self._save_session(session)
 
-        # Wait for browserless, then create page target via CDP
         try:
             await self._wait_for_ready(port)
             conn = _LiveConnection()
@@ -764,57 +842,15 @@ class BrowserManager:
     ) -> BrowserSession:
         """Create a browser session not tied to any process."""
         session_id = f"browser-{secrets.token_hex(4)}"
-        container_name = f"rdc-browser-{session_id}"
-        port = self._find_available_port(9500)
 
-        # Remove leftover container
-        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
-
-        cmd = [
-            "docker", "run", "-d",
-            "--name", container_name,
-            "-p", f"{port}:3000",
-            "--add-host=host.docker.internal:host-gateway",
-            BROWSERLESS_IMAGE,
-        ]
-
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                raise RuntimeError(f"Docker failed: {result.stderr.strip()}")
-            container_id = result.stdout.strip()
-        except Exception as e:
-            session = BrowserSession(
-                id=session_id, process_id=None, target_url=target_url,
-                project_id=project_id or None,
-                container_port=port, status=BrowserStatus.FAILED, error=str(e),
+        if self._backend == "chrome":
+            return await self._create_chrome_session(
+                session_id, target_url, project_id=project_id,
             )
-            self._save_session(session)
-            return session
-
-        docker_url = target_url.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
-
-        session = BrowserSession(
-            id=session_id, process_id=None, target_url=target_url,
-            project_id=project_id or None,
-            container_id=container_id, container_port=port,
-            status=BrowserStatus.STARTING,
-        )
-        self._save_session(session)
-
-        try:
-            await self._wait_for_ready(port)
-            conn = _LiveConnection()
-            await conn.connect(port, docker_url)
-            self._connections[session_id] = conn
-            session.status = BrowserStatus.RUNNING
-        except Exception as e:
-            logger.error(f"Failed to connect to browserless: {e}")
-            session.status = BrowserStatus.FAILED
-            session.error = str(e)
-
-        self._save_session(session)
-        return session
+        else:
+            return await self._create_docker_session(
+                session_id, target_url, project_id=project_id,
+            )
 
     async def reload_session(self, session_id: str) -> bool:
         """Reload the current page in a session."""
@@ -837,8 +873,8 @@ class BrowserManager:
         conn = await self._ensure_connection(session_id)
         if not conn:
             return False
-        docker_url = url.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
-        result = await conn.navigate(docker_url)
+        nav_url = self._rewrite_url(url)
+        result = await conn.navigate(nav_url)
         if result.get("error"):
             return False
         # Update target_url in DB
@@ -863,8 +899,12 @@ class BrowserManager:
         if conn:
             await conn.close()
 
-        if session.container_id:
-            # Use process_id for process-bound sessions, session_id for standalone
+        # Stop Chrome process if using chrome backend
+        chrome = self._chrome_processes.pop(session_id, None)
+        if chrome:
+            chrome.stop()
+        elif session.container_id and not session.container_id.startswith("chrome-pid-"):
+            # Legacy Docker cleanup
             container_name = f"rdc-browser-{session.process_id}" if session.process_id else f"rdc-browser-{session_id}"
             subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
 
@@ -880,8 +920,8 @@ class BrowserManager:
         sessions = []
         for row in rows:
             s = self._row_to_session(row)
-            if s.status == BrowserStatus.RUNNING and s.container_id:
-                if not self._is_container_running(s.container_id):
+            if s.status == BrowserStatus.RUNNING:
+                if not self._is_session_alive(s):
                     s.status = BrowserStatus.STOPPED
                     s.container_id = None
                     self._save_session(s)
@@ -900,8 +940,8 @@ class BrowserManager:
 
     def get_session(self, session_id: str) -> Optional[BrowserSession]:
         session = self._load_session(session_id)
-        if session and session.status == BrowserStatus.RUNNING and session.container_id:
-            if not self._is_container_running(session.container_id):
+        if session and session.status == BrowserStatus.RUNNING:
+            if not self._is_session_alive(session):
                 session.status = BrowserStatus.STOPPED
                 session.container_id = None
                 self._save_session(session)
@@ -1056,20 +1096,8 @@ class BrowserManager:
             logger.warning(f"_ensure_connection: session {session_id} status is {session.status.value}, not running")
             return None
 
-        # Check container — try by name if container_id inspect fails
-        container_running = False
-        if session.container_id:
-            container_running = self._is_container_running(session.container_id)
-        if not container_running:
-            # Try by container name as fallback (docker inspect by name)
-            container_name = f"rdc-browser-{session.process_id}" if session.process_id else f"rdc-browser-{session_id}"
-            container_running = self._is_container_running(container_name)
-            if container_running:
-                logger.info(f"Container found by name {container_name} (id lookup failed)")
-
-        if not container_running:
-            logger.warning(f"_ensure_connection: container not running for {session_id} (id={session.container_id})")
-            # Mark session as stopped since container is gone
+        if not self._is_session_alive(session):
+            logger.warning(f"_ensure_connection: backend not running for {session_id}")
             session.status = BrowserStatus.STOPPED
             session.container_id = None
             self._save_session(session)
@@ -1130,7 +1158,7 @@ class BrowserManager:
 
             url = page_info.get("url", "")
             title = page_info.get("title", "")
-            # Rewrite Docker internal URL back to localhost for display
+            # Rewrite Docker internal URL back to localhost for display (legacy)
             if "host.docker.internal" in url:
                 url = url.replace("host.docker.internal", "localhost")
 
@@ -1191,10 +1219,9 @@ class BrowserManager:
             session = self._load_session(sid)
             if session and session.status == BrowserStatus.RUNNING:
                 if port and str(port) in (session.target_url or ""):
-                    # Navigate to the exact URL and capture
-                    docker_url = target_url.replace("localhost", "host.docker.internal")
+                    nav_url = self._rewrite_url(target_url)
                     try:
-                        await conn.navigate(docker_url)
+                        await conn.navigate(nav_url)
                     except Exception:
                         pass
                     return await self.capture_context(sid, project_id)
@@ -1246,8 +1273,63 @@ class BrowserManager:
     async def stop_all(self):
         for sid in list(self._connections.keys()):
             await self.stop_session(sid)
+        # Also stop any orphaned Chrome processes
+        for sid, chrome in list(self._chrome_processes.items()):
+            chrome.stop()
+        self._chrome_processes.clear()
 
     # -- Internals --
+
+    @staticmethod
+    async def _discover_ws_url(port: int) -> str:
+        """Discover the browser-level CDP WebSocket URL from /json/version.
+
+        Local Chrome requires the full /devtools/browser/<id> path.
+        Docker browserless works with just ws://host:port.
+        """
+        import httpx
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"http://localhost:{port}/json/version", timeout=5)
+                if resp.status_code == 200:
+                    url = resp.json().get("webSocketDebuggerUrl", "")
+                    if url:
+                        logger.info(f"Discovered CDP WS URL: {url}")
+                        return url
+        except Exception as e:
+            logger.debug(f"Could not discover WS URL from /json/version: {e}")
+        return f"ws://localhost:{port}"
+
+    def _rewrite_url(self, url: str) -> str:
+        """Rewrite localhost URLs for Docker backend; no-op for chrome backend."""
+        if self._backend == "docker":
+            return url.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
+        return url
+
+    def _is_session_alive(self, session: BrowserSession) -> bool:
+        """Check if the backing browser process/container is alive."""
+        # Check in-memory Chrome process first
+        chrome = self._chrome_processes.get(session.id)
+        if chrome:
+            return chrome.is_alive()
+
+        # Check if it's a chrome-pid reference (server restarted, process may still run)
+        if session.container_id and session.container_id.startswith("chrome-pid-"):
+            # Check if CDP endpoint is responsive
+            import socket
+            if session.container_port:
+                try:
+                    with socket.create_connection(("localhost", session.container_port), timeout=2):
+                        return True
+                except (OSError, socket.timeout):
+                    return False
+            return False
+
+        # Legacy Docker check
+        if session.container_id:
+            return self._is_container_running(session.container_id)
+
+        return False
 
     def _simplify_a11y(self, nodes: list[dict]) -> list[dict]:
         """Simplify the raw CDP AXTree into an agent-friendly format."""
@@ -1316,17 +1398,17 @@ class BrowserManager:
         raise RuntimeError("No available ports")
 
     async def _connect(self, session: BrowserSession):
-        """Reconnect to a running browserless container.
+        """Reconnect to a running browser (local Chrome or Docker container).
 
         Tries to reattach to an existing page target first (preserving user
         state). Only creates a new target as a fallback.
         """
-        docker_url = session.target_url.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
+        target_url = self._rewrite_url(session.target_url)
         conn = _LiveConnection()
 
-        # Connect to the browser-level WS
+        # Connect to the browser-level WS (discover URL from /json/version)
         conn.container_port = session.container_port
-        ws_url = f"ws://localhost:{session.container_port}"
+        ws_url = await self._discover_ws_url(session.container_port)
         conn._ws = await websockets.connect(
             ws_url, max_size=50 * 1024 * 1024,
             ping_interval=30, ping_timeout=20,
@@ -1339,7 +1421,6 @@ class BrowserManager:
             targets = result.get("targetInfos", [])
             page_targets = [t for t in targets if t.get("type") == "page"]
             if page_targets:
-                # Reattach to the first existing page — preserves user state
                 conn.target_id = page_targets[0]["targetId"]
                 attach_result = await conn._cdp("Target.attachToTarget", {
                     "targetId": conn.target_id, "flatten": True,
@@ -1355,7 +1436,7 @@ class BrowserManager:
         # Fallback: create a new target (will reset the page)
         await conn.close()
         conn2 = _LiveConnection()
-        await conn2.connect(session.container_port, docker_url)
+        await conn2.connect(session.container_port, target_url, ws_url=ws_url)
         self._connections[session.id] = conn2
 
     # -- DB helpers --

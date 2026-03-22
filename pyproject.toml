@@ -30,6 +30,9 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.3.0",
 ]
+browser = [
+    "browser-use>=0.1.0",
+]
 telegram = [
     "python-telegram-bot>=21.0",
 ]

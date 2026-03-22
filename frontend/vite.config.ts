@@ -71,6 +71,7 @@ export default defineConfig({
       '/events': proxyOpts,
       '/audit': proxyOpts,
       '/recipes': proxyOpts,
+      '/static': proxyOpts,
       '/ws': wsProxyOpts,
       '/stt': wsProxyOpts,
       '/terminals': wsProxyOpts,

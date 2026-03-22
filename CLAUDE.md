@@ -18,18 +18,22 @@ A command center for AI-assisted development. Server + dashboard + CLI for manag
 src/remote_dev_ctrl/server/
   app.py            # FastAPI app, routes, lifespan
   config.py         # Config loading, RDC home
+  chrome.py         # Local Chrome process lifecycle (find binary, start/stop, CDP readiness)
+  browser.py        # Browser session management (Chrome or Docker), CDP _LiveConnection
+  browser_use.py    # browser-use wrapper (observe/act/screenshot with CDP fallback)
   terminal.py       # PTY management, WebSocket relay
   worker.py         # Task execution engine
   intent.py         # AI orchestrator (natural language → actions)
   streaming.py      # SSE/streaming endpoints
   db/               # SQLite repos, migrations
   agents/           # Agent provider abstraction
+    tools.py        # Agent tool definitions + executors (file, git, browser tools)
 
 frontend/src/
   layouts/           # desktop.tsx, mobile.tsx, kiosk.tsx — ALL first-class
   features/          # Feature modules (terminal, tasks, chat, browser, etc.)
   stores/            # Zustand state (state-store, ui-store, terminal-store, etc.)
-  hooks/             # Shared hooks (use-orchestrator, use-voice)
+  hooks/             # Shared hooks (use-orchestrator, use-voice, use-browser-agent)
   components/        # Shared UI components
 ```
 
@@ -54,9 +58,15 @@ frontend/src/
 
 8. **Default collection**: The `"general"` collection ID is a system constant shared between server (migration SQL, `models.py` default, `repositories.py` delete guard) and frontend (`DEFAULT_COLLECTION_ID` in `collection-picker.tsx`). It is seeded by migration, cannot be deleted, and orphaned projects fall back to it. Do not introduce a second source of truth — the string `"general"` is the contract.
 
-9. **Terminal architecture**: PTY relay processes (`socat`-based) survive server restarts. Session metadata persisted to `~/.rdc/terminal_sessions.json`.
+9. **Terminal architecture**: PTY relay processes (`socat`-based) survive server restarts. Session metadata persisted to `~/.rdc/terminal_sessions.json`. Mobile/kiosk `TerminalOverlay` supports long-press Back or tap title to open a terminal switcher dropdown.
 
 10. **Database migrations**: SQL files in `src/remote_dev_ctrl/server/db/migrations/`. Auto-run on server start.
+
+11. **Browser architecture**: Local Chrome subprocess (no Docker) managed by `ChromeProcess` in `chrome.py`. `BrowserManager` in `browser.py` discovers the CDP WebSocket URL from `/json/version`, creates page targets, and manages `_LiveConnection` instances. The `browser_use.py` wrapper provides `observe()`/`act()`/`screenshot()` for the agent loop. Config `browser.backend` supports `"chrome"` (default) or `"docker"` (legacy). Chrome profiles stored at `~/.rdc/chrome-profiles/`.
+
+12. **Browser agent tools**: 5 tools in `agents/tools.py` (`browser_observe`, `browser_click`, `browser_type`, `browser_navigate`, `browser_screenshot`). Observe/screenshot auto-approve; click/type/navigate require approval. The `/browser/sessions/{id}/agent/loop` endpoint runs a multi-step observe→act loop (max 20 steps). The one-shot `/browser/sessions/{id}/agent` endpoint is kept for backward compat.
+
+13. **FloatingAgentPanel**: Present in ALL three layouts (desktop, mobile, kiosk). The browser agent input panel that lets users send instructions to the browser automation agent.
 
 ## Common Tasks
 

@@ -17,6 +17,9 @@ REQUIRES_APPROVAL = {
     "edit_file",
     "delete_file",
     "run_command",
+    "browser_click",
+    "browser_type",
+    "browser_navigate",
 }
 
 # Tools that auto-execute without approval
@@ -26,6 +29,8 @@ AUTO_APPROVE = {
     "search_files",
     "git_status",
     "git_diff",
+    "browser_observe",
+    "browser_screenshot",
 }
 
 AGENT_TOOLS = [
@@ -236,6 +241,88 @@ AGENT_TOOLS = [
             },
         },
     },
+    # -- Browser tools (require active browser session) --
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_observe",
+            "description": "Get the current page state: URL, title, and a list of interactive elements with indexed refs. Use this to understand what's on the page before taking actions.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": "Click an interactive element on the page by its ref (e.g. 'e0', 'e5'). Call browser_observe first to get element refs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "Element ref from browser_observe (e.g. 'e0')",
+                    },
+                },
+                "required": ["ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_type",
+            "description": "Type text into an input element by its ref. Clears existing text first. Call browser_observe first to get element refs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "Element ref from browser_observe (e.g. 'e3')",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "Text to type into the element",
+                    },
+                    "submit": {
+                        "type": "boolean",
+                        "description": "Press Enter after typing. Default true.",
+                    },
+                },
+                "required": ["ref", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_navigate",
+            "description": "Navigate the browser to a URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL to navigate to",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": "Capture a screenshot of the current page. Returns base64-encoded PNG image data.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
 ]
 
 
@@ -252,10 +339,12 @@ async def execute_tool(
     name: str,
     args: dict[str, Any],
     project_path: str,
+    browser_session_id: str | None = None,
 ) -> tuple[str, bool]:
     """Execute a tool and return (result_string, is_error).
 
     All file operations are sandboxed to project_path.
+    Browser tools require a browser_session_id to be provided.
     """
     try:
         if name == "read_file":
@@ -278,10 +367,77 @@ async def execute_tool(
             return await _git_status(project_path)
         elif name == "git_diff":
             return await _git_diff(project_path, **args)
+        elif name.startswith("browser_"):
+            return await _execute_browser_tool(name, args, browser_session_id)
         else:
             return f"Unknown tool: {name}", True
     except Exception as e:
         return f"Error: {e}", True
+
+
+async def _execute_browser_tool(
+    name: str,
+    args: dict[str, Any],
+    session_id: str | None,
+) -> tuple[str, bool]:
+    """Execute a browser tool using the BrowserUseSession."""
+    if not session_id:
+        return "No browser session active. Start a browser session first.", True
+
+    from ..browser import get_browser_manager
+    from ..browser_use import get_or_create_session
+
+    bm = get_browser_manager()
+    conn = await bm._ensure_connection(session_id)
+    if not conn:
+        return "Browser session not connected.", True
+
+    bus = await get_or_create_session(session_id, conn.container_port, live_conn=conn)
+
+    if name == "browser_observe":
+        result = await bus.observe()
+        if result.get("error"):
+            return f"Observe failed: {result['error']}", True
+        elements = result.get("elements", [])
+        lines = [f"Page: {result.get('title', '')} ({result.get('url', '')})"]
+        lines.append(f"Interactive elements ({len(elements)}):")
+        for el in elements:
+            line = f"  {el['ref']} [{el['role']}] \"{el.get('name', '')}\""
+            if el.get("value"):
+                line += f" value=\"{el['value']}\""
+            lines.append(line)
+        return "\n".join(lines), False
+
+    elif name == "browser_click":
+        result = await bus.act("click", ref=args.get("ref", ""))
+        if result.get("error"):
+            return f"Click failed: {result['error']}", True
+        return f"Clicked element {args.get('ref', '')}", False
+
+    elif name == "browser_type":
+        result = await bus.act(
+            "type",
+            ref=args.get("ref", ""),
+            value=args.get("value", ""),
+            submit=args.get("submit", True),
+        )
+        if result.get("error"):
+            return f"Type failed: {result['error']}", True
+        return f"Typed \"{args.get('value', '')}\" into {args.get('ref', '')}", False
+
+    elif name == "browser_navigate":
+        result = await bus.act("navigate", url=args.get("url", ""))
+        if result.get("error"):
+            return f"Navigate failed: {result['error']}", True
+        return f"Navigated to {args.get('url', '')}", False
+
+    elif name == "browser_screenshot":
+        screenshot_bytes = await bus.screenshot()
+        if not screenshot_bytes:
+            return "Screenshot failed", True
+        return f"Screenshot captured ({len(screenshot_bytes)} bytes).", False
+
+    return f"Unknown browser tool: {name}", True
 
 
 async def _read_file(

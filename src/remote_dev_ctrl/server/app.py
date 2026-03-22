@@ -2896,6 +2896,8 @@ _BROWSER_VIEWER_HTML = """\
       var pxW = Math.round(vw * dpr);
       var pxH = Math.round(vh * dpr);
 
+      // Match rendering to the viewing device for responsive fidelity.
+      // Use the device's full physical pixel resolution for sharp screencast.
       if (isTouchDevice) {
         send('Emulation.setDeviceMetricsOverride', {
           width: vw, height: vh, deviceScaleFactor: dpr, mobile: true
@@ -2905,8 +2907,9 @@ _BROWSER_VIEWER_HTML = """\
         });
       }
 
+      // Request screencast at full physical pixel resolution
       send('Page.startScreencast', {
-        format: 'jpeg', quality: 100, maxWidth: Math.max(pxW, 1920), maxHeight: Math.max(pxH, 1920),
+        format: 'jpeg', quality: 100, maxWidth: pxW, maxHeight: pxH,
         everyNthFrame: 1
       });
 
@@ -2922,7 +2925,7 @@ _BROWSER_VIEWER_HTML = """\
         if (ws && ws.readyState === 1 && frameIdle > 3000 && hasReceivedFrame && sinceTap < 8000) {
           stallOverlay.classList.add('visible');
           send('Page.startScreencast', {
-            format: 'jpeg', quality: 100, maxWidth: Math.max(pxW, 1920), maxHeight: Math.max(pxH, 1920),
+            format: 'jpeg', quality: 100, maxWidth: pxW, maxHeight: pxH,
             everyNthFrame: 1
           });
         }
@@ -2971,11 +2974,15 @@ _BROWSER_VIEWER_HTML = """\
 
   // ── Coordinate mapping ──
   function mapCoords(clientX, clientY) {
+    // Map from viewer CSS coords to Chrome's CSS coords (not pixel buffer coords).
+    // canvas.width = pixel buffer (e.g. 2560 for 1280@2x)
+    // rect.width = CSS display size (e.g. 640px in sidebar)
+    // screenW = Chrome's CSS viewport width (e.g. 1280)
+    // We need: (click position in canvas) / (canvas CSS size) * (Chrome CSS viewport)
     var rect = canvas.getBoundingClientRect();
-    var scaleX = canvas.width / rect.width;
-    var scaleY = canvas.height / rect.height;
-    return { x: Math.round((clientX - rect.left) * scaleX),
-             y: Math.round((clientY - rect.top) * scaleY) };
+    var x = (clientX - rect.left) / rect.width * screenW;
+    var y = (clientY - rect.top) / rect.height * screenH;
+    return { x: Math.round(x), y: Math.round(y) };
   }
 
   function markInteraction() { lastInteractionTime = Date.now(); }
@@ -3666,7 +3673,7 @@ async def create_vnc_session(
                 detail=f"Process {process_id} has no port configured. Provide target_url manually."
             )
         
-        target_url = f"http://host.docker.internal:{state.port}"
+        target_url = f"http://localhost:{state.port}"
     
     try:
         session = vnc_manager.create_session(
@@ -3714,7 +3721,7 @@ async def start_vnc_for_process(process_id: str, target_url: str | None = None):
                 detail=f"Process {process_id} has no port configured."
             )
         
-        target_url = f"http://host.docker.internal:{state.port}"
+        target_url = f"http://localhost:{state.port}"
     
     try:
         session = vnc_manager.create_session(
@@ -4707,7 +4714,7 @@ async def pinchtab_agent(request: Request):
 
 @app.post("/browser/sessions/{session_id}/agent")
 async def browser_session_agent(session_id: str, request: Request):
-    """CDP-based browser agent — executes actions in the Docker Chrome session.
+    """CDP-based browser agent — executes actions in the browser session.
 
     Self-contained: gets a11y tree via CDP, asks LLM for actions, executes them
     directly on the same browser the user sees in the iframe.
@@ -4756,6 +4763,7 @@ async def browser_session_agent(session_id: str, request: Request):
         return {"response": f"Failed to read page: {e}", "actions_taken": [], "results": []}
 
     url = page_info_dict.get("url", "")
+    # Normalize Docker internal URLs back to localhost for display (legacy compat)
     if "host.docker.internal" in url:
         url = url.replace("host.docker.internal", "localhost")
     title = page_info_dict.get("title", "")
@@ -4807,8 +4815,7 @@ async def browser_session_agent(session_id: str, request: Request):
             nav_url = params.get("url", "")
             if nav_url and not nav_url.startswith(("http://", "https://", "about:", "data:")):
                 nav_url = "https://" + nav_url
-            docker_url = nav_url.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
-            r = await conn.navigate(docker_url)
+            r = await conn.navigate(bm._rewrite_url(nav_url))
             if r.get("error"):
                 results.append(f"Failed to navigate to {nav_url}: {r['error']}")
             else:
@@ -4837,6 +4844,135 @@ async def browser_session_agent(session_id: str, request: Request):
         "results": results,
         "model": llm_result.get("model", ""),
         "spec": spec,
+    }
+
+
+@app.post("/browser/sessions/{session_id}/agent/loop")
+async def browser_session_agent_loop(session_id: str, request: Request):
+    """Multi-step observe->act browser agent loop.
+
+    Repeatedly observes the page and asks the LLM for actions until
+    the task is complete or max_steps is reached.
+
+    Returns intermediate steps for transparency.
+    """
+    from .browser import get_browser_manager
+    from .browser_use import get_or_create_session
+
+    body = await request.json()
+    instruction = body.get("instruction", "")
+    max_steps = min(body.get("max_steps", 10), 20)
+
+    if not instruction:
+        return {"response": "No instruction provided.", "steps": [], "done": False}
+
+    bm = get_browser_manager()
+    conn = await bm._ensure_connection(session_id)
+    if not conn:
+        return {"response": "Browser session not connected.", "steps": [], "done": False}
+
+    bus = await get_or_create_session(session_id, conn.container_port, live_conn=conn)
+
+    steps: list[dict] = []
+    all_results: list[str] = []
+    all_actions: list[dict] = []
+
+    for step_num in range(max_steps):
+        # 1. Observe
+        state = await bus.observe()
+        if state.get("error"):
+            steps.append({"step": step_num + 1, "type": "error", "detail": state["error"]})
+            break
+
+        url = state.get("url", "")
+        title = state.get("title", "")
+        elements = state.get("elements", [])
+
+        page_info = f"Page: {title} ({url})" if title else f"Page: {url}"
+        element_list = "\n".join(
+            f"  {el['ref']} [{el['role']}] \"{el.get('name', '')}\""
+            + (f" value=\"{el['value']}\"" if el.get("value") else "")
+            for el in elements
+        )
+
+        # Include history of what we've done so far
+        history_context = ""
+        if all_results:
+            history_context = "\n\nActions taken so far:\n" + "\n".join(f"- {r}" for r in all_results)
+
+        # 2. Ask LLM for next action(s)
+        llm_result = await _browser_agent_llm(
+            instruction + history_context,
+            element_list,
+            page_info,
+        )
+        actions = llm_result.get("actions", [])
+        response_text = llm_result.get("response", "")
+
+        step_data = {
+            "step": step_num + 1,
+            "type": "act",
+            "page": {"url": url, "title": title},
+            "actions": actions,
+            "response": response_text,
+            "results": [],
+        }
+
+        # 3. Check if LLM says we're done (no actions returned)
+        if not actions:
+            step_data["type"] = "done"
+            steps.append(step_data)
+            return {
+                "response": response_text or "Task completed.",
+                "steps": steps,
+                "actions_taken": all_actions,
+                "results": all_results,
+                "done": True,
+                "model": llm_result.get("model", ""),
+                "spec": _build_action_result_spec(all_actions, all_results),
+            }
+
+        # 4. Execute actions
+        for action in actions:
+            action_name = action.get("name", "")
+            params = action.get("params", {})
+            try:
+                if action_name == "browser_click":
+                    r = await bus.act("click", ref=params.get("ref", ""))
+                elif action_name in ("browser_fill", "browser_type"):
+                    r = await bus.act("type", ref=params.get("ref", ""), value=params.get("value", ""), submit=params.get("submit", True))
+                elif action_name == "browser_navigate":
+                    nav_url = params.get("url", "")
+                    if nav_url and not nav_url.startswith(("http://", "https://", "about:", "data:")):
+                        nav_url = "https://" + nav_url
+                    r = await bus.act("navigate", url=bm._rewrite_url(nav_url))
+                else:
+                    r = {"error": f"Unknown action: {action_name}"}
+
+                if r.get("error"):
+                    result_text = f"Failed {action_name}: {r['error']}"
+                else:
+                    result_text = f"{action_name}: OK"
+                    all_actions.append(action)
+            except Exception as e:
+                result_text = f"Error {action_name}: {e}"
+
+            all_results.append(result_text)
+            step_data["results"].append(result_text)
+
+        steps.append(step_data)
+
+        # Brief pause between steps
+        await asyncio.sleep(0.3)
+
+    # Max steps reached
+    return {
+        "response": f"Reached max steps ({max_steps}). " + ("; ".join(all_results[-3:]) if all_results else ""),
+        "steps": steps,
+        "actions_taken": all_actions,
+        "results": all_results,
+        "done": False,
+        "spec": _build_action_result_spec(all_actions, all_results),
     }
 
 
@@ -5414,107 +5550,98 @@ async def _execute_chat_action(action_type: str, params: str) -> dict | None:
 
 @app.api_route("/vnc/proxy/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"])
 async def vnc_proxy(session_id: str, path: str, request: Request):
-    """Reverse proxy to VNC container - handles HTTPS on backend."""
-    import httpx
+    """Reverse proxy to VNC session — retained for backward compat.
+
+    For native VNC, prefer using /desktop/vnc-proxy WebSocket endpoint with noVNC.
+    """
     from .vnc import get_vnc_manager
-    
+
     vnc_manager = get_vnc_manager()
     session = vnc_manager.get_session(session_id)
-    
+
     if not session:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
-    
     if session.status.value != "running":
         raise HTTPException(status_code=400, detail=f"Session not running: {session.status.value}")
-    
-    # Build target URL (KasmWeb uses HTTPS on port 6901)
-    target_url = f"https://localhost:{session.vnc_port}/{path}"
-    if request.url.query:
-        target_url += f"?{request.url.query}"
-    
-    # Forward the request
-    async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
-        # Get request body if present
-        body = await request.body()
-        
-        # Forward headers (filter out host)
-        headers = dict(request.headers)
-        headers.pop("host", None)
-        headers.pop("content-length", None)
-        
-        try:
-            response = await client.request(
-                method=request.method,
-                url=target_url,
-                headers=headers,
-                content=body if body else None,
-            )
-            
-            # Return proxied response
-            from fastapi.responses import Response
-            return Response(
-                content=response.content,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                media_type=response.headers.get("content-type"),
-            )
-        except httpx.ConnectError:
-            raise HTTPException(status_code=502, detail="VNC container not responding")
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e))
+
+    raise HTTPException(
+        status_code=410,
+        detail="Direct HTTP proxy removed. Use /desktop/vnc-proxy WebSocket endpoint with noVNC viewer.",
+    )
 
 
 @app.websocket("/vnc/ws/{session_id}")
 async def vnc_websocket_proxy(websocket: WebSocket, session_id: str):
-    """WebSocket proxy to VNC container for noVNC."""
-    import ssl
-    import websockets
+    """WebSocket proxy to native VNC server for noVNC client.
+
+    Bridges WebSocket (from noVNC in the browser) to raw TCP (VNC server).
+    noVNC requires the 'binary' subprotocol to be accepted.
+    """
     from .vnc import get_vnc_manager
-    
+    import socket as _socket
+
     vnc_manager = get_vnc_manager()
     session = vnc_manager.get_session(session_id)
-    
+
     if not session or session.status.value != "running":
         await websocket.close(code=4004, reason="Session not found or not running")
         return
-    
-    await websocket.accept()
-    
-    # Connect to VNC container WebSocket (wss for SSL)
-    target_ws = f"wss://localhost:{session.vnc_port}/websockify"
-    
-    # Create SSL context that doesn't verify (self-signed cert)
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    
+
+    # Accept with "binary" subprotocol if client requested it, plain accept otherwise
+    requested = websocket.headers.get("sec-websocket-protocol", "")
+    if "binary" in requested:
+        await websocket.accept(subprotocol="binary")
+    else:
+        await websocket.accept()
+
+    vnc_sock = None
     try:
-        async with websockets.connect(target_ws, ssl=ssl_context) as vnc_ws:
-            async def forward_to_vnc():
-                try:
-                    while True:
-                        data = await websocket.receive_bytes()
-                        await vnc_ws.send(data)
-                except Exception:
-                    pass
-            
-            async def forward_from_vnc():
-                try:
-                    async for message in vnc_ws:
-                        if isinstance(message, bytes):
-                            await websocket.send_bytes(message)
-                        else:
-                            await websocket.send_text(message)
-                except Exception:
-                    pass
-            
-            # Run both directions concurrently
-            import asyncio
-            await asyncio.gather(forward_to_vnc(), forward_from_vnc())
-    
+        vnc_sock = _socket.create_connection(("localhost", session.vnc_port), timeout=5)
+        vnc_sock.setblocking(False)
+        loop = asyncio.get_running_loop()
+        logger.info(f"VNC proxy: connected to localhost:{session.vnc_port} for session {session_id}")
+
+        async def forward_vnc_to_ws():
+            try:
+                while True:
+                    data = await loop.sock_recv(vnc_sock, 65536)
+                    if not data:
+                        logger.info("VNC proxy: VNC server closed connection")
+                        break
+                    await websocket.send_bytes(data)
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(f"VNC proxy vnc→ws ended: {e}")
+
+        async def forward_ws_to_vnc():
+            try:
+                while True:
+                    msg = await websocket.receive()
+                    if msg.get("type") == "websocket.disconnect":
+                        break
+                    data = msg.get("bytes")
+                    if data:
+                        await loop.sock_sendall(vnc_sock, data)
+                    # noVNC can also send text frames (rare) — forward as bytes
+                    text = msg.get("text")
+                    if text:
+                        await loop.sock_sendall(vnc_sock, text.encode())
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(f"VNC proxy ws→vnc ended: {e}")
+
+        await asyncio.gather(forward_vnc_to_ws(), forward_ws_to_vnc())
+
     except Exception as e:
-        logger.error(f"VNC WebSocket error: {e}")
+        logger.error(f"VNC WebSocket proxy error: {e}")
     finally:
+        if vnc_sock:
+            try:
+                vnc_sock.close()
+            except Exception:
+                pass
         try:
             await websocket.close()
         except Exception:
@@ -5731,41 +5858,36 @@ async def capture_screenshot(
     sessions = vnc_mgr.list_sessions()
     
     session = None
-    
+
     # Match by process_id first (more specific)
     if process_id:
         for s in sessions:
-            if s.status == VNCStatus.RUNNING and s.container_id:
+            if s.status == VNCStatus.RUNNING:
                 if s.process_id and (s.process_id == process_id or process_id in s.process_id):
                     session = s
                     break
-    
+
     # Then try project match
     if not session and project:
         for s in sessions:
-            if s.status == VNCStatus.RUNNING and s.container_id:
+            if s.status == VNCStatus.RUNNING:
                 if s.process_id and project in s.process_id:
                     session = s
                     break
-    
+
     # Fallback: any running session
     if not session:
         for s in sessions:
-            if s.status == VNCStatus.RUNNING and s.container_id:
+            if s.status == VNCStatus.RUNNING:
                 session = s
                 break
-    
-    if not session or not session.container_id:
-        raise HTTPException(status_code=404, detail="No active VNC session with running container. Start a Preview first.")
-    
+
+    if not session:
+        raise HTTPException(status_code=404, detail="No active VNC session. Start desktop sharing first.")
+
     # Derive project name if not provided
     if not project:
         project = (session.process_id or "unknown").split("-")[0]
-    
-    import subprocess
-    check = subprocess.run(["docker", "inspect", session.container_id], capture_output=True)
-    if check.returncode != 0:
-        raise HTTPException(status_code=404, detail="VNC container no longer exists. Please restart the Preview.")
     
     screenshot_id = str(uuid.uuid4())[:8]
     timestamp = datetime.now().isoformat()
@@ -5782,7 +5904,7 @@ async def capture_screenshot(
         capture_type = "full page" if full_page else "viewport"
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to capture {capture_type} screenshot. Container may lack required tools (scrot/xdotool)."
+            detail=f"Failed to capture {capture_type} screenshot. Ensure screencapture (macOS) or scrot (Linux) is available."
         )
     
     filepath.write_bytes(image_bytes)
