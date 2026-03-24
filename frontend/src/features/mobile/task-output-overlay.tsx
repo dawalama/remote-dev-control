@@ -86,7 +86,7 @@ export function TaskOutputOverlay({
   }, [lines])
 
   return (
-    <div className="fixed inset-0 z-[100] bg-gray-900 flex flex-col">
+    <div className="fixed inset-0 h-app z-[100] bg-gray-900 flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 bg-gray-800 border-b border-gray-700 flex-shrink-0">
         <button className="text-sm text-blue-400" onClick={onClose}>

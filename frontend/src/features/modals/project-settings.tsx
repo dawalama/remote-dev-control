@@ -170,7 +170,7 @@ export function ProjectSettingsModal({
 
   if (fullPage) {
     return (
-      <div className="fixed inset-0 z-50 bg-gray-900 flex flex-col">
+      <div className="fixed inset-0 h-app z-50 bg-gray-900 flex flex-col">
         {content}
       </div>
     )

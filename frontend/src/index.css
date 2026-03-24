@@ -52,6 +52,14 @@
   &::-webkit-scrollbar { display: none; }
 }
 
+/* Dynamic viewport height — accounts for iOS Safari address bar,
+   Android Chrome toolbar, and other mobile browser chrome.
+   Falls back to 100vh on browsers that don't support dvh. */
+@utility h-app {
+  height: 100vh;
+  height: 100dvh;
+}
+
 @layer base {
   * {
     @apply border-border;

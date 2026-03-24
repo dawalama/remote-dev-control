@@ -120,7 +120,7 @@ export function MobileLayout() {
   // Recording playback fullscreen overlay
   if (playingRecording) {
     return (
-      <div className={`h-screen flex flex-col bg-gray-900 text-gray-100 overflow-hidden ${maxW} mx-auto`}>
+      <div className={`h-app flex flex-col bg-gray-900 text-gray-100 overflow-hidden ${maxW} mx-auto`}>
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-800 flex-shrink-0">
           <button className="text-sm text-gray-400" onClick={() => setPlayingRecording(null)}>
             ← Back
@@ -139,7 +139,7 @@ export function MobileLayout() {
   }
 
   return (
-    <div className={`h-screen flex flex-col bg-gray-900 text-gray-100 overflow-hidden ${maxW} mx-auto`}>
+    <div className={`h-app flex flex-col bg-gray-900 text-gray-100 overflow-hidden ${maxW} mx-auto`}>
       {/* Status bar */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-800 flex-shrink-0">
         <div className="flex items-center gap-1 min-w-0">

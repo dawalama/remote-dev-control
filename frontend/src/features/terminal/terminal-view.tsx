@@ -299,6 +299,37 @@ export function TerminalView({
     const observer = new ResizeObserver(debouncedFit)
     observer.observe(containerRef.current)
 
+    // VisualViewport resize — safety net for mobile browsers where the
+    // visible viewport changes (Safari address bar, Android toolbar) but
+    // ResizeObserver on the container doesn't fire quickly enough.
+    const vv = window.visualViewport
+    if (vv) vv.addEventListener("resize", debouncedFit)
+
+    // Post-layout verification — on slow devices (Tesla kiosk, low-end
+    // tablets), the grid+flex layout may not settle before the initial fit
+    // or ResizeObserver fires. We verify the fit at increasing intervals
+    // and re-fit if the container dimensions don't match xterm's row/col
+    // count. Stops as soon as a check finds no mismatch.
+    const verifyFit = () => {
+      const el = containerRef.current
+      if (!el || !term.element) return false
+      const core = (term as unknown as { _core: { _renderService: { dimensions: { css: { cell: { width: number; height: number } } } } } })._core
+      const cellH = core?._renderService?.dimensions?.css?.cell?.height
+      const cellW = core?._renderService?.dimensions?.css?.cell?.width
+      if (!cellH || !cellW) return false
+      const expectedRows = Math.floor(el.clientHeight / cellH)
+      const expectedCols = Math.floor(el.clientWidth / cellW)
+      if (expectedRows > 0 && expectedCols > 0 &&
+          (Math.abs(expectedRows - term.rows) > 1 || Math.abs(expectedCols - term.cols) > 1)) {
+        debouncedFit()
+        return true // mismatch found, keep checking
+      }
+      return false // dimensions match
+    }
+    const verifyTimers = [500, 1000, 2000].map((delay) =>
+      setTimeout(() => { verifyFit() }, delay)
+    )
+
     // Touch scroll — xterm-screen captures touch events, preventing native scroll
     // on the underlying xterm-viewport. Translate touch swipes to scrollLines().
     const touchState = { startY: 0, lastY: 0, accum: 0 }
@@ -349,6 +380,8 @@ export function TerminalView({
       if (pendingFitRef.current) cancelAnimationFrame(pendingFitRef.current)
       wsRef.current?.close()
       observer.disconnect()
+      if (vv) vv.removeEventListener("resize", debouncedFit)
+      verifyTimers.forEach(clearTimeout)
       if (screenEl) {
         screenEl.removeEventListener("touchstart", onTouchStart)
         screenEl.removeEventListener("touchmove", onTouchMove)

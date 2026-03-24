@@ -190,7 +190,7 @@ export function KioskLayout() {
 
   if (playingRecording) {
     return (
-      <div className="h-screen flex flex-col bg-gray-900 text-gray-100 overflow-hidden max-w-6xl mx-auto">
+      <div className="h-app flex flex-col bg-gray-900 text-gray-100 overflow-hidden max-w-6xl mx-auto">
         <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800 flex-shrink-0">
           <button className="text-sm text-gray-400" onClick={() => setPlayingRecording(null)}>
             ← Back
@@ -209,7 +209,7 @@ export function KioskLayout() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-900 text-gray-100 overflow-hidden max-w-6xl mx-auto">
+    <div className="h-app flex flex-col bg-gray-900 text-gray-100 overflow-hidden max-w-6xl mx-auto">
       <div className="flex items-center justify-between px-5 py-2 border-b border-gray-800 flex-shrink-0">
         <button
           className="flex items-center gap-2 min-w-0"

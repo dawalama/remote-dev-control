@@ -143,7 +143,7 @@ export function DesktopLayout() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-900 text-gray-100 overflow-hidden">
+    <div className="h-app flex flex-col bg-gray-900 text-gray-100 overflow-hidden">
       {/* Header */}
       <div className="flex justify-between items-center px-4 py-2 flex-shrink-0">
         <div className="flex items-center gap-2">

@@ -453,7 +453,7 @@ export function UnifiedBrowserFullscreen({
   if (!activeSession) return null
 
   return (
-    <div className="fixed inset-0 bg-gray-900 z-50 flex flex-col">
+    <div className="fixed inset-0 h-app bg-gray-900 z-50 flex flex-col">
       {/* Top bar — two rows on mobile, single row on desktop */}
       <div className="border-b border-gray-700 flex-shrink-0">
         {/* Row 1: Close + Reload + URL display + caddy link */}

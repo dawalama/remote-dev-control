@@ -83,7 +83,7 @@ export function TerminalOverlay({
 
   return (
     <div
-      className="fixed inset-0 z-[100] bg-gray-900 flex flex-col overflow-hidden"
+      className="fixed inset-0 h-app z-[100] bg-gray-900 flex flex-col overflow-hidden"
     >
       {/* Header */}
       <div className={`flex items-center justify-between bg-gray-800 border-b border-gray-700 flex-shrink-0 ${layout === "kiosk" ? "px-4 py-3" : "px-3 py-2"}`}>

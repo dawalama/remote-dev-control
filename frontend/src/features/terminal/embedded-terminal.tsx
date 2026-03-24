@@ -413,7 +413,7 @@ export function EmbeddedTerminal({
         <div className="flex-[65] flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
           <p className="text-gray-500 text-sm">Terminal in fullscreen mode</p>
         </div>
-        <div className="fixed inset-0 z-[100] bg-gray-900 flex flex-col">
+        <div className="fixed inset-0 h-app z-[100] bg-gray-900 flex flex-col">
           {terminalContent}
         </div>
       </>

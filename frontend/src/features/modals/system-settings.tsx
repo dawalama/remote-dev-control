@@ -160,7 +160,7 @@ export function SystemSettingsModal({ onClose }: { onClose: () => void }) {
   ]
 
   return (
-    <div className="fixed inset-0 bg-gray-900 z-50 flex flex-col text-gray-100">
+    <div className="fixed inset-0 h-app bg-gray-900 z-50 flex flex-col text-gray-100">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700 flex-shrink-0">
         <div className="flex items-center gap-3">
