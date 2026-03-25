@@ -399,10 +399,27 @@ def server_start(
     key_file: Annotated[Optional[str], typer.Option("--key", help="TLS private key file")] = None,
 ):
     """Start the RDC Command Center server."""
+    import subprocess as _sp
     from .server.config import ensure_rdc_home, Config
-    
+
     ensure_rdc_home()
     config = Config.load()
+
+    # Auto-build frontend if dist is missing
+    frontend_dir = Path(__file__).resolve().parent.parent.parent / "frontend"
+    dist_dir = frontend_dir / "dist"
+    if frontend_dir.exists() and not (dist_dir / "index.html").exists():
+        rprint("[yellow]Frontend not built. Building now...[/yellow]")
+        if not (frontend_dir / "node_modules").exists():
+            rprint("  Installing frontend dependencies...")
+            _sp.run(["pnpm", "install"], cwd=str(frontend_dir), check=True)
+        rprint("  Building frontend...")
+        result = _sp.run(["pnpm", "run", "build"], cwd=str(frontend_dir), capture_output=True, text=True)
+        if result.returncode == 0:
+            rprint("[green]  Frontend built successfully[/green]")
+        else:
+            rprint(f"[red]  Frontend build failed:[/red] {result.stderr[-200:]}")
+            rprint("  Run manually: cd frontend && pnpm install && pnpm run build")
     
     # Determine TLS settings
     use_tls = tls or config.server.tls.enabled
