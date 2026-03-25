@@ -159,8 +159,8 @@ class ServerSettings(BaseModel):
 class CaddyConfig(BaseModel):
     """Caddy reverse proxy configuration for subdomain-based preview URLs."""
     enabled: bool = False
-    base_domain: str = "truesteps.studio"
-    rdc_domain: str = "rdc.truesteps.studio"
+    base_domain: str = "example.com"
+    rdc_domain: str = "rdc.example.com"
     admin_port: int = 2019
     listen_port: int = 8888
 

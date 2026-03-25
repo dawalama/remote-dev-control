@@ -154,8 +154,8 @@ caddy:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Start Caddy on server boot |
-| `base_domain` | `truesteps.studio` | Root domain for preview subdomains |
-| `rdc_domain` | `rdc.truesteps.studio` | Dashboard subdomain |
+| `base_domain` | `example.com` | Root domain for preview subdomains |
+| `rdc_domain` | `rdc.example.com` | Dashboard subdomain |
 | `listen_port` | `8888` | HTTP port Caddy listens on |
 | `admin_port` | `2019` | Caddy admin API port |
 

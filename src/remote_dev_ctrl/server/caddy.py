@@ -1,6 +1,6 @@
 """Caddy reverse proxy manager for subdomain-based preview URLs.
 
-Each dev server process gets a subdomain like `frontend.preview.truesteps.studio`
+Each dev server process gets a subdomain like `frontend.preview.yourdomain.com`
 so apps think they're at root `/` — no path prefix conflicts.
 
 Caddy is managed via its admin API: we keep the full JSON config in memory
