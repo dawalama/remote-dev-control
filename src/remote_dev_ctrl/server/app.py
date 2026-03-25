@@ -2361,24 +2361,36 @@ async def kill_port(port: int, force: bool = False):
 
 
 @app.post("/actions/{process_id}/attach")
-async def attach_to_process(process_id: str, port: int):
-    """Attach to an existing process running on a port.
+async def attach_to_process(process_id: str, port: int | None = None):
+    """Attach to an existing process.
 
-    Args:
-        process_id: Our internal process ID
-        port: Port the external process is running on
+    If port is provided, finds the process listening on that port (original behavior).
+    If port is omitted, searches for a running process matching the action's
+    command and cwd (for services without a port like 'uv run main.py').
     """
-    state, verified = process_manager.attach_to_port(process_id, port)
-    if not state or not verified:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No running process found on port {port} — nothing to attach to",
+    if port is not None:
+        state, verified = process_manager.attach_to_port(process_id, port)
+        if not state or not verified:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No running process found on port {port} — nothing to attach to",
+            )
+        event_repo.log(
+            "process.attached",
+            message=f"Attached {process_id} to PID {state.pid} on port {port}",
+        )
+    else:
+        state, verified = process_manager.attach_to_command(process_id)
+        if not state or not verified:
+            raise HTTPException(
+                status_code=400,
+                detail="No running process found matching this action's command — nothing to attach to",
+            )
+        event_repo.log(
+            "process.attached",
+            message=f"Attached {process_id} to PID {state.pid} by command match",
         )
 
-    event_repo.log(
-        "process.attached",
-        message=f"Attached {process_id} to PID {state.pid} on port {port}",
-    )
     await get_state_machine()._broadcast_state()
     return {
         "id": state.id,
@@ -6186,12 +6198,48 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
 
     await websocket.accept()
 
-    # Replay buffered output so client sees what happened while disconnected
-    buffered = tm.get_buffer(session_id)
-    if buffered:
-        await websocket.send_bytes(buffered)
+    import json as _json
 
-    # If terminal is stopped, send a marker and close — client gets the buffer but no live I/O
+    # Collect early handshake messages (skip_replay + resize) with a short timeout.
+    # The client may send up to 2 messages before it expects replay data.
+    skip_replay = False
+    client_cols, client_rows = 0, 0
+
+    for _ in range(2):
+        try:
+            msg = await asyncio.wait_for(websocket.receive(), timeout=1.0)
+            if msg.get("type") == "websocket.disconnect":
+                return
+            if "text" in msg:
+                try:
+                    cmd = _json.loads(msg["text"])
+                    if isinstance(cmd, dict):
+                        if cmd.get("type") == "skip_replay":
+                            skip_replay = True
+                        elif cmd.get("type") == "resize":
+                            client_cols = cmd.get("cols", 80)
+                            client_rows = cmd.get("rows", 24)
+                            tm.resize(session_id, client_cols, client_rows)
+                            break  # resize is always last in handshake
+                except (ValueError, _json.JSONDecodeError):
+                    pass
+        except asyncio.TimeoutError:
+            break
+
+    # Replay: client snapshot > server snapshot > raw buffer
+    if not skip_replay:
+        snapshot_data = None
+        if client_cols > 0 and client_rows > 0:
+            snapshot_data = tm.get_snapshot(session_id, client_cols, client_rows)
+
+        if snapshot_data:
+            await websocket.send_text(snapshot_data)
+        else:
+            buffered = tm.get_buffer(session_id)
+            if buffered:
+                await websocket.send_bytes(buffered)
+
+    # If terminal is stopped, send a marker and close
     if is_stopped:
         await websocket.close(code=4005, reason="Terminal not running")
         return
@@ -6252,6 +6300,18 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
                                 tm.resize(session_id, cmd.get("cols", 80), cmd.get("rows", 24))
                             elif cmd["type"] == "input":
                                 tm.write(session_id, cmd.get("data", "").encode())
+                            elif cmd["type"] == "snapshot":
+                                # Client sends serialized screen state periodically.
+                                # Store it so other clients (or reconnects at different
+                                # dimensions) can use it instead of raw buffer replay.
+                                tm.store_snapshot(
+                                    session_id,
+                                    cols=cmd.get("cols", 0),
+                                    rows=cmd.get("rows", 0),
+                                    data=cmd.get("data", ""),
+                                )
+                            elif cmd["type"] == "skip_replay":
+                                pass  # Already handled above
                         else:
                             # Not a command, treat as plain text
                             tm.write(session_id, text.encode())

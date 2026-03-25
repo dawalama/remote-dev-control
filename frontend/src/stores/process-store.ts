@@ -13,7 +13,7 @@ interface ProcessState {
   startProcess: (id: string, options?: { force?: boolean; toast?: ToastFn }) => Promise<boolean>
   stopProcess: (id: string, options?: { force?: boolean; toast?: ToastFn }) => Promise<boolean>
   restartProcess: (id: string, options?: { toast?: ToastFn }) => Promise<boolean>
-  attachProcess: (id: string, port: number, options?: { toast?: ToastFn }) => Promise<boolean>
+  attachProcess: (id: string, port?: number, options?: { toast?: ToastFn }) => Promise<boolean>
 }
 
 function extractErrorMessage(err: unknown): string {
@@ -106,13 +106,14 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     }
   },
 
-  attachProcess: async (id: string, port: number, options?: { toast?: ToastFn }) => {
+  attachProcess: async (id: string, port?: number, options?: { toast?: ToastFn }) => {
     const { actionInProgress } = get()
     if (actionInProgress) return false
 
     set({ actionInProgress: id })
     try {
-      await POST(`/actions/${encodeURIComponent(id)}/attach?port=${port}`)
+      const query = port ? `?port=${port}` : ""
+      await POST(`/actions/${encodeURIComponent(id)}/attach${query}`)
       options?.toast?.("Attached to running process", "success")
       await get().loadProcesses()
       return true

@@ -148,18 +148,19 @@ function ServiceItem({
           <>
             <button className="px-2 py-0.5 text-[10px] rounded bg-green-600/20 text-green-400"
               onClick={() => onAction(p.id, "start")}>Start</button>
-            {p.port && (
-              <button className="px-2 py-0.5 text-[10px] rounded bg-blue-600/20 text-blue-400"
-                onClick={async () => {
-                  try {
-                    await POST(`/actions/${encodeURIComponent(p.id)}/attach?port=${p.port}`)
-                    toast("Attached to running process", "success")
-                  } catch (err: unknown) {
-                    const msg = err instanceof Error ? err.message : "Failed to attach"
-                    toast(msg, "error")
-                  }
-                }}>Attach</button>
-            )}
+            <button className="px-2 py-0.5 text-[10px] rounded bg-blue-600/20 text-blue-400"
+              onClick={async () => {
+                try {
+                  const url = p.port
+                    ? `/actions/${encodeURIComponent(p.id)}/attach?port=${p.port}`
+                    : `/actions/${encodeURIComponent(p.id)}/attach`
+                  await POST(url)
+                  toast("Attached to running process", "success")
+                } catch (err: unknown) {
+                  const msg = err instanceof Error ? err.message : "Failed to attach"
+                  toast(msg, "error")
+                }
+              }}>Attach</button>
           </>
         )}
         {onLogs && (

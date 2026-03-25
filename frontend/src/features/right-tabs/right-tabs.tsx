@@ -272,14 +272,15 @@ function ProcessesTab() {
         ) : (
           <>
             <Btn color="green" onClick={() => handleAction("start", p.id)}>Start</Btn>
-            {p.port && (
-              <Btn color="blue" onClick={async () => {
-                try {
-                  await POST(`/actions/${encodeURIComponent(p.id)}/attach?port=${p.port}`)
-                  toast("Attached to running process", "success")
-                } catch { toast("Failed to attach", "error") }
-              }}>Attach</Btn>
-            )}
+            <Btn color="blue" onClick={async () => {
+              try {
+                const url = p.port
+                  ? `/actions/${encodeURIComponent(p.id)}/attach?port=${p.port}`
+                  : `/actions/${encodeURIComponent(p.id)}/attach`
+                await POST(url)
+                toast("Attached to running process", "success")
+              } catch { toast("Failed to attach", "error") }
+            }}>Attach</Btn>
           </>
         )}
         <Btn color="gray" onClick={() => openProcessLog(p.id, `${p.project}/${p.name || p.id}`)}>Logs</Btn>

@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { WebLinksAddon } from "@xterm/addon-web-links"
 import { WebglAddon } from "@xterm/addon-webgl"
+import { SerializeAddon } from "@xterm/addon-serialize"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useMountEffect } from "@/hooks/use-mount-effect"
@@ -54,6 +55,7 @@ export function TerminalView({
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const serializeRef = useRef<SerializeAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<{ timer: ReturnType<typeof setTimeout> | null; attempts: number }>({
     timer: null,
@@ -93,22 +95,22 @@ export function TerminalView({
   const redraw = useCallback(() => {
     const term = termRef.current
     const fit = fitRef.current
-    const ws = wsRef.current
     if (!term || !fit) return
-    // Force a resize cycle: shrink by 1 col, send resize to PTY,
-    // then fit back to correct size. The PTY resize triggers SIGWINCH
-    // which makes the running program redraw its output.
-    const { cols, rows } = term
-    term.resize(Math.max(1, cols - 1), rows)
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "resize", cols: cols - 1, rows }))
-    }
-    requestAnimationFrame(() => {
-      try { fit.fit() } catch {}
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }))
+    // Re-render xterm's existing buffer without sending SIGWINCH to the PTY.
+    // SIGWINCH causes programs like Claude Code to repaint and jump scroll
+    // position, which looks like "different output" on each redraw.
+    // Instead: clear and re-serialize the screen content, then re-fit.
+    const s = serializeRef.current
+    if (s) {
+      try {
+        const data = s.serialize({ scrollback: term.options.scrollback ?? 10000 })
+        term.reset()
+        term.write(data)
+      } catch {
+        // Fallback: just re-fit without touching content
       }
-    })
+    }
+    try { fit.fit() } catch {}
   }, [])
 
   useEffect(() => {
@@ -131,35 +133,74 @@ export function TerminalView({
 
       const term = termRef.current
 
-      // Reset terminal state before buffer replay to avoid parser errors
-      // (e.g. reconnecting mid-escape-sequence). ESC c = RIS (Reset to Initial State)
-      term?.write('\x1bc')
+      // Try to restore from a local snapshot (same dimensions = perfect restore).
+      let restoredFromSnapshot = false
+      if (term) {
+        try {
+          const saved = sessionStorage.getItem(`terminal_snapshot_${sessionId}`)
+          if (saved) {
+            const snap = JSON.parse(saved)
+            if (snap.cols === term.cols && snap.rows === term.rows && snap.data) {
+              term.reset()
+              term.write(snap.data)
+              restoredFromSnapshot = true
+            }
+            sessionStorage.removeItem(`terminal_snapshot_${sessionId}`)
+          }
+        } catch {}
+      }
 
-      // Send initial resize
+      if (!restoredFromSnapshot) {
+        term?.reset()
+      }
+
+      // Handshake: send skip_replay (if local snapshot restored) then resize.
+      // Server reads up to 2 messages in the handshake, stopping at resize.
+      if (restoredFromSnapshot) {
+        ws.send(JSON.stringify({ type: "skip_replay" }))
+      }
       if (term) {
         ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }))
       }
 
-      // After buffer replay, re-fit and re-send resize so the PTY
-      // adopts the client's actual dimensions. This triggers SIGWINCH
-      // so programs like Claude Code redraw their UI correctly.
-      // Use setTimeout to wait for buffer replay, then debounced fit
-      // to consolidate with any concurrent ResizeObserver events.
-      setTimeout(() => {
+      // After replay completes, re-fit and send resize to trigger
+      // SIGWINCH so programs like Claude Code redraw their UI.
+      const sendResize = () => {
         if (ws.readyState !== WebSocket.OPEN) return
         const t = termRef.current
         const f = fitRef.current
         if (t && f) {
-          if (pendingFitRef.current) cancelAnimationFrame(pendingFitRef.current)
-          pendingFitRef.current = requestAnimationFrame(() => {
-            pendingFitRef.current = null
-            try { f.fit() } catch {}
-            if (t.cols > 0 && t.rows > 0 && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "resize", cols: t.cols, rows: t.rows }))
-            }
-          })
+          try { f.fit() } catch {}
+          if (t.cols > 0 && t.rows > 0) {
+            ws.send(JSON.stringify({ type: "resize", cols: t.cols, rows: t.rows }))
+          }
         }
-      }, 300)
+      }
+      setTimeout(sendResize, 300)
+      setTimeout(sendResize, 1500)
+
+      // Periodically send screen snapshots to server so other clients
+      // (or reconnects at different dimensions) can restore cleanly.
+      // Only visible screen + small scrollback; sent every 15s to limit bandwidth.
+      const snapshotInterval = setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN) return
+        const t = termRef.current
+        const s = serializeRef.current
+        if (!t || !s) return
+        try {
+          const data = s.serialize({ scrollback: 50 })
+          if (data) {
+            ws.send(JSON.stringify({
+              type: "snapshot",
+              cols: t.cols,
+              rows: t.rows,
+              data,
+            }))
+          }
+        } catch {}
+      }, 15000)
+
+      ;(ws as WebSocket & { _snapshotInterval?: ReturnType<typeof setInterval> })._snapshotInterval = snapshotInterval
 
       // Expose send function to parent (use ref to avoid stale closure)
       onSendReadyRef.current?.((data: string) => {
@@ -186,6 +227,26 @@ export function TerminalView({
     }
 
     ws.onclose = (event) => {
+      // Clear snapshot interval
+      const si = (ws as WebSocket & { _snapshotInterval?: ReturnType<typeof setInterval> })._snapshotInterval
+      if (si) clearInterval(si)
+
+      // Send a final snapshot before we lose the connection state
+      const t = termRef.current
+      const s = serializeRef.current
+      if (t && s) {
+        try {
+          const data = s.serialize({ scrollback: 100 })
+          if (data) {
+            // Store locally so next connectWs can use it even if server didn't get it
+            sessionStorage.setItem(
+              `terminal_snapshot_${sessionId}`,
+              JSON.stringify({ cols: t.cols, rows: t.rows, data })
+            )
+          }
+        } catch {}
+      }
+
       if (intentionalCloseRef.current) return
 
       const term = termRef.current
@@ -240,7 +301,9 @@ export function TerminalView({
     })
 
     const fitAddon = new FitAddon()
+    const serializeAddon = new SerializeAddon()
     term.loadAddon(fitAddon)
+    term.loadAddon(serializeAddon)
     term.loadAddon(new WebLinksAddon())
 
     term.open(containerRef.current)
@@ -264,6 +327,7 @@ export function TerminalView({
 
     termRef.current = term
     fitRef.current = fitAddon
+    serializeRef.current = serializeAddon
 
     // Track scroll position
     term.onScroll(() => checkIfAtBottom(term))

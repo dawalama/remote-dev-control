@@ -39,7 +39,7 @@ export function ProcessList() {
     restartProcess(id, { toast })
   }, [restartProcess, toast])
 
-  const handleAttach = useCallback((id: string, port: number) => {
+  const handleAttach = useCallback((id: string, port?: number) => {
     attachProcess(id, port, { toast })
   }, [attachProcess, toast])
 
@@ -76,7 +76,7 @@ export function ProcessList() {
           onStart={(force) => handleStart(p.id, force)}
           onStop={(force) => handleStop(p.id, force)}
           onRestart={() => handleRestart(p.id)}
-          onAttach={() => handleAttach(p.id, p.port || 0)}
+          onAttach={() => handleAttach(p.id, p.port || undefined)}
         />
       ))}
     </div>
@@ -174,7 +174,7 @@ function ProcessItem({
               className="text-xs h-6 px-2 bg-blue-600 hover:bg-blue-700"
               onClick={onAttach}
               disabled={isLoading}
-              title="Attach to existing process on this port"
+              title={p.port ? "Attach to process on this port" : "Attach to matching running process"}
             >
               Attach
             </Button>

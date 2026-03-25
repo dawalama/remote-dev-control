@@ -267,6 +267,8 @@ class TerminalManager:
         self._callbacks: dict[str, list[Callable]] = {}
         self._bg_buffers: dict[str, asyncio.Task] = {}
         self._on_session_stopped: Optional[Callable[[str], None]] = None
+        # Snapshots: keyed by (session_id, cols, rows) → serialized screen data
+        self._snapshots: dict[tuple[str, int, int], str] = {}
 
     def _notify_session_stopped(self, session_id: str):
         if self._on_session_stopped:
@@ -808,8 +810,8 @@ class TerminalManager:
         """Get buffered output for replay on reconnect.
 
         The rolling buffer may have been truncated mid-escape-sequence or
-        mid-UTF-8 codepoint.  Strip any leading broken bytes so xterm.js
-        doesn't choke on parse errors.
+        mid-UTF-8 codepoint. We sanitize the start of the buffer and
+        prepend a terminal reset so xterm.js starts from a clean state.
         """
         session = self._sessions.get(session_id)
         if not session:
@@ -818,24 +820,79 @@ class TerminalManager:
         if not buf:
             return buf
 
-        # Skip leading UTF-8 continuation bytes (0x80-0xBF) from a
-        # truncated multi-byte character.
+        # Find a clean start point in the buffer.
+        start = self._find_clean_start(buf)
+
+        # Prepend reset sequences before the replay:
+        # - ESC c = RIS (Reset to Initial State) — clears screen, resets parser
+        # - ESC [ ? 25 h = show cursor (some programs hide it)
+        # - ESC [ 0 m = reset attributes (colors, bold, etc.)
+        reset = b"\x1bc\x1b[?25h\x1b[0m"
+
+        return reset + buf[start:]
+
+    @staticmethod
+    def _find_clean_start(buf: bytes) -> int:
+        """Find the first byte in buf that starts a clean sequence.
+
+        Skips:
+        - Leading UTF-8 continuation bytes (truncated multi-byte char)
+        - Bytes inside a truncated CSI sequence (ESC [ ... <params>)
+        - Bytes inside a truncated OSC sequence (ESC ] ... ST)
+        """
         start = 0
-        while start < len(buf) and 0x80 <= buf[start] <= 0xBF:
+        length = len(buf)
+
+        # Skip leading UTF-8 continuation bytes (0x80-0xBF)
+        while start < length and 0x80 <= buf[start] <= 0xBF:
             start += 1
 
-        # If the buffer now starts cleanly (newline, ESC, or ASCII
-        # printable) we're fine.  Otherwise we're mid-escape-sequence —
-        # advance to the first newline within the first 256 bytes to
-        # skip the broken fragment.
-        if start < len(buf) and buf[start] not in (0x0A, 0x0D, 0x1B):
-            # Check if we're inside a broken CSI/OSC sequence by looking
-            # for ESC or newline nearby.
-            nl_pos = buf.find(b"\n", start, start + 256)
-            if nl_pos != -1:
-                start = nl_pos + 1
+        if start >= length:
+            return start
 
-        return buf[start:]
+        # If we start on a clean byte, we're good
+        b = buf[start]
+        if b == 0x1B or b == 0x0A or b == 0x0D or (0x20 <= b <= 0x7E):
+            return start
+
+        # We're mid-sequence. Scan forward for a safe resume point.
+        # Look for: newline, or ESC at the start of a new sequence.
+        scan_limit = min(start + 4096, length)
+        i = start
+        while i < scan_limit:
+            b = buf[i]
+            if b == 0x0A:
+                # Newline — safe to start on next line
+                return i + 1
+            if b == 0x1B and i + 1 < scan_limit:
+                nb = buf[i + 1]
+                # ESC [ = CSI, ESC ] = OSC, ESC ( = charset — all valid starts
+                if nb in (0x5B, 0x5D, 0x28, 0x29, 0x63):
+                    return i
+            i += 1
+
+        # Couldn't find a clean point in the scan window — skip to start
+        return start
+
+    def store_snapshot(self, session_id: str, cols: int, rows: int, data: str) -> None:
+        """Store a serialized screen snapshot from a client.
+
+        Keyed by (session_id, cols, rows) so clients at different dimensions
+        each have their own snapshot. Limited to 5 snapshots per session.
+        """
+        if not data or cols <= 0 or rows <= 0 or len(data) > 512_000:
+            return
+        key = (session_id, cols, rows)
+        self._snapshots[key] = data
+        # Evict old snapshots for this session (keep last 5 dimension combos)
+        session_keys = [k for k in self._snapshots if k[0] == session_id]
+        if len(session_keys) > 5:
+            for old_key in session_keys[:-5]:
+                self._snapshots.pop(old_key, None)
+
+    def get_snapshot(self, session_id: str, cols: int, rows: int) -> str | None:
+        """Get a stored snapshot matching the exact dimensions."""
+        return self._snapshots.get((session_id, cols, rows))
 
     def is_waiting_for_input(self, session_id: str) -> bool:
         """Heuristic: is this terminal waiting for user input?"""
@@ -961,8 +1018,9 @@ class TerminalManager:
                 except Exception:
                     pass
 
-        # Clean up callbacks
+        # Clean up callbacks and snapshots
         self._callbacks.pop(session_id, None)
+        self._snapshots = {k: v for k, v in self._snapshots.items() if k[0] != session_id}
         del self._sessions[session_id]
         _save_session_meta(self._sessions)
         return True

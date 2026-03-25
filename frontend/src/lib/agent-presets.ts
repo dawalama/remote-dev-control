@@ -30,7 +30,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
   {
     id: "claude",
     label: "Claude",
-    command: "claude --continue",
+    command: "claude -r --enable-auto-mode",
     icon: "A",
     description: "Anthropic Claude Code",
   },

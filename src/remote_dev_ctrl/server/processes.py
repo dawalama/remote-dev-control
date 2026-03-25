@@ -467,6 +467,146 @@ class ProcessManager:
         # but we can monitor if it's still alive
         return state, True
 
+    def attach_to_command(self, process_id: str) -> tuple[ProcessConfig | None, bool]:
+        """Attach to an existing process by matching command + cwd.
+
+        Searches running processes for one whose command line contains the
+        action's command tokens and whose cwd matches the action's cwd.
+
+        Returns:
+            Tuple of (Updated ProcessConfig or None, verified: True if match found)
+        """
+        state = self._processes.get(process_id)
+        if not state:
+            logging.warning(f"Process {process_id} not found")
+            return None, False
+
+        if not state.command:
+            return None, False
+
+        info = self._find_process_by_command(state.command, state.cwd)
+        if not info:
+            logging.warning(
+                f"No running process found matching command={state.command!r} cwd={state.cwd!r}"
+            )
+            return None, False
+
+        # Update state to track this external process
+        state.pid = info["pid"]
+        state.status = ProcessStatus.RUNNING
+        state.started_at = datetime.now()
+        self._repo.upsert(state)
+
+        logging.info(
+            f"Attached to process by command: {process_id} -> PID {info['pid']} "
+            f"(matched: {info['full_command']!r})"
+        )
+        self._emit("started", process_id, state)
+        return state, True
+
+    def _find_process_by_command(
+        self, command: str, cwd: str | None
+    ) -> dict | None:
+        """Find a running process matching the given command and cwd.
+
+        Strategy:
+        1. Extract key tokens from the command (e.g. 'uv run main.py' → ['uv', 'main.py'])
+        2. List all processes with `ps aux`
+        3. For candidates whose command line contains all key tokens,
+           verify the cwd matches via /proc or lsof -d cwd
+        """
+        import subprocess as sp
+
+        # Extract meaningful tokens — skip common wrappers/flags
+        skip = {"run", "exec", "--reload", "--host", "--port", "--bind", "-m"}
+        tokens = [t for t in command.split() if t not in skip and not t.startswith("-")]
+        if not tokens:
+            return None
+
+        try:
+            result = sp.run(
+                ["ps", "axo", "pid,args"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                return None
+
+            candidates: list[tuple[int, str]] = []
+            for line in result.stdout.strip().split("\n")[1:]:  # skip header
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) < 2:
+                    continue
+                try:
+                    pid = int(parts[0])
+                except ValueError:
+                    continue
+                args = parts[1]
+
+                # Skip our own server process
+                if pid == os.getpid():
+                    continue
+
+                # All key tokens must appear in the command line
+                if all(t in args for t in tokens):
+                    candidates.append((pid, args))
+
+            if not candidates:
+                return None
+
+            # If we have a cwd, verify candidates run in the right directory
+            if cwd:
+                cwd_resolved = str(Path(cwd).resolve())
+                for pid, args in candidates:
+                    proc_cwd = self._get_process_cwd(pid)
+                    if proc_cwd and str(Path(proc_cwd).resolve()) == cwd_resolved:
+                        # Verify alive
+                        try:
+                            os.kill(pid, 0)
+                        except (ProcessLookupError, PermissionError):
+                            continue
+                        return {"pid": pid, "full_command": args}
+
+            # No cwd match or no cwd — take the first alive candidate
+            for pid, args in candidates:
+                try:
+                    os.kill(pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    continue
+                return {"pid": pid, "full_command": args}
+
+            return None
+        except Exception as e:
+            logging.error(f"Error finding process by command: {e}")
+            return None
+
+    @staticmethod
+    def _get_process_cwd(pid: int) -> str | None:
+        """Get the current working directory of a process."""
+        import subprocess as sp
+        import sys
+
+        try:
+            if sys.platform == "darwin":
+                # macOS: use lsof -d cwd
+                result = sp.run(
+                    ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for line in result.stdout.split("\n"):
+                    if line.startswith("n"):
+                        return line[1:]
+            else:
+                # Linux: read /proc/<pid>/cwd symlink
+                link = Path(f"/proc/{pid}/cwd")
+                if link.exists():
+                    return str(link.resolve())
+        except Exception:
+            pass
+        return None
+
     def kill_port(self, port: int, force: bool = False) -> dict:
         """Kill any process using the given port.
 

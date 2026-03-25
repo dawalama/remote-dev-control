@@ -240,6 +240,7 @@ export function TerminalOverlay({
       {/* Context picker sheet */}
       {contextPickerOpen && (
         <ContextPickerSheet
+          project={terminals.find((t) => t.id === sessionId)?.project || ""}
           onClose={() => setContextPickerOpen(false)}
           onPick={handleContextPick}
         />
@@ -251,9 +252,11 @@ export function TerminalOverlay({
 // ─── Context Picker Sheet ─────────────────────────────────────────────
 
 function ContextPickerSheet({
+  project,
   onClose,
   onPick,
 }: {
+  project: string
   onClose: () => void
   onPick: (ctx: ContextSnapshot) => void
 }) {
@@ -261,11 +264,13 @@ function ContextPickerSheet({
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    GET<ContextSnapshot[]>("/context?limit=20")
+    const params = new URLSearchParams({ limit: "20" })
+    if (project) params.set("project", project)
+    GET<ContextSnapshot[]>(`/context?${params}`)
       .then(setContexts)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+  }, [project])
 
   return (
     <Sheet title="Insert Context" onClose={onClose}>
