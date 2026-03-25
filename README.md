@@ -19,11 +19,15 @@ RDC is an open-source command center for developers running multiple AI agents (
 ## Quick Start
 
 ```bash
+# One-line install (clones, installs deps, builds, runs guided setup)
+curl -sSL https://raw.githubusercontent.com/dawalama/remote-dev-ctrl/main/install.sh | bash
+
+# Or manual:
 git clone https://github.com/dawalama/remote-dev-ctrl.git
 cd remote-dev-ctrl
 uv sync && cd frontend && pnpm install && pnpm run build && cd ..
-rdc server start
-# Open http://localhost:8420
+rdc setup          # Guided config: API keys, presets, remote access
+rdc server start   # Open http://localhost:8420
 ```
 
 ### Prerequisites

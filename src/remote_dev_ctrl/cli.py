@@ -853,6 +853,122 @@ def worker_list():
 # Config Commands
 # =============================================================================
 
+@app.command()
+def setup():
+    """Interactive guided setup for new RDC installations.
+
+    Walks through: config initialization, API keys, terminal presets,
+    and optional remote access. Safe to re-run — skips already-configured steps.
+    """
+    from .server.config import get_rdc_home, get_default_config_template, ensure_rdc_home
+    from .server.vault import get_vault
+
+    rprint(Panel.fit(
+        "[bold]Welcome to RDC Setup[/bold]\n"
+        "This will walk you through configuring your installation.\n"
+        "Press Enter to accept defaults, or type a value to customize.",
+        title="Remote Dev Ctrl",
+        border_style="blue",
+    ))
+
+    home = ensure_rdc_home()
+    config_path = home / "config.yml"
+
+    # Step 1: Config file
+    rprint("\n[bold]Step 1: Configuration[/bold]")
+    if config_path.exists():
+        rprint(f"  [green]Config already exists at {config_path}[/green]")
+    else:
+        config_path.write_text(get_default_config_template())
+        rprint(f"  [green]Created config at {config_path}[/green]")
+
+    # Step 2: API Keys
+    rprint("\n[bold]Step 2: API Keys (optional)[/bold]")
+    rprint("  AI features require at least one LLM provider API key.")
+    rprint("  Keys are stored encrypted in the RDC vault, not in config files.\n")
+
+    vault = get_vault()
+
+    api_keys = [
+        ("ANTHROPIC_API_KEY", "Anthropic (Claude)", "sk-ant-..."),
+        ("OPENAI_API_KEY", "OpenAI", "sk-..."),
+        ("GEMINI_API_KEY", "Google Gemini", "AI..."),
+    ]
+
+    for key_name, label, example in api_keys:
+        existing = vault.get(key_name) or os.environ.get(key_name)
+        if existing:
+            masked = existing[:8] + "..." + existing[-4:] if len(existing) > 12 else "***"
+            rprint(f"  [green]{label}:[/green] configured ({masked})")
+        else:
+            value = console.input(f"  {label} key [{example}] (Enter to skip): ").strip()
+            if value:
+                vault.set(key_name, value)
+                rprint(f"  [green]Saved {key_name}[/green]")
+            else:
+                rprint(f"  [dim]Skipped {label}[/dim]")
+
+    # Step 3: Terminal presets
+    rprint("\n[bold]Step 3: Terminal Presets[/bold]")
+    presets_path = home / "terminal_presets.json"
+    if presets_path.exists():
+        rprint(f"  [green]Terminal presets already configured[/green]")
+    else:
+        rprint("  Default presets: Claude Code, Cursor, Gemini CLI, Shell")
+        customize = console.input("  Customize terminal presets? [y/N]: ").strip().lower()
+        if customize == "y":
+            rprint("  [dim]Edit presets later: rdc config edit-presets[/dim]")
+            rprint("  [dim]Or manually edit: ~/.rdc/terminal_presets.json[/dim]")
+        else:
+            rprint("  [green]Using default presets[/green]")
+
+    # Step 4: Server port
+    rprint("\n[bold]Step 4: Server[/bold]")
+    rprint("  Default: http://localhost:8420")
+    custom_port = console.input("  Custom port? [8420]: ").strip()
+    if custom_port and custom_port != "8420":
+        rprint(f"  [dim]Edit port in {config_path}[/dim]")
+
+    # Step 5: Remote access (optional)
+    rprint("\n[bold]Step 5: Remote Access (optional)[/bold]")
+    rprint("  Access RDC from your phone via Cloudflare Tunnel + Caddy.")
+    remote = console.input("  Set up remote access? [y/N]: ").strip().lower()
+    if remote == "y":
+        rprint("\n  [bold]Cloudflare Tunnel setup:[/bold]")
+        rprint("  1. Install: brew install cloudflared")
+        rprint("  2. Login:   cloudflared tunnel login")
+        rprint("  3. Create:  cloudflared tunnel create rdc")
+        rprint("  4. Configure tunnel to point *.yourdomain.com to localhost:8888")
+        rprint("")
+        domain = console.input("  Your domain (e.g. example.com): ").strip()
+        if domain:
+            rprint(f"\n  Add to {config_path}:")
+            rprint(f"  [bold]caddy:[/bold]")
+            rprint(f"    enabled: true")
+            rprint(f"    base_domain: {domain}")
+            rprint(f"    rdc_domain: rdc.{domain}")
+            rprint(f"    listen_port: 8888")
+
+            # Generate a secret key for auth
+            import secrets
+            secret_key = secrets.token_hex(32)
+            vault.set("RDC_SECRET_KEY", secret_key)
+            rprint(f"\n  [green]Generated and stored RDC_SECRET_KEY for authentication[/green]")
+            rprint(f"  Add to config: server.secret_key: ${{RDC_SECRET_KEY}}")
+    else:
+        rprint("  [dim]Skipped — you can set this up later[/dim]")
+
+    # Done
+    rprint(Panel.fit(
+        "[green bold]Setup complete![/green bold]\n\n"
+        "[bold]Next steps:[/bold]\n"
+        "  rdc server start              # Start the server\n"
+        "  open http://localhost:8420     # Open the dashboard\n"
+        "  rdc add ~/my-project          # Register a project",
+        border_style="green",
+    ))
+
+
 config_app = typer.Typer(help="Manage RDC configuration")
 app.add_typer(config_app, name="config")
 
