@@ -27,9 +27,15 @@ node_modules/
 
 # IDE / editor
 .claude/
+.cursorrules
 .vscode/
 .idea/
 *.sw?
+
+# Agent config (personal)
+AGENTS.md
+GEMINI.md
+rdc.yaml
 
 # OS
 .DS_Store

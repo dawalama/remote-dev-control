@@ -68,13 +68,15 @@ export function TerminalOverlay({
   }, [openTextInput, sessionId])
 
   const handleContextPick = (ctx: ContextSnapshot) => {
+    // Send file paths directly — the agent reads them without MCP.
+    const screenshotPath = ctx.screenshot_path || `~/.rdc/contexts/${ctx.id}.png`
     let instruction: string
     if (ctx.url) {
-      // Browser capture — has a11y tree and metadata
-      instruction = `Use the get_browser_context tool with context_id="${ctx.id}" to see the current browser state`
+      // Browser capture — point to screenshot and mention the a11y/meta files
+      const basePath = screenshotPath.replace(/\.[^.]+$/, "")
+      instruction = `Look at the screenshot at ${screenshotPath} — it shows ${ctx.url}${ctx.title ? ` ("${ctx.title}")` : ""}. The accessibility tree is at ${basePath}.a11y.json and page metadata at ${basePath}.meta.json`
     } else {
-      // Uploaded file — just point to the file path
-      instruction = `Read the file at ${ctx.screenshot_path || `~/.rdc/contexts/${ctx.id}`}`
+      instruction = `Look at the image at ${screenshotPath}`
     }
     sendToTerminal(instruction + "\r")
     toast("Context injected", "success")
