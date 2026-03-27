@@ -6199,6 +6199,10 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
     await websocket.accept()
 
     import json as _json
+    import secrets as _secrets
+
+    # Each WebSocket connection gets a unique client_id for multi-client resize tracking
+    client_id = _secrets.token_hex(8)
 
     # Collect early handshake messages (skip_replay + resize) with a short timeout.
     # The client may send up to 2 messages before it expects replay data.
@@ -6209,6 +6213,7 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
         try:
             msg = await asyncio.wait_for(websocket.receive(), timeout=1.0)
             if msg.get("type") == "websocket.disconnect":
+                tm.unregister_client(session_id, client_id)
                 return
             if "text" in msg:
                 try:
@@ -6219,7 +6224,7 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
                         elif cmd.get("type") == "resize":
                             client_cols = cmd.get("cols", 80)
                             client_rows = cmd.get("rows", 24)
-                            tm.resize(session_id, client_cols, client_rows)
+                            tm.resize(session_id, client_cols, client_rows, client_id=client_id)
                             break  # resize is always last in handshake
                 except (ValueError, _json.JSONDecodeError):
                     pass
@@ -6297,7 +6302,7 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
                         # Only handle if it's a dict with a type field
                         if isinstance(cmd, dict) and "type" in cmd:
                             if cmd["type"] == "resize":
-                                tm.resize(session_id, cmd.get("cols", 80), cmd.get("rows", 24))
+                                tm.resize(session_id, cmd.get("cols", 80), cmd.get("rows", 24), client_id=client_id)
                             elif cmd["type"] == "input":
                                 tm.write(session_id, cmd.get("data", "").encode())
                             elif cmd["type"] == "snapshot":
@@ -6322,8 +6327,9 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
             sender_task.cancel()
 
     finally:
-        # Only remove this client's callback — reader keeps buffering for next reconnect
+        # Remove this client's callback and dimensions — reader keeps buffering for next reconnect
         tm.remove_callback(session_id, on_output)
+        tm.unregister_client(session_id, client_id)
 
 
 # =============================================================================

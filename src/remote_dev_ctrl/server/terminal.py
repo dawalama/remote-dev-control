@@ -267,8 +267,10 @@ class TerminalManager:
         self._callbacks: dict[str, list[Callable]] = {}
         self._bg_buffers: dict[str, asyncio.Task] = {}
         self._on_session_stopped: Optional[Callable[[str], None]] = None
-        # Snapshots: keyed by (session_id, cols, rows) → serialized screen data
+        # Snapshots: keyed by (session_id, cols, rows) -> serialized screen data
         self._snapshots: dict[tuple[str, int, int], str] = {}
+        # Connected client dimensions: session_id -> {client_id: (cols, rows)}
+        self._client_dims: dict[str, dict[str, tuple[int, int]]] = {}
 
     def _notify_session_stopped(self, session_id: str):
         if self._on_session_stopped:
@@ -759,18 +761,60 @@ class TerminalManager:
                 logger.error(f"Write error to {session_id}: {e}")
             return False
 
-    def resize(self, session_id: str, cols: int, rows: int) -> bool:
-        """Resize terminal."""
+    def register_client(self, session_id: str, client_id: str, cols: int, rows: int) -> None:
+        """Register a connected client's viewport dimensions.
+
+        Multiple clients (desktop, mobile, kiosk) can view the same terminal.
+        The PTY is resized to the largest dimensions across all clients so
+        smaller clients scroll/clip while larger clients see full output.
+        """
+        if session_id not in self._client_dims:
+            self._client_dims[session_id] = {}
+        self._client_dims[session_id][client_id] = (cols, rows)
+        self._apply_effective_size(session_id)
+
+    def unregister_client(self, session_id: str, client_id: str) -> None:
+        """Remove a disconnected client and re-apply effective size."""
+        clients = self._client_dims.get(session_id, {})
+        clients.pop(client_id, None)
+        if clients:
+            self._apply_effective_size(session_id)
+
+    def _apply_effective_size(self, session_id: str) -> None:
+        """Resize PTY to the max dimensions across all connected clients."""
+        clients = self._client_dims.get(session_id, {})
+        if not clients:
+            return
+        max_cols = max(c for c, _ in clients.values())
+        max_rows = max(r for _, r in clients.values())
+        self._resize_pty(session_id, max_cols, max_rows)
+
+    def resize(self, session_id: str, cols: int, rows: int, client_id: str | None = None) -> bool:
+        """Resize terminal.
+
+        If client_id is provided, registers the client's dimensions and
+        resizes to the max across all clients. Without client_id, resizes
+        directly (backward compat).
+        """
+        if client_id:
+            self.register_client(session_id, client_id, cols, rows)
+            return True
+        return self._resize_pty(session_id, cols, rows)
+
+    def _resize_pty(self, session_id: str, cols: int, rows: int) -> bool:
+        """Actually resize the PTY file descriptor."""
         session = self._sessions.get(session_id)
         if not session or session.fd is None:
             return False
 
+        # Skip if dimensions haven't changed
+        if session.cols == cols and session.rows == rows:
+            return True
+
         try:
             if session.relay_name and session._ctrl_sock:
-                # Relay: send resize via control socket
                 _relay_resize(session._ctrl_sock, cols, rows)
             else:
-                # Raw PTY: ioctl directly
                 winsize = struct.pack("HHHH", rows, cols, 0, 0)
                 fcntl.ioctl(session.fd, termios.TIOCSWINSZ, winsize)
             session.cols = cols
@@ -1018,8 +1062,9 @@ class TerminalManager:
                 except Exception:
                     pass
 
-        # Clean up callbacks and snapshots
+        # Clean up callbacks, snapshots, and client dimensions
         self._callbacks.pop(session_id, None)
+        self._client_dims.pop(session_id, None)
         self._snapshots = {k: v for k, v in self._snapshots.items() if k[0] != session_id}
         del self._sessions[session_id]
         _save_session_meta(self._sessions)
