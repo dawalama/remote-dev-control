@@ -59,7 +59,7 @@ def create_project(
     # Create GitHub workflows
     created_files.extend(create_github_workflows(path, name, config))
 
-    # Create rdc.yml with dev process definitions
+    # Create rdc.yaml with dev process definitions
     created_files.append(create_rdc_yaml(path, name, config))
 
     # Initialize git repo and make initial commit
@@ -128,8 +128,8 @@ def create_rdc_yaml(path: Path, name: str, config: dict) -> str:
         if proc.get("cwd"):
             lines.append(f"    cwd: {proc['cwd']}")
 
-    (path / "rdc.yml").write_text("\n".join(lines) + "\n")
-    return "rdc.yml"
+    (path / "rdc.yaml").write_text("\n".join(lines) + "\n")
+    return "rdc.yaml"
 
 
 def _init_git(path: Path):

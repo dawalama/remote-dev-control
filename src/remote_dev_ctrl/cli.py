@@ -249,8 +249,11 @@ def add(
             tag_list = [inferred.get("type")] + inferred.get("features", [])
             tag_list = [t for t in tag_list if t]
     
-    # Always try to generate rdc.yaml if it doesn't exist
+    # Always try to generate rdc.yaml if it doesn't exist (check both extensions)
     rdc_yaml = path / "rdc.yaml"
+    rdc_yml = path / "rdc.yml"
+    if rdc_yml.exists() and not rdc_yaml.exists():
+        rdc_yaml = rdc_yml  # Use existing .yml instead of creating .yaml
     if not rdc_yaml.exists():
         try:
             # Re-infer if we didn't do it above
