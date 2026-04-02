@@ -305,6 +305,8 @@ class TerminalManager:
         self._snapshots: dict[tuple[str, int, int], str] = {}
         # Connected client dimensions: session_id -> {client_id: (cols, rows)}
         self._client_dims: dict[str, dict[str, tuple[int, int]]] = {}
+        # Sessions that need SIGWINCH on first client connect (after server restart)
+        self._needs_sigwinch: set[str] = set()
 
     def _notify_session_stopped(self, session_id: str):
         if self._on_session_stopped:
@@ -537,26 +539,19 @@ class TerminalManager:
         session.pid = status_resp.get("pid")
         session.status = TerminalStatus.RUNNING
 
-        # The relay sends ring buffer contents on data socket connect,
-        # which will be picked up by the background buffer reader and
-        # populate _output_buffer automatically.
-
         self._sessions[session_id] = session
         _save_session_meta(self._sessions)
         logger.info(
             f"Terminal reconnected (relay): {session_id}, relay={relay_name}, "
             f"child_pid={session.pid}"
         )
-        self._start_background_buffer(session_id)
 
-        # Send SIGWINCH to the child so programs like Claude Code repaint
-        # their current screen. Without this, the client sees stale ring
-        # buffer output (duplicate headers, old "reconnecting" messages).
-        if session.pid:
-            try:
-                os.kill(session.pid, signal.SIGWINCH)
-            except (ProcessLookupError, PermissionError):
-                pass
+        # The relay sends its ring buffer on data socket connect.
+        # Start the background reader to ingest it — but mark the session
+        # as needing a SIGWINCH when the first client connects. The client's
+        # resize will trigger a clean repaint at the correct dimensions.
+        self._start_background_buffer(session_id)
+        self._needs_sigwinch.add(session_id)
 
         return session
 
@@ -629,7 +624,7 @@ class TerminalManager:
         async def _buffer_loop():
             while session_id in self._sessions and session_id not in self._readers:
                 try:
-                    data = os.read(fd, 4096)
+                    data = os.read(fd, 65536)
                     if data:
                         session._output_buffer.extend(data)
                         if len(session._output_buffer) > session._buffer_max:
@@ -811,30 +806,38 @@ class TerminalManager:
     def register_client(self, session_id: str, client_id: str, cols: int, rows: int) -> None:
         """Register a connected client's viewport dimensions.
 
-        Multiple clients (desktop, mobile, kiosk) can view the same terminal.
-        The PTY is resized to the largest dimensions across all clients so
-        smaller clients scroll/clip while larger clients see full output.
+        Each client renders independently via xterm.js reflow. The PTY
+        is only resized when there's exactly one client (single-user mode)
+        or when a client explicitly sends input (active-user mode).
+        When multiple clients are connected, the PTY stays at the first
+        client's dimensions — other clients get xterm.js-level reflow.
         """
         if session_id not in self._client_dims:
             self._client_dims[session_id] = {}
+
+        is_first = len(self._client_dims[session_id]) == 0
         self._client_dims[session_id][client_id] = (cols, rows)
-        self._apply_effective_size(session_id)
+
+        if is_first or len(self._client_dims[session_id]) == 1:
+            # Single client — resize PTY to match
+            self._resize_pty(session_id, cols, rows)
+        # Multiple clients: don't resize, each client's xterm.js handles reflow
 
     def unregister_client(self, session_id: str, client_id: str) -> None:
-        """Remove a disconnected client and re-apply effective size."""
+        """Remove a disconnected client. If one remains, resize PTY to match it."""
         clients = self._client_dims.get(session_id, {})
         clients.pop(client_id, None)
-        if clients:
-            self._apply_effective_size(session_id)
+        if len(clients) == 1:
+            # Single client left — resize PTY to match it
+            remaining = list(clients.values())[0]
+            self._resize_pty(session_id, remaining[0], remaining[1])
 
-    def _apply_effective_size(self, session_id: str) -> None:
-        """Resize PTY to the max dimensions across all connected clients."""
+    def resize_for_active_client(self, session_id: str, client_id: str) -> None:
+        """Resize PTY to match a specific client (called when client sends input)."""
         clients = self._client_dims.get(session_id, {})
-        if not clients:
-            return
-        max_cols = max(c for c, _ in clients.values())
-        max_rows = max(r for _, r in clients.values())
-        self._resize_pty(session_id, max_cols, max_rows)
+        dims = clients.get(client_id)
+        if dims:
+            self._resize_pty(session_id, dims[0], dims[1])
 
     def resize(self, session_id: str, cols: int, rows: int, client_id: str | None = None) -> bool:
         """Resize terminal.
@@ -854,8 +857,16 @@ class TerminalManager:
         if not session or session.fd is None:
             return False
 
-        # Skip if dimensions haven't changed
-        if session.cols == cols and session.rows == rows:
+        # Force SIGWINCH on first client connect after server restart,
+        # even if dimensions match. This makes the program repaint cleanly
+        # instead of relying on the garbled ring buffer replay.
+        force = session_id in self._needs_sigwinch
+        if force:
+            self._needs_sigwinch.discard(session_id)
+            # Clear stale ring buffer data so client gets only fresh repaint
+            session._output_buffer.clear()
+
+        if not force and session.cols == cols and session.rows == rows:
             return True
 
         try:

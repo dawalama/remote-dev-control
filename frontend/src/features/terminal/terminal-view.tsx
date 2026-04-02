@@ -179,6 +179,9 @@ export function TerminalView({
       setTimeout(sendResize, 300)
       setTimeout(sendResize, 1500)
 
+      // Auto-focus the terminal so keystrokes go to it immediately
+      setTimeout(() => { termRef.current?.focus() }, 100)
+
       // Periodically send screen snapshots to server so other clients
       // (or reconnects at different dimensions) can restore cleanly.
       // Only visible screen + small scrollback; sent every 15s to limit bandwidth.
@@ -323,6 +326,7 @@ export function TerminalView({
     // the container layout (critical on mobile where viewport can shift).
     requestAnimationFrame(() => {
       try { fitAddon.fit() } catch {}
+      term.focus()
     })
 
     termRef.current = term

@@ -6232,6 +6232,21 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
             break
 
     # Replay: client snapshot > server snapshot > raw buffer
+    # Register output callback BEFORE replay so no data is lost
+    # between get_buffer() and callback registration.
+    output_queue: asyncio.Queue[bytes] = asyncio.Queue()
+
+    def on_output(data: bytes):
+        try:
+            output_queue.put_nowait(data)
+        except asyncio.QueueFull:
+            pass
+
+    tm.on_output(session_id, on_output)
+
+    # Start/re-attach the reader (no-op if already running)
+    tm.start_reader(session_id)
+
     if not skip_replay:
         snapshot_data = None
         if client_cols > 0 and client_rows > 0:
@@ -6246,23 +6261,9 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
 
     # If terminal is stopped, send a marker and close
     if is_stopped:
+        tm.remove_callback(session_id, on_output)
         await websocket.close(code=4005, reason="Terminal not running")
         return
-
-    # Start/re-attach the reader (no-op if already running)
-    tm.start_reader(session_id)
-
-    # Queue for outgoing messages
-    output_queue: asyncio.Queue[bytes] = asyncio.Queue()
-
-    # Callback to queue output
-    def on_output(data: bytes):
-        try:
-            output_queue.put_nowait(data)
-        except asyncio.QueueFull:
-            pass
-
-    tm.on_output(session_id, on_output)
 
     try:
         # Sender task
@@ -6291,7 +6292,9 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
                     break
 
                 if "bytes" in message:
-                    # Binary data - send directly to terminal
+                    # Binary data - send directly to terminal.
+                    # Resize PTY to this client's dimensions since they're actively typing.
+                    tm.resize_for_active_client(session_id, client_id)
                     tm.write(session_id, message["bytes"])
                 elif "text" in message:
                     # Text - could be JSON command or plain text
@@ -6304,6 +6307,7 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
                             if cmd["type"] == "resize":
                                 tm.resize(session_id, cmd.get("cols", 80), cmd.get("rows", 24), client_id=client_id)
                             elif cmd["type"] == "input":
+                                tm.resize_for_active_client(session_id, client_id)
                                 tm.write(session_id, cmd.get("data", "").encode())
                             elif cmd["type"] == "snapshot":
                                 # Client sends serialized screen state periodically.
@@ -6319,9 +6323,11 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
                                 pass  # Already handled above
                         else:
                             # Not a command, treat as plain text
+                            tm.resize_for_active_client(session_id, client_id)
                             tm.write(session_id, text.encode())
                     except json.JSONDecodeError:
                         # Plain text input
+                        tm.resize_for_active_client(session_id, client_id)
                         tm.write(session_id, text.encode())
         finally:
             sender_task.cancel()
