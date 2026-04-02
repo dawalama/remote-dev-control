@@ -168,6 +168,7 @@ class CaddyConfig(BaseModel):
 class Config(BaseModel):
     """Main RDC configuration."""
     server: ServerSettings = Field(default_factory=ServerSettings)
+    projects_dir: str | None = None  # Base directory for new projects (default: ~/projects)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     visual: VisualConfig = Field(default_factory=VisualConfig)

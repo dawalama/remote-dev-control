@@ -86,8 +86,31 @@ def init(
     else:
         project_name = name
     
-    project_path = path or Path.cwd() / project_name
-    
+    if path:
+        project_path = path
+    else:
+        # Use a dedicated projects directory, not cwd (which could be the RDC source tree).
+        # Check config, then env, then prompt with default ~/projects.
+        from .server.config import get_rdc_home
+        import yaml as _yaml
+        projects_base = None
+        config_path = get_rdc_home() / "config.yml"
+        if config_path.exists():
+            try:
+                cfg = _yaml.safe_load(config_path.read_text()) or {}
+                projects_base = cfg.get("projects_dir")
+            except Exception:
+                pass
+        if not projects_base:
+            projects_base = os.environ.get("RDC_PROJECTS_DIR")
+        if not projects_base:
+            default_dir = Path.home() / "projects"
+            projects_base = str(console.input(
+                f"  Where should new projects be created? [{default_dir}]: "
+            ).strip() or default_dir)
+        project_path = Path(projects_base).expanduser() / project_name
+        project_path.parent.mkdir(parents=True, exist_ok=True)
+
     # Apply overrides
     if proj_type:
         inferred["type"] = proj_type

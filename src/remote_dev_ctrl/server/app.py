@@ -7363,7 +7363,15 @@ async def scaffold_new_project(req: ScaffoldProjectRequest):
     if get_project_repo().get(req.name):
         raise HTTPException(status_code=409, detail=f"Project already exists: {req.name}")
 
-    project_path = _Path(req.path).expanduser().resolve() if req.path else _Path.cwd() / req.name
+    if req.path:
+        project_path = _Path(req.path).expanduser().resolve()
+    else:
+        # Use projects_dir from config, env, or default to ~/projects
+        from .config import get_rdc_home, Config
+        config = Config.load()
+        projects_dir = getattr(config, 'projects_dir', None) or os.environ.get("RDC_PROJECTS_DIR") or str(_Path.home() / "projects")
+        project_path = (_Path(projects_dir) / req.name).resolve()
+        project_path.parent.mkdir(parents=True, exist_ok=True)
     
     if project_path.exists() and any(project_path.iterdir()):
         raise HTTPException(status_code=400, detail=f"Directory is not empty: {project_path}")
