@@ -1,6 +1,6 @@
 [project]
 name = "rdc"
-version = "0.1.0"
+version = "0.1.1"
 description = "Command center for AI-assisted development. Manage multiple AI coding agents from any device."
 readme = "README.md"
 license = {text = "MIT"}
