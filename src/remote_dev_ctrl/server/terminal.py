@@ -70,9 +70,26 @@ class TerminalSession:
 # ---------------------------------------------------------------------------
 
 def _relay_socket_dir() -> str:
-    """Return (and ensure) the relay socket directory."""
-    d = os.path.join(os.path.expanduser("~"), ".adt", "relay")
+    """Return (and ensure) the relay socket directory.
+
+    On first call, migrates any relay sockets from legacy ~/.adt/relay/
+    to ~/.rdc/relay/ so existing relay processes can be found.
+    """
+    from .config import get_rdc_home
+    d = str(get_rdc_home() / "relay")
     os.makedirs(d, exist_ok=True)
+
+    # One-time migration from ~/.adt/relay to ~/.rdc/relay
+    legacy = os.path.join(os.path.expanduser("~"), ".adt", "relay")
+    if os.path.isdir(legacy) and legacy != d:
+        try:
+            for entry in os.listdir(legacy):
+                src = os.path.join(legacy, entry)
+                dst = os.path.join(d, entry)
+                if not os.path.exists(dst):
+                    os.symlink(src, dst)
+        except Exception:
+            pass
     return d
 
 
@@ -88,7 +105,13 @@ def _relay_spawn(name: str, cmd: str, cwd: str, cols: int, rows: int) -> bool:
     sock_dir = _relay_socket_dir()
     relay_script = _relay_script_path()
 
-    # Launch relay detached from our process group
+    # Launch relay detached from our process group.
+    # Augment PATH so helper scripts (rdc-launch) are available.
+    env = os.environ.copy()
+    rdc_bin = str(Path.home() / ".rdc" / "bin")
+    if rdc_bin not in env.get("PATH", ""):
+        env["PATH"] = rdc_bin + ":" + env.get("PATH", "")
+
     try:
         subprocess.Popen(
             [
@@ -103,6 +126,7 @@ def _relay_spawn(name: str, cmd: str, cwd: str, cols: int, rows: int) -> bool:
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
         )
     except Exception as e:
         logger.error(f"Failed to launch relay {name}: {e}")
@@ -225,8 +249,18 @@ def _relay_cleanup_stale(name: str):
 
 
 def _session_meta_path() -> Path:
-    """Path to the terminal session metadata file."""
-    return Path(os.path.expanduser("~")) / ".adt" / "terminal_sessions.json"
+    """Path to the terminal session metadata file.
+
+    Migrates from legacy ~/.adt/ path on first call if needed.
+    """
+    from .config import get_rdc_home
+    rdc_path = get_rdc_home() / "terminal_sessions.json"
+    if not rdc_path.exists():
+        legacy = Path.home() / ".adt" / "terminal_sessions.json"
+        if legacy.exists():
+            import shutil
+            shutil.copy2(str(legacy), str(rdc_path))
+    return rdc_path
 
 
 def _save_session_meta(sessions: dict[str, TerminalSession]) -> None:
@@ -388,33 +422,32 @@ class TerminalManager:
             else:
                 command = os.environ.get("RDC_TERMINAL_CMD", os.environ.get("ADT_TERMINAL_CMD", os.environ.get("SHELL", "/bin/bash")))
 
-        # Apply launch mode: resume (specific session), or resume/continue so user sees previous sessions
-        # Gemini CLI has no --continue/--resume; cursor-agent and claude do
-        _AGENT_CONTINUE_CMDS = ("cursor-agent", "claude")
-        if mode and mode.startswith("resume:"):
-            sid = mode.split(":", 1)[1]
-            command = f"{command} --resume={sid}"
-        elif mode in ("continue", None, "new") and "--resume" not in command and "--continue" not in command:
-            raw_base = ((command or "").strip().split() or [""])[0]
-            base_cmd = os.path.basename(raw_base) if raw_base else ""
-            if base_cmd not in _AGENT_CONTINUE_CMDS:
-                base_cmd = ""
-            try:
-                from .db.repositories import get_agent_session_repo, resolve_project_id
-                project_id = resolve_project_id(project)
-                if project_id and base_cmd:
-                    repo = get_agent_session_repo()
-                    latest = repo.get_latest(project_id)
-                    if latest and base_cmd == "cursor-agent":
-                        command = f"{command} --resume={latest.agent_session_id}"
-                        logger.debug(f"Terminal {session_id}: appending --resume={latest.agent_session_id}")
-                    elif mode == "continue":
+        # Apply launch mode: resume (specific session), or resume/continue.
+        # Skip if command uses rdc-launch (it handles resume logic itself).
+        if "rdc-launch" not in (command or ""):
+            _AGENT_CONTINUE_CMDS = ("cursor-agent", "claude")
+            if mode and mode.startswith("resume:"):
+                sid = mode.split(":", 1)[1]
+                command = f"{command} --resume={sid}"
+            elif mode in ("continue", None, "new") and "--resume" not in command and "--continue" not in command:
+                raw_base = ((command or "").strip().split() or [""])[0]
+                base_cmd = os.path.basename(raw_base) if raw_base else ""
+                if base_cmd not in _AGENT_CONTINUE_CMDS:
+                    base_cmd = ""
+                try:
+                    from .db.repositories import get_agent_session_repo, resolve_project_id
+                    project_id = resolve_project_id(project)
+                    if project_id and base_cmd:
+                        repo = get_agent_session_repo()
+                        latest = repo.get_latest(project_id)
+                        if latest and base_cmd == "cursor-agent":
+                            command = f"{command} --resume={latest.agent_session_id}"
+                        elif mode == "continue":
+                            command = f"{command} --continue"
+                except Exception as e:
+                    logger.debug(f"Could not attach resume/continue for {project}: {e}")
+                    if mode == "continue" and base_cmd:
                         command = f"{command} --continue"
-                        logger.debug(f"Terminal {session_id}: appending --continue")
-            except Exception as e:
-                logger.debug(f"Could not attach resume/continue for {project}: {e}")
-                if mode == "continue" and base_cmd:
-                    command = f"{command} --continue"
 
         relay_name = f"rdc-{session_id.removeprefix('term-')}"
 
@@ -515,6 +548,16 @@ class TerminalManager:
             f"child_pid={session.pid}"
         )
         self._start_background_buffer(session_id)
+
+        # Send SIGWINCH to the child so programs like Claude Code repaint
+        # their current screen. Without this, the client sees stale ring
+        # buffer output (duplicate headers, old "reconnecting" messages).
+        if session.pid:
+            try:
+                os.kill(session.pid, signal.SIGWINCH)
+            except (ProcessLookupError, PermissionError):
+                pass
+
         return session
 
     def _create_raw_pty(
@@ -535,6 +578,10 @@ class TerminalManager:
             env = os.environ.copy()
             env["TERM"] = "xterm-256color"
             env["COLORTERM"] = "truecolor"
+            # Ensure ~/.rdc/bin is in PATH for helper scripts (rdc-launch, etc.)
+            rdc_bin = str(Path.home() / ".rdc" / "bin")
+            if rdc_bin not in env.get("PATH", ""):
+                env["PATH"] = rdc_bin + ":" + env.get("PATH", "")
 
             process = subprocess.Popen(
                 command,

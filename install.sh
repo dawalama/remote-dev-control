@@ -153,6 +153,13 @@ step "Initializing RDC ($RDC_HOME)"
 
 mkdir -p "$RDC_HOME"/{data,logs/agents,logs/processes,bin,contexts,recordings}
 
+# Install helper scripts to ~/.rdc/bin/
+if [ -f "$RDC_DIR/scripts/rdc-launch.sh" ]; then
+  cp "$RDC_DIR/scripts/rdc-launch.sh" "$RDC_HOME/bin/rdc-launch"
+  chmod +x "$RDC_HOME/bin/rdc-launch"
+  ok "Installed rdc-launch to $RDC_HOME/bin/"
+fi
+
 # Create default config if it doesn't exist
 if [ ! -f "$RDC_HOME/config.yml" ]; then
   cat > "$RDC_HOME/config.yml" << 'YAML'
