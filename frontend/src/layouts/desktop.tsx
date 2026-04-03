@@ -10,14 +10,13 @@ import { getClientId, getClientName } from "@/lib/client-id"
 import { CommandPalette } from "@/components/project-bar"
 import { EmbeddedTerminal } from "@/features/terminal/embedded-terminal"
 import { RightTabs } from "@/features/right-tabs/right-tabs"
-import { ChatFAB } from "@/features/chat/chat-fab"
+// ChatFAB replaced by ChannelPanel in v2
 import { CommandBar } from "@/features/command-bar/command-bar"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { GlobalTextInput } from "@/components/global-text-input"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
 import { ChannelSidebar } from "@/features/channels/channel-sidebar"
-import { ChannelMessages } from "@/features/channels/channel-messages"
-import { useChannelStore } from "@/stores/channel-store"
+import { ChannelPanel } from "@/features/channels/channel-panel"
 
 const LAYOUTS = [
   { id: "desktop", label: "Desktop", short: "D" },
@@ -44,6 +43,7 @@ export function DesktopLayout() {
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
   const [systemSettingsOpen, setSystemSettingsOpen] = useState(false)
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
+  const [channelPanelOpen, setChannelPanelOpen] = useState(true)
   const presets = useTerminalPresetsStore((s) => s.presets)
   const loadPresets = useTerminalPresetsStore((s) => s.load)
 
@@ -261,17 +261,25 @@ export function DesktopLayout() {
         {/* Channel sidebar */}
         <ChannelSidebar />
 
-        {/* Workspace: terminal + channel messages */}
+        {/* Workspace: terminal (full width) + channel panel (bottom dock) */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
-          <div className="flex-1 flex min-h-0">
-            {/* Terminal pane */}
-            <div className="flex-[2] flex flex-col min-h-0 min-w-0 px-2 py-2">
-              <EmbeddedTerminal />
-            </div>
-
-            {/* Channel messages pane */}
-            <ChannelMessagesPane />
+          {/* Terminal — takes all available height */}
+          <div className="flex-1 flex flex-col min-h-0 min-w-0 px-2 py-2">
+            <EmbeddedTerminal />
           </div>
+
+          {/* Channel panel — toggleable bottom dock */}
+          {channelPanelOpen ? (
+            <ChannelPanel onClose={() => setChannelPanelOpen(false)} />
+          ) : (
+            <button
+              onClick={() => setChannelPanelOpen(true)}
+              className="flex items-center gap-2 px-3 py-1 border-t border-gray-800 text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800/50 flex-shrink-0"
+            >
+              <span>Chat</span>
+              <span className="text-[9px] text-gray-600">Click to open channel messages</span>
+            </button>
+          )}
         </div>
 
         {/* Right tabs */}
@@ -282,7 +290,6 @@ export function DesktopLayout() {
 
       {/* Floating elements */}
       <CommandBar />
-      <ChatFAB />
       <FloatingAgentPanel channel="desktop" />
       <CommandPalette />
       {systemSettingsOpen && (
@@ -327,20 +334,3 @@ export function DesktopLayout() {
   )
 }
 
-function ChannelMessagesPane() {
-  const activeChannelId = useChannelStore((s) => s.activeChannelId)
-
-  if (!activeChannelId) {
-    return (
-      <div className="flex-1 flex items-center justify-center bg-gray-900 border-l border-gray-800">
-        <p className="text-gray-600 text-xs">Select a channel</p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex-1 min-h-0 min-w-0 border-l border-gray-800 bg-gray-900">
-      <ChannelMessages channelId={activeChannelId} />
-    </div>
-  )
-}
