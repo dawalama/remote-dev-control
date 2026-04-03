@@ -261,6 +261,16 @@ async def lifespan(app: FastAPI):
     if config.agents.auto_spawn:
         await orchestrator.start()
     
+    # Ensure all existing projects have a default channel
+    try:
+        from .channel_manager import get_channel_manager
+        from .db.repositories import ProjectRepository
+        cm = get_channel_manager()
+        for proj in ProjectRepository().list():
+            cm.ensure_project_channel(proj.id, proj.name)
+    except Exception as e:
+        logger.warning(f"Channel sync for existing projects failed: {e}")
+
     # Re-attach to any relay terminal sessions that survived the last shutdown
     from .terminal import get_terminal_manager as _get_tm
     from .state_machine import get_state_machine

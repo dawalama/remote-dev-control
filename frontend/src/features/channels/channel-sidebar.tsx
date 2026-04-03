@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react"
 import { useChannelStore, type Channel } from "@/stores/channel-store"
+import { useProjectStore } from "@/stores/project-store"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 
 type GroupMode = "flat" | "project"
@@ -7,9 +8,21 @@ type GroupMode = "flat" | "project"
 export function ChannelSidebar() {
   const channels = useChannelStore((s) => s.channels)
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
-  const selectChannel = useChannelStore((s) => s.selectChannel)
+  const selectChannelRaw = useChannelStore((s) => s.selectChannel)
   const loadChannels = useChannelStore((s) => s.loadChannels)
   const createChannel = useChannelStore((s) => s.createChannel)
+  const selectProject = useProjectStore((s) => s.selectProject)
+  const projects = useProjectStore((s) => s.projects)
+
+  // When selecting a channel, also set the active project
+  const selectChannel = useCallback((channelId: string) => {
+    selectChannelRaw(channelId)
+    const ch = channels.find((c) => c.id === channelId)
+    if (ch && ch.project_ids.length > 0) {
+      const proj = projects.find((p) => p.name === ch.name.replace(/^#/, "").split("/")[0])
+      if (proj) selectProject(proj.name)
+    }
+  }, [selectChannelRaw, channels, projects, selectProject])
 
   const [groupMode, setGroupMode] = useState<GroupMode>("flat")
   const [creating, setCreating] = useState(false)

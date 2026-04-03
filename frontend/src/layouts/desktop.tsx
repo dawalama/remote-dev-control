@@ -7,7 +7,7 @@ import { useTerminalStore } from "@/stores/terminal-store"
 import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
 import { POST } from "@/lib/api"
 import { getClientId, getClientName } from "@/lib/client-id"
-import { ProjectBar, CommandPalette } from "@/components/project-bar"
+import { CommandPalette } from "@/components/project-bar"
 import { EmbeddedTerminal } from "@/features/terminal/embedded-terminal"
 import { RightTabs } from "@/features/right-tabs/right-tabs"
 import { ChatFAB } from "@/features/chat/chat-fab"
@@ -201,11 +201,6 @@ export function DesktopLayout() {
             Logout
           </button>
         </div>
-      </div>
-
-      {/* Project selector */}
-      <div className="px-4 flex-shrink-0">
-        <ProjectBar />
       </div>
 
       {/* Attention: terminals waiting for input */}
