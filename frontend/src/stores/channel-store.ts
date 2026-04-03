@@ -1,5 +1,5 @@
 import { create } from "zustand"
-import { GET, POST, PATCH } from "@/lib/api"
+import { GET, POST, PATCH, DELETE as DEL } from "@/lib/api"
 
 export interface Channel {
   id: string
@@ -33,6 +33,7 @@ interface ChannelState {
   selectChannel: (id: string) => void
   createChannel: (name: string, type?: string, projectIds?: string[]) => Promise<Channel | null>
   archiveChannel: (id: string) => Promise<void>
+  deleteChannel: (id: string) => Promise<void>
   loadMessages: (channelId: string) => Promise<void>
   postMessage: (channelId: string, content: string, role?: string) => Promise<ChannelMessage | null>
   toggleAutoMode: (channelId: string) => Promise<void>
@@ -82,6 +83,19 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
       set((s) => ({
         channels: s.channels.filter((c) => c.id !== id),
         activeChannelId: s.activeChannelId === id ? null : s.activeChannelId,
+      }))
+    } catch {
+      // ignore
+    }
+  },
+
+  deleteChannel: async (id) => {
+    try {
+      await DEL(`/channels/${id}`)
+      set((s) => ({
+        channels: s.channels.filter((c) => c.id !== id),
+        activeChannelId: s.activeChannelId === id ? null : s.activeChannelId,
+        messages: s.activeChannelId === id ? [] : s.messages,
       }))
     } catch {
       // ignore

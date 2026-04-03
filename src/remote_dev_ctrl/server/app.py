@@ -8178,11 +8178,21 @@ async def create_channel(request: Request):
     if not name.startswith("#"):
         name = f"#{name}"
 
+    # Resolve project names to IDs
+    from .db.repositories import ProjectRepository
+    raw_ids = body.get("project_ids", [])
+    project_ids = []
+    repo = ProjectRepository()
+    for name_or_id in raw_ids:
+        proj = repo.get(name_or_id)  # accepts name or UUID
+        if proj:
+            project_ids.append(proj.id)
+
     cm = get_channel_manager()
     ch = cm.create_channel(
         name=name,
         type=ChannelType(body.get("type", "ephemeral")),
-        project_ids=body.get("project_ids", []),
+        project_ids=project_ids,
         parent_channel_id=body.get("parent_channel_id"),
     )
     return {
@@ -8246,6 +8256,25 @@ async def archive_channel(channel_id: str):
     from .channel_manager import get_channel_manager
     cm = get_channel_manager()
     cm.archive_channel(channel_id)
+    return {"success": True}
+
+
+@app.delete("/channels/{channel_id}")
+async def delete_channel(channel_id: str):
+    """Permanently delete a channel and its messages."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    ch = cm.get_channel(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if ch.type.value == "system":
+        raise HTTPException(status_code=403, detail="Cannot delete system channels")
+    # Delete messages, terminal links, and the channel itself
+    cm.db.execute("DELETE FROM channel_messages WHERE channel_id = ?", (channel_id,))
+    cm.db.execute("DELETE FROM terminal_channels WHERE channel_id = ?", (channel_id,))
+    cm.db.execute("DELETE FROM channel_projects WHERE channel_id = ?", (channel_id,))
+    cm.db.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
+    cm.db.commit()
     return {"success": True}
 
 

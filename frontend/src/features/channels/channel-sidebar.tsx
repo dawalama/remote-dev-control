@@ -14,6 +14,7 @@ export function ChannelSidebar() {
   const loadChannels = useChannelStore((s) => s.loadChannels)
   const createChannel = useChannelStore((s) => s.createChannel)
   const archiveChannel = useChannelStore((s) => s.archiveChannel)
+  const deleteChannel = useChannelStore((s) => s.deleteChannel)
   const selectProject = useProjectStore((s) => s.selectProject)
   const projects = useProjectStore((s) => s.projects)
   const collections = useProjectStore((s) => s.collections)
@@ -28,6 +29,7 @@ export function ChannelSidebar() {
   const [filterMode, setFilterMode] = useState<FilterMode>("all")
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState("")
+  const [newProjectId, setNewProjectId] = useState<string>("")
 
   useMountEffect(() => {
     loadChannels()
@@ -95,10 +97,13 @@ export function ChannelSidebar() {
 
   const handleCreate = useCallback(async () => {
     if (!newName.trim()) return
-    await createChannel(newName.trim())
+    const projectIds = newProjectId ? [newProjectId] : []
+    const type = projectIds.length > 0 ? "project" : "ephemeral"
+    await createChannel(newName.trim(), type, projectIds)
     setNewName("")
+    setNewProjectId("")
     setCreating(false)
-  }, [newName, createChannel])
+  }, [newName, newProjectId, createChannel])
 
   const grouped = groupMode === "project" ? groupByProject(filteredChannels) : null
 
@@ -160,20 +165,45 @@ export function ChannelSidebar() {
         </div>
       </div>
 
-      {/* Create channel input */}
+      {/* Create channel form */}
       {creating && (
-        <div className="px-2 py-1.5 border-b border-gray-800">
+        <div className="px-2 py-1.5 border-b border-gray-800 space-y-1">
           <input
             autoFocus
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") handleCreate()
-              if (e.key === "Escape") { setCreating(false); setNewName("") }
+              if (e.key === "Escape") { setCreating(false); setNewName(""); setNewProjectId("") }
             }}
             placeholder="#channel-name"
             className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-blue-500"
           />
+          <select
+            value={newProjectId}
+            onChange={(e) => setNewProjectId(e.target.value)}
+            className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
+          >
+            <option value="">No project (ephemeral)</option>
+            {projects.map((p) => (
+              <option key={p.name} value={p.name}>{p.name}</option>
+            ))}
+          </select>
+          <div className="flex gap-1">
+            <button
+              onClick={handleCreate}
+              disabled={!newName.trim()}
+              className="flex-1 px-2 py-0.5 text-[10px] bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-white"
+            >
+              Create
+            </button>
+            <button
+              onClick={() => { setCreating(false); setNewName(""); setNewProjectId("") }}
+              className="px-2 py-0.5 text-[10px] bg-gray-700 hover:bg-gray-600 rounded text-gray-300"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 
@@ -193,6 +223,7 @@ export function ChannelSidebar() {
                   hasActivity={isChannelActive(ch, activeProjectNames)}
                   onSelect={() => selectChannel(ch.id)}
                   onArchive={() => archiveChannel(ch.id)}
+                  onDelete={() => deleteChannel(ch.id)}
                   indent
                 />
               ))}
@@ -207,6 +238,7 @@ export function ChannelSidebar() {
               hasActivity={isChannelActive(ch, activeProjectNames)}
               onSelect={() => selectChannel(ch.id)}
               onArchive={() => archiveChannel(ch.id)}
+              onDelete={() => deleteChannel(ch.id)}
             />
           ))
         )}
@@ -229,6 +261,7 @@ function ChannelItem({
   hasActivity,
   onSelect,
   onArchive,
+  onDelete,
   indent = false,
 }: {
   channel: Channel
@@ -236,6 +269,7 @@ function ChannelItem({
   hasActivity: boolean
   onSelect: () => void
   onArchive: () => void
+  onDelete: () => void
   indent?: boolean
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
@@ -277,12 +311,20 @@ function ChannelItem({
           <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
           <div className="absolute left-full top-0 ml-1 z-50 bg-gray-800 border border-gray-700 rounded shadow-lg py-1 min-w-[120px]">
             {channel.type !== "system" && (
-              <button
-                onClick={() => { setMenuOpen(false); onArchive() }}
-                className="w-full px-3 py-1 text-xs text-left text-red-400 hover:bg-gray-700"
-              >
-                Archive
-              </button>
+              <>
+                <button
+                  onClick={() => { setMenuOpen(false); onArchive() }}
+                  className="w-full px-3 py-1 text-xs text-left text-gray-300 hover:bg-gray-700"
+                >
+                  Archive
+                </button>
+                <button
+                  onClick={() => { if (confirm(`Delete #${channel.name.replace(/^#/, "")}?`)) { setMenuOpen(false); onDelete() } }}
+                  className="w-full px-3 py-1 text-xs text-left text-red-400 hover:bg-gray-700"
+                >
+                  Delete
+                </button>
+              </>
             )}
             <button
               onClick={() => setMenuOpen(false)}
