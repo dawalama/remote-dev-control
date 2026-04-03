@@ -31,6 +31,7 @@ export function ChannelPanel({ onClose }: { onClose: () => void }) {
   const [renaming, setRenaming] = useState(false)
   const [renameTo, setRenameTo] = useState("")
   const bottomRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const handleSend = useCallback(async () => {
     if (!input.trim() || sending || !activeChannelId) return
@@ -56,6 +57,7 @@ export function ChannelPanel({ onClose }: { onClose: () => void }) {
 
     setSending(false)
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
+    requestAnimationFrame(() => inputRef.current?.focus())
   }, [input, sending, activeChannelId, projectName, postMessage])
 
   const handleRename = async () => {
@@ -171,6 +173,7 @@ export function ChannelPanel({ onClose }: { onClose: () => void }) {
       <div className="flex-shrink-0 px-3 py-1.5 border-t border-gray-800">
         <div className="flex gap-2">
           <input
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend() } }}

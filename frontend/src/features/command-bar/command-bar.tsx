@@ -8,8 +8,6 @@ import { useVoice } from "@/hooks/use-voice"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
 
 export function CommandBar() {
-  const toggleChat = useUIStore((s) => s.toggleChat)
-  const chatOpen = useUIStore((s) => s.chatOpen)
   const toast = useUIStore((s) => s.toast)
   const phone = useStateStore((s) => s.phone)
   const theme = useUIStore((s) => s.theme)
@@ -97,18 +95,7 @@ export function CommandBar() {
           </span>
         )}
 
-        {/* Chat */}
-        <button
-          className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${
-            chatOpen
-              ? "bg-purple-600 text-white"
-              : "bg-gray-600 text-gray-300 hover:bg-gray-500"
-          }`}
-          onClick={toggleChat}
-          title="Chat"
-        >
-          💬
-        </button>
+        {/* Chat button removed — replaced by channel panel in v2 */}
 
         {/* Theme picker */}
         <div className="flex rounded overflow-hidden border border-gray-600">
