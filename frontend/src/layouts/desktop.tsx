@@ -15,6 +15,9 @@ import { CommandBar } from "@/features/command-bar/command-bar"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { GlobalTextInput } from "@/components/global-text-input"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
+import { ChannelSidebar } from "@/features/channels/channel-sidebar"
+import { ChannelMessages } from "@/features/channels/channel-messages"
+import { useChannelStore } from "@/stores/channel-store"
 
 const LAYOUTS = [
   { id: "desktop", label: "Desktop", short: "D" },
@@ -258,15 +261,26 @@ export function DesktopLayout() {
         </div>
       )}
 
-      {/* Main content: 2-column IDE layout */}
-      <div className="flex-1 grid grid-cols-3 gap-3 px-4 py-3 min-h-0 pb-[60px]">
-        {/* Left column: terminal */}
-        <div className="col-span-2 flex flex-col min-h-0">
-          <EmbeddedTerminal />
+      {/* Main content: channel sidebar + workspace + right tabs */}
+      <div className="flex-1 flex gap-0 min-h-0 pb-[60px]">
+        {/* Channel sidebar */}
+        <ChannelSidebar />
+
+        {/* Workspace: terminal + channel messages */}
+        <div className="flex-1 flex flex-col min-h-0 min-w-0">
+          <div className="flex-1 flex min-h-0">
+            {/* Terminal pane */}
+            <div className="flex-[2] flex flex-col min-h-0 min-w-0 px-2 py-2">
+              <EmbeddedTerminal />
+            </div>
+
+            {/* Channel messages pane */}
+            <ChannelMessagesPane />
+          </div>
         </div>
 
-        {/* Right column: tabbed sidebar */}
-        <div className="col-span-1 min-h-0 min-w-0 overflow-hidden">
+        {/* Right tabs */}
+        <div className="w-80 min-h-0 min-w-0 overflow-hidden px-2 py-2 flex-shrink-0">
           <RightTabs />
         </div>
       </div>
@@ -314,6 +328,24 @@ export function DesktopLayout() {
         </div>
       )}
       <GlobalTextInput />
+    </div>
+  )
+}
+
+function ChannelMessagesPane() {
+  const activeChannelId = useChannelStore((s) => s.activeChannelId)
+
+  if (!activeChannelId) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-gray-900 border-l border-gray-800">
+        <p className="text-gray-600 text-xs">Select a channel</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex-1 min-h-0 min-w-0 border-l border-gray-800 bg-gray-900">
+      <ChannelMessages channelId={activeChannelId} />
     </div>
   )
 }
