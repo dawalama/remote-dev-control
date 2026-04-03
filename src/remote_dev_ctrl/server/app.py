@@ -7183,6 +7183,12 @@ async def create_project(req: CreateProjectRequest):
 
     event_repo.log("project.created", project=project_name, message=f"Project registered: {project_name}")
 
+    # Auto-create default channel for this project
+    try:
+        from .channel_manager import get_channel_manager
+        get_channel_manager().ensure_project_channel(db_proj.id, project_name)
+    except Exception:
+        pass  # Don't fail project creation if channel creation fails
 
     # Create and run setup task in-process (stack detection, process discovery, profile)
     try:
@@ -8120,6 +8126,216 @@ async def caddy_restart():
             await cm.add_route(p.id, sub, p.port)
 
     return {"success": True, "routes": cm.list_routes()}
+
+
+# =============================================================================
+# Channels (v2)
+# =============================================================================
+
+@app.get("/channels")
+async def list_channels(include_archived: bool = False):
+    """List all channels."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    channels = cm.list_channels(include_archived=include_archived)
+    return [
+        {
+            "id": ch.id,
+            "name": ch.name,
+            "type": ch.type.value,
+            "parent_channel_id": ch.parent_channel_id,
+            "project_ids": ch.project_ids,
+            "auto_mode": ch.auto_mode,
+            "token_spent": ch.token_spent,
+            "token_budget": ch.token_budget,
+            "created_at": ch.created_at.isoformat(),
+            "archived_at": ch.archived_at.isoformat() if ch.archived_at else None,
+        }
+        for ch in channels
+    ]
+
+
+@app.post("/channels")
+async def create_channel(request: Request):
+    """Create a new channel."""
+    from .channel_manager import get_channel_manager
+    from .db.models import ChannelType
+
+    body = await request.json()
+    name = body.get("name", "")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if not name.startswith("#"):
+        name = f"#{name}"
+
+    cm = get_channel_manager()
+    ch = cm.create_channel(
+        name=name,
+        type=ChannelType(body.get("type", "ephemeral")),
+        project_ids=body.get("project_ids", []),
+        parent_channel_id=body.get("parent_channel_id"),
+    )
+    return {
+        "id": ch.id,
+        "name": ch.name,
+        "type": ch.type.value,
+        "project_ids": ch.project_ids,
+        "created_at": ch.created_at.isoformat(),
+    }
+
+
+@app.get("/channels/{channel_id}")
+async def get_channel(channel_id: str):
+    """Get a channel by ID."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    ch = cm.get_channel(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    return {
+        "id": ch.id,
+        "name": ch.name,
+        "type": ch.type.value,
+        "parent_channel_id": ch.parent_channel_id,
+        "project_ids": ch.project_ids,
+        "auto_mode": ch.auto_mode,
+        "token_spent": ch.token_spent,
+        "token_budget": ch.token_budget,
+        "created_at": ch.created_at.isoformat(),
+        "archived_at": ch.archived_at.isoformat() if ch.archived_at else None,
+    }
+
+
+@app.patch("/channels/{channel_id}")
+async def update_channel(channel_id: str, request: Request):
+    """Update a channel (rename, toggle auto-mode, set budget)."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    ch = cm.get_channel(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    body = await request.json()
+    if "name" in body:
+        cm.rename_channel(channel_id, body["name"])
+    if "auto_mode" in body:
+        cm.set_auto_mode(channel_id, bool(body["auto_mode"]))
+    if "token_budget" in body:
+        cm.db.execute(
+            "UPDATE channels SET token_budget = ? WHERE id = ?",
+            (body["token_budget"], channel_id),
+        )
+        cm.db.commit()
+
+    return {"success": True}
+
+
+@app.post("/channels/{channel_id}/archive")
+async def archive_channel(channel_id: str):
+    """Archive a channel."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    cm.archive_channel(channel_id)
+    return {"success": True}
+
+
+# ── Channel Messages ──
+
+@app.get("/channels/{channel_id}/messages")
+async def list_channel_messages(channel_id: str, limit: int = 50, before: str | None = None):
+    """List messages in a channel (chronological order)."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    messages = cm.list_messages(channel_id, limit=limit, before=before)
+    return [
+        {
+            "id": m.id,
+            "channel_id": m.channel_id,
+            "role": m.role.value,
+            "content": m.content,
+            "metadata": m.metadata,
+            "created_at": m.created_at.isoformat(),
+        }
+        for m in messages
+    ]
+
+
+@app.post("/channels/{channel_id}/messages")
+async def post_channel_message(channel_id: str, request: Request):
+    """Post a message to a channel."""
+    from .channel_manager import get_channel_manager
+    from .db.models import ChannelMessageRole
+
+    body = await request.json()
+    content = body.get("content", "")
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    cm = get_channel_manager()
+    msg = cm.post_message(
+        channel_id=channel_id,
+        role=ChannelMessageRole(body.get("role", "user")),
+        content=content,
+        metadata=body.get("metadata"),
+    )
+    return {
+        "id": msg.id,
+        "channel_id": msg.channel_id,
+        "role": msg.role.value,
+        "content": msg.content,
+        "created_at": msg.created_at.isoformat(),
+    }
+
+
+# ── Channel Terminals ──
+
+@app.post("/channels/{channel_id}/terminals")
+async def link_terminal_to_channel(channel_id: str, request: Request):
+    """Link a terminal to a channel."""
+    from .channel_manager import get_channel_manager
+    body = await request.json()
+    terminal_id = body.get("terminal_id", "")
+    if not terminal_id:
+        raise HTTPException(status_code=400, detail="terminal_id is required")
+
+    cm = get_channel_manager()
+    cm.link_terminal(terminal_id, channel_id)
+    return {"success": True}
+
+
+@app.get("/channels/{channel_id}/terminals")
+async def get_channel_terminals(channel_id: str):
+    """Get terminal IDs linked to a channel."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    return {"terminal_ids": cm.get_channel_terminals(channel_id)}
+
+
+# ── Events ──
+
+@app.get("/events/search")
+async def search_events(
+    q: str | None = None,
+    type: str | None = None,
+    channel_id: str | None = None,
+    limit: int = 50,
+):
+    """Search the event store."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    events = cm.search_events(query=q, type=type, channel_id=channel_id, limit=limit)
+    return [
+        {
+            "id": e.id,
+            "timestamp": e.timestamp.isoformat(),
+            "type": e.type,
+            "channel_id": e.channel_id,
+            "project_id": e.project_id,
+            "mission_id": e.mission_id,
+            "data": e.data,
+        }
+        for e in events
+    ]
 
 
 # =============================================================================
