@@ -7,6 +7,8 @@ export interface Channel {
   type: "project" | "mission" | "ephemeral" | "system" | "event"
   parent_channel_id: string | null
   project_ids: string[]
+  project_names: string[]
+  collection_ids: string[]
   auto_mode: boolean
   token_spent: number
   token_budget: number | null

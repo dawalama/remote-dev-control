@@ -8146,23 +8146,44 @@ async def caddy_restart():
 async def list_channels(include_archived: bool = False):
     """List all channels."""
     from .channel_manager import get_channel_manager
+    from .db.repositories import ProjectRepository
     cm = get_channel_manager()
     channels = cm.list_channels(include_archived=include_archived)
-    return [
-        {
+
+    # Resolve project IDs to names + collection_ids for frontend filtering
+    repo = ProjectRepository()
+    project_cache: dict = {}
+    def _resolve(pid: str):
+        if pid not in project_cache:
+            p = repo.get_by_id(pid) if hasattr(repo, 'get_by_id') else repo.get(pid)
+            project_cache[pid] = p
+        return project_cache[pid]
+
+    result = []
+    for ch in channels:
+        project_names = []
+        collection_ids = set()
+        for pid in ch.project_ids:
+            p = _resolve(pid)
+            if p:
+                project_names.append(p.name)
+                if p.collection_id:
+                    collection_ids.add(p.collection_id)
+        result.append({
             "id": ch.id,
             "name": ch.name,
             "type": ch.type.value,
             "parent_channel_id": ch.parent_channel_id,
             "project_ids": ch.project_ids,
+            "project_names": project_names,
+            "collection_ids": list(collection_ids),
             "auto_mode": ch.auto_mode,
             "token_spent": ch.token_spent,
             "token_budget": ch.token_budget,
             "created_at": ch.created_at.isoformat(),
             "archived_at": ch.archived_at.isoformat() if ch.archived_at else None,
-        }
-        for ch in channels
-    ]
+        })
+    return result
 
 
 @app.post("/channels")

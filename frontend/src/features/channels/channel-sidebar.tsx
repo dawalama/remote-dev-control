@@ -57,43 +57,29 @@ export function ChannelSidebar() {
     return active
   }, [terminals, actions])
 
-  // Compute which project names are in the current collection
-  const collectionProjectNames = useMemo(() => {
-    if (currentCollection === "all") return null // no filter
-    const col = collections.find((c) => c.id === currentCollection)
-    if (!col) return null
-    // Projects in this collection
-    const names = new Set<string>()
-    for (const p of projects) {
-      if (p.collection_id === currentCollection) names.add(p.name)
-    }
-    return names
-  }, [currentCollection, collections, projects])
-
   // Filter channels
   const filteredChannels = useMemo(() => {
     let result = channels
 
-    // Collection filter
-    if (collectionProjectNames) {
+    // Collection filter — use channel's collection_ids from API
+    if (currentCollection !== "all") {
       result = result.filter((ch) => {
-        if (ch.type === "system") return true // always show system
-        const name = ch.name.replace(/^#/, "").split("/")[0]
-        return collectionProjectNames.has(name)
+        if (ch.type === "system") return true // system shows everywhere
+        if (ch.collection_ids.length === 0 && ch.project_ids.length === 0) return false // orphaned ephemeral
+        return ch.collection_ids.includes(currentCollection)
       })
     }
 
     // Active filter
     if (filterMode === "active") {
       result = result.filter((ch) => {
-        if (ch.type === "system") return false // hide system in active view
-        const name = ch.name.replace(/^#/, "").split("/")[0]
-        return activeProjectNames.has(name)
+        if (ch.type === "system") return false
+        return isChannelActive(ch, activeProjectNames)
       })
     }
 
     return result
-  }, [channels, filterMode, collectionProjectNames, activeProjectNames])
+  }, [channels, filterMode, currentCollection, activeProjectNames])
 
   const handleCreate = useCallback(async () => {
     if (!newName.trim()) return
@@ -272,7 +258,7 @@ function ChannelItem({
   onDelete: () => void
   indent?: boolean
 }) {
-  const [menuOpen, setMenuOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const typeIcon = {
     project: "#",
@@ -283,10 +269,9 @@ function ChannelItem({
   }[channel.type] || "#"
 
   return (
-    <div className="relative">
+    <div className="relative group">
       <button
         onClick={onSelect}
-        onContextMenu={(e) => { e.preventDefault(); setMenuOpen(!menuOpen) }}
         className={`w-full flex items-center gap-1.5 px-3 py-1 text-left text-sm transition-colors ${
           indent ? "pl-5" : ""
         } ${
@@ -301,36 +286,53 @@ function ChannelItem({
         <span className="text-gray-600 text-[10px] w-3 flex-shrink-0">{typeIcon}</span>
         <span className="truncate flex-1 text-xs">{channel.name.replace(/^#/, "")}</span>
         {channel.auto_mode && (
-          <span className="text-[9px] text-yellow-500" title="Auto-mode">A</span>
+          <span className="text-[9px] text-yellow-500 mr-1" title="Auto-mode">A</span>
+        )}
+        {/* Settings gear — visible on hover */}
+        {channel.type !== "system" && (
+          <span
+            onClick={(e) => { e.stopPropagation(); setSettingsOpen(!settingsOpen) }}
+            className="text-[10px] text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+            title="Channel settings"
+          >
+            ...
+          </span>
         )}
       </button>
 
-      {/* Context menu */}
-      {menuOpen && (
+      {/* Settings panel */}
+      {settingsOpen && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-          <div className="absolute left-full top-0 ml-1 z-50 bg-gray-800 border border-gray-700 rounded shadow-lg py-1 min-w-[120px]">
-            {channel.type !== "system" && (
-              <>
-                <button
-                  onClick={() => { setMenuOpen(false); onArchive() }}
-                  className="w-full px-3 py-1 text-xs text-left text-gray-300 hover:bg-gray-700"
-                >
-                  Archive
-                </button>
-                <button
-                  onClick={() => { if (confirm(`Delete #${channel.name.replace(/^#/, "")}?`)) { setMenuOpen(false); onDelete() } }}
-                  className="w-full px-3 py-1 text-xs text-left text-red-400 hover:bg-gray-700"
-                >
-                  Delete
-                </button>
-              </>
+          <div className="fixed inset-0 z-40" onClick={() => setSettingsOpen(false)} />
+          <div className="absolute left-full top-0 ml-1 z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl p-2 min-w-[160px] space-y-1">
+            <div className="text-[10px] text-gray-500 px-1 pb-1 border-b border-gray-700 mb-1">
+              {channel.name}
+            </div>
+
+            {/* Project info */}
+            {channel.project_names.length > 0 && (
+              <div className="text-[10px] text-gray-500 px-1">
+                Projects: {channel.project_names.join(", ")}
+              </div>
             )}
+
+            {/* Actions */}
             <button
-              onClick={() => setMenuOpen(false)}
-              className="w-full px-3 py-1 text-xs text-left text-gray-400 hover:bg-gray-700"
+              onClick={() => { setSettingsOpen(false); onArchive() }}
+              className="w-full px-2 py-1 text-xs text-left text-gray-300 hover:bg-gray-700 rounded"
             >
-              Cancel
+              Archive
+            </button>
+            <button
+              onClick={() => {
+                if (confirm(`Delete ${channel.name} and all its messages?`)) {
+                  setSettingsOpen(false)
+                  onDelete()
+                }
+              }}
+              className="w-full px-2 py-1 text-xs text-left text-red-400 hover:bg-gray-700 rounded"
+            >
+              Delete
             </button>
           </div>
         </>
@@ -343,8 +345,7 @@ function ChannelItem({
 
 function isChannelActive(ch: Channel, activeProjectNames: Set<string>): boolean {
   if (ch.type === "system") return false
-  const name = ch.name.replace(/^#/, "").split("/")[0]
-  return activeProjectNames.has(name)
+  return ch.project_names.some((n) => activeProjectNames.has(n))
 }
 
 function groupByProject(channels: Channel[]): Record<string, Channel[]> {
