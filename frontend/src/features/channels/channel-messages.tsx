@@ -1,30 +1,72 @@
 import { useState, useRef, useCallback } from "react"
 import { useChannelStore } from "@/stores/channel-store"
+import { POST } from "@/lib/api"
 import type { ChannelMessage } from "@/stores/channel-store"
+
+interface OrchestratorResponse {
+  response?: string
+  actions?: { type: string; [key: string]: unknown }[]
+}
 
 export function ChannelMessages({ channelId }: { channelId: string }) {
   const messages = useChannelStore((s) => s.messages)
   const postMessage = useChannelStore((s) => s.postMessage)
+  const channels = useChannelStore((s) => s.channels)
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
+  const channel = channels.find((c) => c.id === channelId)
+  // Derive project name from channel name (e.g. #chilly-snacks -> chilly-snacks)
+  const projectName = channel?.name.replace(/^#/, "").split("/")[0] || ""
+
   const handleSend = useCallback(async () => {
     if (!input.trim() || sending) return
+    const userMessage = input.trim()
     setSending(true)
-    await postMessage(channelId, input.trim())
     setInput("")
+
+    // Post user message to channel history
+    await postMessage(channelId, userMessage, "user")
+
+    // Route through the orchestrator with channel/project context
+    try {
+      const result = await POST<OrchestratorResponse>("/orchestrator", {
+        message: userMessage,
+        project: projectName || undefined,
+        channel: "desktop",
+        channel_id: channelId,
+      })
+
+      // Post orchestrator response to channel history
+      if (result?.response) {
+        await postMessage(channelId, result.response, "orchestrator")
+      }
+    } catch (e) {
+      await postMessage(channelId, `Error: ${e}`, "system")
+    }
+
     setSending(false)
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [input, sending, channelId, postMessage])
+  }, [input, sending, channelId, projectName, postMessage])
 
   return (
     <div className="flex flex-col h-full">
+      {/* Channel header */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-800 flex-shrink-0">
+        <span className="text-xs font-medium text-gray-300">
+          {channel?.name || "Channel"}
+        </span>
+        {projectName && (
+          <span className="text-[10px] text-gray-600">{projectName}</span>
+        )}
+      </div>
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
         {messages.length === 0 && (
           <div className="text-center text-gray-600 text-xs py-8">
-            No messages yet. Start a conversation.
+            Start a conversation. Commands are routed through the orchestrator.
           </div>
         )}
         {messages.map((msg) => (
@@ -40,7 +82,7 @@ export function ChannelMessages({ channelId }: { channelId: string }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend() } }}
-            placeholder="Type a message..."
+            placeholder={projectName ? `Message #${projectName}...` : "Type a message..."}
             className="flex-1 px-3 py-1.5 text-sm bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-blue-500"
             disabled={sending}
           />
@@ -49,7 +91,7 @@ export function ChannelMessages({ channelId }: { channelId: string }) {
             disabled={sending || !input.trim()}
             className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-white font-medium"
           >
-            Send
+            {sending ? "..." : "Send"}
           </button>
         </div>
       </div>

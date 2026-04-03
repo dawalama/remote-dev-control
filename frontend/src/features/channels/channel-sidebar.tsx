@@ -13,6 +13,7 @@ export function ChannelSidebar() {
   const selectChannelRaw = useChannelStore((s) => s.selectChannel)
   const loadChannels = useChannelStore((s) => s.loadChannels)
   const createChannel = useChannelStore((s) => s.createChannel)
+  const archiveChannel = useChannelStore((s) => s.archiveChannel)
   const selectProject = useProjectStore((s) => s.selectProject)
   const projects = useProjectStore((s) => s.projects)
   const collections = useProjectStore((s) => s.collections)
@@ -191,6 +192,7 @@ export function ChannelSidebar() {
                   active={ch.id === activeChannelId}
                   hasActivity={isChannelActive(ch, activeProjectNames)}
                   onSelect={() => selectChannel(ch.id)}
+                  onArchive={() => archiveChannel(ch.id)}
                   indent
                 />
               ))}
@@ -204,6 +206,7 @@ export function ChannelSidebar() {
               active={ch.id === activeChannelId}
               hasActivity={isChannelActive(ch, activeProjectNames)}
               onSelect={() => selectChannel(ch.id)}
+              onArchive={() => archiveChannel(ch.id)}
             />
           ))
         )}
@@ -225,14 +228,18 @@ function ChannelItem({
   active,
   hasActivity,
   onSelect,
+  onArchive,
   indent = false,
 }: {
   channel: Channel
   active: boolean
   hasActivity: boolean
   onSelect: () => void
+  onArchive: () => void
   indent?: boolean
 }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+
   const typeIcon = {
     project: "#",
     mission: "M",
@@ -242,26 +249,51 @@ function ChannelItem({
   }[channel.type] || "#"
 
   return (
-    <button
-      onClick={onSelect}
-      className={`w-full flex items-center gap-1.5 px-3 py-1 text-left text-sm transition-colors ${
-        indent ? "pl-5" : ""
-      } ${
-        active
-          ? "bg-gray-800 text-white"
-          : "text-gray-400 hover:text-gray-200 hover:bg-gray-800/50"
-      }`}
-    >
-      {/* Activity dot */}
-      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-        hasActivity ? "bg-green-500" : "bg-transparent"
-      }`} />
-      <span className="text-gray-600 text-[10px] w-3 flex-shrink-0">{typeIcon}</span>
-      <span className="truncate flex-1 text-xs">{channel.name.replace(/^#/, "")}</span>
-      {channel.auto_mode && (
-        <span className="text-[9px] text-yellow-500" title="Auto-mode">A</span>
+    <div className="relative">
+      <button
+        onClick={onSelect}
+        onContextMenu={(e) => { e.preventDefault(); setMenuOpen(!menuOpen) }}
+        className={`w-full flex items-center gap-1.5 px-3 py-1 text-left text-sm transition-colors ${
+          indent ? "pl-5" : ""
+        } ${
+          active
+            ? "bg-gray-800 text-white"
+            : "text-gray-400 hover:text-gray-200 hover:bg-gray-800/50"
+        }`}
+      >
+        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+          hasActivity ? "bg-green-500" : "bg-transparent"
+        }`} />
+        <span className="text-gray-600 text-[10px] w-3 flex-shrink-0">{typeIcon}</span>
+        <span className="truncate flex-1 text-xs">{channel.name.replace(/^#/, "")}</span>
+        {channel.auto_mode && (
+          <span className="text-[9px] text-yellow-500" title="Auto-mode">A</span>
+        )}
+      </button>
+
+      {/* Context menu */}
+      {menuOpen && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+          <div className="absolute left-full top-0 ml-1 z-50 bg-gray-800 border border-gray-700 rounded shadow-lg py-1 min-w-[120px]">
+            {channel.type !== "system" && (
+              <button
+                onClick={() => { setMenuOpen(false); onArchive() }}
+                className="w-full px-3 py-1 text-xs text-left text-red-400 hover:bg-gray-700"
+              >
+                Archive
+              </button>
+            )}
+            <button
+              onClick={() => setMenuOpen(false)}
+              className="w-full px-3 py-1 text-xs text-left text-gray-400 hover:bg-gray-700"
+            >
+              Cancel
+            </button>
+          </div>
+        </>
       )}
-    </button>
+    </div>
   )
 }
 
