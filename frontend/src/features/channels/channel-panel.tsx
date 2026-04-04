@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from "react"
 import { useChannelStore } from "@/stores/channel-store"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
-import { PATCH } from "@/lib/api"
+import { ChannelSettings } from "./channel-settings"
 import type { ChannelMessage } from "@/stores/channel-store"
 
 /**
@@ -31,8 +31,6 @@ export function ChannelPanel({
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
   const messages = useChannelStore((s) => s.messages)
   const postMessage = useChannelStore((s) => s.postMessage)
-  const archiveChannel = useChannelStore((s) => s.archiveChannel)
-  const deleteChannel = useChannelStore((s) => s.deleteChannel)
 
   const channel = channels.find((c) => c.id === activeChannelId)
   const projectName = channel?.project_names?.[0] || channel?.name.replace(/^#/, "").split("/")[0] || ""
@@ -50,9 +48,7 @@ export function ChannelPanel({
 
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [renaming, setRenaming] = useState(false)
-  const [renameTo, setRenameTo] = useState("")
+  const [showSettings, setShowSettings] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -78,15 +74,6 @@ export function ChannelPanel({
     requestAnimationFrame(() => inputRef.current?.focus())
   }, [input, sending, activeChannelId, projectName, postMessage, orchestrator])
 
-  const handleRename = async () => {
-    if (!renameTo.trim() || !activeChannelId) return
-    const name = renameTo.trim().startsWith("#") ? renameTo.trim() : `#${renameTo.trim()}`
-    await PATCH(`/channels/${activeChannelId}`, { name })
-    useChannelStore.getState().loadChannels()
-    setRenaming(false)
-    setRenameTo("")
-  }
-
   if (!activeChannelId || !channel) {
     return (
       <div className="border-t border-gray-800 bg-gray-900 px-4 py-3 text-center text-xs text-gray-600">
@@ -108,8 +95,8 @@ export function ChannelPanel({
         )}
         <div className="flex-1" />
         <button
-          onClick={() => setSettingsOpen(!settingsOpen)}
-          className={`text-[10px] px-1.5 py-0.5 rounded ${settingsOpen ? "bg-gray-700 text-white" : "text-gray-500 hover:text-gray-300"}`}
+          onClick={() => setShowSettings(true)}
+          className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded hover:bg-gray-700"
         >
           Settings
         </button>
@@ -122,52 +109,9 @@ export function ChannelPanel({
         </button>
       </div>
 
-      {/* Settings dropdown */}
-      {settingsOpen && (
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-gray-800 flex-shrink-0 bg-gray-800/50">
-          {renaming ? (
-            <div className="flex gap-1 flex-1">
-              <input
-                autoFocus
-                value={renameTo}
-                onChange={(e) => setRenameTo(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") setRenaming(false) }}
-                placeholder={channel.name}
-                className="flex-1 px-2 py-0.5 text-xs bg-gray-700 border border-gray-600 rounded text-gray-200 outline-none"
-              />
-              <button onClick={handleRename} className="text-[10px] bg-blue-600 px-2 py-0.5 rounded text-white">Save</button>
-            </div>
-          ) : (
-            <>
-              <button
-                onClick={() => { setRenaming(true); setRenameTo(channel.name) }}
-                className="text-[10px] text-gray-400 hover:text-gray-200 px-1.5 py-0.5 rounded hover:bg-gray-700"
-              >
-                Rename
-              </button>
-              {channel.type !== "system" && (
-                <>
-                  <button
-                    onClick={() => { if (confirm("Archive this channel?")) { archiveChannel(channel.id); setSettingsOpen(false) } }}
-                    className="text-[10px] text-gray-400 hover:text-gray-200 px-1.5 py-0.5 rounded hover:bg-gray-700"
-                  >
-                    Archive
-                  </button>
-                  <button
-                    onClick={() => { if (confirm(`Delete ${channel.name} and all messages?`)) { deleteChannel(channel.id); setSettingsOpen(false) } }}
-                    className="text-[10px] text-red-400 hover:text-red-300 px-1.5 py-0.5 rounded hover:bg-gray-700"
-                  >
-                    Delete
-                  </button>
-                </>
-              )}
-              <div className="flex-1" />
-              <span className="text-[9px] text-gray-600">
-                {channel.project_names?.length > 0 ? `Projects: ${channel.project_names.join(", ")}` : "No project"}
-              </span>
-            </>
-          )}
-        </div>
+      {/* Settings modal */}
+      {showSettings && (
+        <ChannelSettings channelId={activeChannelId} onClose={() => setShowSettings(false)} />
       )}
 
       {/* Messages */}

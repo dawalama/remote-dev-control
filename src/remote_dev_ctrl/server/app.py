@@ -8351,6 +8351,53 @@ async def delete_channel(channel_id: str):
     return {"success": True}
 
 
+# ── Channel Projects ──
+
+@app.post("/channels/{channel_id}/projects")
+async def add_project_to_channel(channel_id: str, request: Request):
+    """Link a project to a channel."""
+    from .channel_manager import get_channel_manager
+    from .db.repositories import ProjectRepository
+
+    body = await request.json()
+    project_name = body.get("project_name", "")
+    if not project_name:
+        raise HTTPException(status_code=400, detail="project_name is required")
+
+    repo = ProjectRepository()
+    proj = repo.get(project_name)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_name}")
+
+    cm = get_channel_manager()
+    cm.db.execute(
+        "INSERT OR IGNORE INTO channel_projects (channel_id, project_id) VALUES (?, ?)",
+        (channel_id, proj.id),
+    )
+    cm.db.commit()
+    return {"success": True, "project_id": proj.id, "project_name": proj.name}
+
+
+@app.delete("/channels/{channel_id}/projects/{project_name}")
+async def remove_project_from_channel(channel_id: str, project_name: str):
+    """Unlink a project from a channel."""
+    from .channel_manager import get_channel_manager
+    from .db.repositories import ProjectRepository
+
+    repo = ProjectRepository()
+    proj = repo.get(project_name)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_name}")
+
+    cm = get_channel_manager()
+    cm.db.execute(
+        "DELETE FROM channel_projects WHERE channel_id = ? AND project_id = ?",
+        (channel_id, proj.id),
+    )
+    cm.db.commit()
+    return {"success": True}
+
+
 # ── Channel Messages ──
 
 @app.get("/channels/{channel_id}/messages")
