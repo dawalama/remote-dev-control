@@ -8250,12 +8250,30 @@ async def create_channel(request: Request):
         project_ids=project_ids,
         parent_channel_id=body.get("parent_channel_id"),
     )
+
+    # Resolve project names and collection IDs for the response
+    project_names = []
+    collection_ids = set()
+    for pid in project_ids:
+        proj = repo.get(pid)
+        if proj:
+            project_names.append(proj.name)
+            if proj.collection_id:
+                collection_ids.add(proj.collection_id)
+
     return {
         "id": ch.id,
         "name": ch.name,
         "type": ch.type.value,
+        "parent_channel_id": ch.parent_channel_id,
         "project_ids": ch.project_ids,
+        "project_names": project_names,
+        "collection_ids": list(collection_ids),
+        "auto_mode": ch.auto_mode,
+        "token_spent": 0,
+        "token_budget": None,
         "created_at": ch.created_at.isoformat(),
+        "archived_at": None,
     }
 
 
