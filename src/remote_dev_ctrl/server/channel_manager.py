@@ -366,3 +366,24 @@ def get_channel_manager() -> ChannelManager:
     if _channel_manager is None:
         _channel_manager = ChannelManager()
     return _channel_manager
+
+
+def emit(
+    type: str,
+    channel_id: str | None = None,
+    project_id: str | None = None,
+    data: dict | None = None,
+) -> None:
+    """Convenience function to emit a structured event.
+
+    Safe to call from anywhere — silently fails if DB isn't ready.
+    """
+    try:
+        get_channel_manager().emit_event(
+            type=type,
+            channel_id=channel_id,
+            project_id=project_id,
+            data=data,
+        )
+    except Exception:
+        pass

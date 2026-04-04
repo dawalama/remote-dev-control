@@ -287,6 +287,9 @@ async def lifespan(app: FastAPI):
 
     # Emit server started event
     event_bus.emit(EventType.SERVER_STARTED)
+
+    from .channel_manager import emit
+    emit("system.server_started", data={"version": "0.1.1"})
     
     try:
         yield
@@ -4266,6 +4269,18 @@ async def orchestrator_endpoint(
     if not message:
         return {"response": "No message provided.", "actions": [], "usage": {}}
 
+    # Emit structured event for the user message
+    from .channel_manager import emit
+    channel_id_param = None
+    try:
+        body_data = await request.json() if hasattr(request, 'json') else {}
+        channel_id_param = body_data.get("channel_id") if isinstance(body_data, dict) else None
+    except Exception:
+        pass
+    emit("orchestrator.message_received", channel_id=channel_id_param, data={
+        "message": message[:200], "project": project, "channel": channel,
+    })
+
     engine = get_intent_engine()
     executor = get_action_executor()
 
@@ -6078,6 +6093,12 @@ async def create_terminal(
         project=project,
         message=f"Terminal started for {project}",
     )
+
+    # Emit structured event
+    from .channel_manager import emit
+    emit("terminal.created", channel_id=channel_id, data={
+        "terminal_id": session.id, "project": project, "command": command or "",
+    })
 
     # Broadcast state so all clients see the new terminal
     machine = get_state_machine()
