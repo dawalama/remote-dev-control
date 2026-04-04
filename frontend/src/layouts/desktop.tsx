@@ -18,6 +18,7 @@ import { GlobalTextInput } from "@/components/global-text-input"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
 import { useChannelStore } from "@/stores/channel-store"
 import { ChannelSidebar } from "@/features/channels/channel-sidebar"
+import { AddProjectSheet } from "@/features/mobile/add-project-sheet"
 import { ChannelPanel } from "@/features/channels/channel-panel"
 
 const LAYOUTS = [
@@ -47,6 +48,7 @@ export function DesktopLayout() {
   const [systemSettingsOpen, setSystemSettingsOpen] = useState(false)
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
   const [channelPanelOpen, setChannelPanelOpen] = useState(true)
+  const [addProjectOpen, setAddProjectOpen] = useState(false)
   const presets = useTerminalPresetsStore((s) => s.presets)
   const loadPresets = useTerminalPresetsStore((s) => s.load)
 
@@ -262,18 +264,7 @@ export function DesktopLayout() {
       {/* Main content: channel sidebar + workspace + right tabs */}
       <div className="flex-1 flex gap-0 min-h-0 pb-[60px]">
         {/* Channel sidebar */}
-        <ChannelSidebar onAddProject={() => {
-          const path = prompt("Project path (e.g. ~/my-project):")
-          if (path) {
-            const name = prompt("Project name:", path.split("/").pop() || "")
-            if (name) {
-              POST("/projects", { name, path, description: "" }).then(() => {
-                useProjectStore.getState().loadProjects()
-                useChannelStore.getState().loadChannels()
-              })
-            }
-          }
-        }} />
+        <ChannelSidebar onAddProject={() => setAddProjectOpen(true)} />
 
         {/* Workspace: terminal (full width) + channel panel (bottom dock) */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
@@ -320,6 +311,13 @@ export function DesktopLayout() {
       <CommandPalette />
       {systemSettingsOpen && (
         <SystemSettingsModal onClose={() => setSystemSettingsOpen(false)} />
+      )}
+      {addProjectOpen && (
+        <AddProjectSheet onClose={() => {
+          setAddProjectOpen(false)
+          useProjectStore.getState().loadProjects()
+          useChannelStore.getState().loadChannels()
+        }} />
       )}
       {agentPickerOpen && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setAgentPickerOpen(false)}>

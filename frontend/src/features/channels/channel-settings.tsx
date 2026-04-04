@@ -27,7 +27,7 @@ export function ChannelSettings({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
-          <h2 className="text-sm font-semibold text-gray-200">Channel Settings</h2>
+          <h2 className="text-sm font-semibold text-gray-200">Workspace Settings</h2>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-sm">Close</button>
         </div>
 

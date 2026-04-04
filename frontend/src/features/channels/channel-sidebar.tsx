@@ -141,7 +141,7 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
             <button
               onClick={() => setCreating(true)}
               className="text-gray-500 hover:text-gray-300 text-sm px-1"
-              title="New channel"
+              title="New workspace"
             >
               +
             </button>
@@ -160,7 +160,7 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
               if (e.key === "Enter") handleCreate()
               if (e.key === "Escape") { setCreating(false); setNewName(""); setNewProjectId("") }
             }}
-            placeholder="#channel-name"
+            placeholder="workspace name"
             className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-blue-500"
           />
           <select
@@ -225,7 +225,7 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
 
         {filteredChannels.length === 0 && (
           <div className="px-3 py-4 text-xs text-gray-600 text-center">
-            {filterMode === "active" ? "No active channels" : "No channels yet"}
+            {filterMode === "active" ? "No active workspaces" : "No workspaces yet"}
           </div>
         )}
       </div>
