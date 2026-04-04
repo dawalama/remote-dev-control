@@ -35,6 +35,7 @@ interface StateSnapshot {
   sessions: unknown[]
   terminals: Terminal[]
   collections: { id: string; name: string; description?: string; sort_order?: number; project_count?: number }[]
+  terminal_channels: Record<string, string[]>  // terminal_id -> [channel_ids]
   phone: Record<string, unknown>
   queue_stats: QueueStats
   timestamp: string
@@ -48,6 +49,7 @@ interface StateStoreData {
   agents: Agent[]
   terminals: Terminal[]
   collections: { id: string; name: string; description?: string; sort_order?: number; project_count?: number }[]
+  terminalChannels: Record<string, string[]>  // terminal_id -> [channel_ids]
   queueStats: QueueStats
   phone: Record<string, unknown>
   timestamp: string | null
@@ -192,6 +194,7 @@ export const useStateStore = create<StateStoreData>((set) => ({
   agents: [],
   terminals: [],
   collections: [],
+  terminalChannels: {},
   queueStats: { total: 0, pending: 0, in_progress: 0, completed: 0, failed: 0, by_project: {} },
   phone: {},
   timestamp: null,
@@ -222,6 +225,7 @@ export const useStateStore = create<StateStoreData>((set) => ({
         agents: s.agents,
         terminals: s.terminals,
         collections: s.collections,
+        terminalChannels: s.terminal_channels || {},
         queueStats: s.queue_stats,
         phone: s.phone,
         timestamp: s.timestamp,
