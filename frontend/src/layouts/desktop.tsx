@@ -18,7 +18,7 @@ import { GlobalTextInput } from "@/components/global-text-input"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
 import { useChannelStore } from "@/stores/channel-store"
 import { ChannelSidebar } from "@/features/channels/channel-sidebar"
-import { AddProjectSheet } from "@/features/mobile/add-project-sheet"
+import { AddProjectModal } from "@/components/project-bar"
 import { ChannelPanel } from "@/features/channels/channel-panel"
 
 const LAYOUTS = [
@@ -313,11 +313,15 @@ export function DesktopLayout() {
         <SystemSettingsModal onClose={() => setSystemSettingsOpen(false)} />
       )}
       {addProjectOpen && (
-        <AddProjectSheet onClose={() => {
-          setAddProjectOpen(false)
-          useProjectStore.getState().loadProjects()
-          useChannelStore.getState().loadChannels()
-        }} />
+        <AddProjectModal
+          onClose={() => setAddProjectOpen(false)}
+          onCreated={() => {
+            setAddProjectOpen(false)
+            loadProjects()
+            useChannelStore.getState().loadChannels()
+          }}
+          scaffoldProject={useProjectStore.getState().scaffoldProject}
+        />
       )}
       {agentPickerOpen && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setAgentPickerOpen(false)}>
