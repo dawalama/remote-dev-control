@@ -13,8 +13,6 @@ export function ChannelSidebar() {
   const selectChannelRaw = useChannelStore((s) => s.selectChannel)
   const loadChannels = useChannelStore((s) => s.loadChannels)
   const createChannel = useChannelStore((s) => s.createChannel)
-  const archiveChannel = useChannelStore((s) => s.archiveChannel)
-  const deleteChannel = useChannelStore((s) => s.deleteChannel)
   const selectProject = useProjectStore((s) => s.selectProject)
   const projects = useProjectStore((s) => s.projects)
   const collections = useProjectStore((s) => s.collections)
@@ -208,8 +206,6 @@ export function ChannelSidebar() {
                   active={ch.id === activeChannelId}
                   hasActivity={isChannelActive(ch, activeProjectNames)}
                   onSelect={() => selectChannel(ch.id)}
-                  onArchive={() => archiveChannel(ch.id)}
-                  onDelete={() => deleteChannel(ch.id)}
                   indent
                 />
               ))}
@@ -223,8 +219,6 @@ export function ChannelSidebar() {
               active={ch.id === activeChannelId}
               hasActivity={isChannelActive(ch, activeProjectNames)}
               onSelect={() => selectChannel(ch.id)}
-              onArchive={() => archiveChannel(ch.id)}
-              onDelete={() => deleteChannel(ch.id)}
             />
           ))
         )}
@@ -246,20 +240,14 @@ function ChannelItem({
   active,
   hasActivity,
   onSelect,
-  onArchive,
-  onDelete,
   indent = false,
 }: {
   channel: Channel
   active: boolean
   hasActivity: boolean
   onSelect: () => void
-  onArchive: () => void
-  onDelete: () => void
   indent?: boolean
 }) {
-  const [settingsOpen, setSettingsOpen] = useState(false)
-
   const typeIcon = {
     project: "#",
     mission: "M",
@@ -269,75 +257,25 @@ function ChannelItem({
   }[channel.type] || "#"
 
   return (
-    <div className="relative group">
-      <button
-        onClick={onSelect}
-        className={`w-full flex items-center gap-1.5 px-3 py-1 text-left text-sm transition-colors ${
-          indent ? "pl-5" : ""
-        } ${
-          active
-            ? "bg-gray-800 text-white"
-            : "text-gray-400 hover:text-gray-200 hover:bg-gray-800/50"
-        }`}
-      >
-        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-          hasActivity ? "bg-green-500" : "bg-transparent"
-        }`} />
-        <span className="text-gray-600 text-[10px] w-3 flex-shrink-0">{typeIcon}</span>
-        <span className="truncate flex-1 text-xs">{channel.name.replace(/^#/, "")}</span>
-        {channel.auto_mode && (
-          <span className="text-[9px] text-yellow-500 mr-1" title="Auto-mode">A</span>
-        )}
-        {/* Settings gear — visible on hover */}
-        {channel.type !== "system" && (
-          <span
-            onClick={(e) => { e.stopPropagation(); setSettingsOpen(!settingsOpen) }}
-            className="text-[10px] text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-            title="Channel settings"
-          >
-            ...
-          </span>
-        )}
-      </button>
-
-      {/* Settings panel */}
-      {settingsOpen && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setSettingsOpen(false)} />
-          <div className="absolute left-full top-0 ml-1 z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl p-2 min-w-[160px] space-y-1">
-            <div className="text-[10px] text-gray-500 px-1 pb-1 border-b border-gray-700 mb-1">
-              {channel.name}
-            </div>
-
-            {/* Project info */}
-            {channel.project_names.length > 0 && (
-              <div className="text-[10px] text-gray-500 px-1">
-                Projects: {channel.project_names.join(", ")}
-              </div>
-            )}
-
-            {/* Actions */}
-            <button
-              onClick={() => { setSettingsOpen(false); onArchive() }}
-              className="w-full px-2 py-1 text-xs text-left text-gray-300 hover:bg-gray-700 rounded"
-            >
-              Archive
-            </button>
-            <button
-              onClick={() => {
-                if (confirm(`Delete ${channel.name} and all its messages?`)) {
-                  setSettingsOpen(false)
-                  onDelete()
-                }
-              }}
-              className="w-full px-2 py-1 text-xs text-left text-red-400 hover:bg-gray-700 rounded"
-            >
-              Delete
-            </button>
-          </div>
-        </>
+    <button
+      onClick={onSelect}
+      className={`w-full flex items-center gap-1.5 px-3 py-1 text-left text-sm transition-colors ${
+        indent ? "pl-5" : ""
+      } ${
+        active
+          ? "bg-gray-800 text-white"
+          : "text-gray-400 hover:text-gray-200 hover:bg-gray-800/50"
+      }`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+        hasActivity ? "bg-green-500" : "bg-transparent"
+      }`} />
+      <span className="text-gray-600 text-[10px] w-3 flex-shrink-0">{typeIcon}</span>
+      <span className="truncate flex-1 text-xs">{channel.name.replace(/^#/, "")}</span>
+      {channel.auto_mode && (
+        <span className="text-[9px] text-yellow-500" title="Auto-mode">A</span>
       )}
-    </div>
+    </button>
   )
 }
 
