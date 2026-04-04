@@ -6047,8 +6047,12 @@ async def create_terminal(
     cols: int = 120,
     rows: int = 30,
     mode: str | None = None,
+    channel_id: str | None = None,
 ):
-    """Create a new terminal session for a project."""
+    """Create a new terminal session for a project.
+
+    If channel_id is provided, the terminal is auto-linked to that channel.
+    """
     from .terminal import get_terminal_manager
 
     tm = get_terminal_manager()
@@ -6060,6 +6064,14 @@ async def create_terminal(
         rows=rows,
         mode=mode,
     )
+
+    # Auto-link terminal to channel if provided
+    if channel_id:
+        try:
+            from .channel_manager import get_channel_manager
+            get_channel_manager().link_terminal(session.id, channel_id)
+        except Exception:
+            pass  # Don't fail terminal creation if channel linking fails
 
     event_repo.log(
         "terminal.created",
@@ -6078,6 +6090,7 @@ async def create_terminal(
         "status": session.status.value,
         "pid": session.pid,
         "ws_url": f"/terminals/{session.id}/ws",
+        "channel_id": channel_id,
     }
 
 

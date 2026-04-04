@@ -16,6 +16,7 @@ import { CommandBar } from "@/features/command-bar/command-bar"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { GlobalTextInput } from "@/components/global-text-input"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
+import { useChannelStore } from "@/stores/channel-store"
 import { ChannelSidebar } from "@/features/channels/channel-sidebar"
 import { ChannelPanel } from "@/features/channels/channel-panel"
 
@@ -323,7 +324,7 @@ export function DesktopLayout() {
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-left"
                   onClick={() => {
                     setAgentPickerOpen(false)
-                    spawnTerminal(currentProject, preset.command)
+                    spawnTerminal(currentProject, preset.command, useChannelStore.getState().activeChannelId || undefined)
                     toast(`Terminal started: ${preset.label}`, "success")
                   }}
                 >
