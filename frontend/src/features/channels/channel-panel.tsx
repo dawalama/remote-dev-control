@@ -1,20 +1,32 @@
 import { useState, useRef, useCallback } from "react"
 import { useChannelStore } from "@/stores/channel-store"
-import { POST, PATCH } from "@/lib/api"
+import { useOrchestrator } from "@/hooks/use-orchestrator"
+import { PATCH } from "@/lib/api"
 import type { ChannelMessage } from "@/stores/channel-store"
-
-interface OrchestratorResponse {
-  response?: string
-  actions?: { type: string; [key: string]: unknown }[]
-}
 
 /**
  * Toggleable channel panel — docks at the bottom of the workspace.
  * Replaces ChatFAB as the primary chat interface.
- * Shows channel messages + orchestrator responses.
- * Header has channel settings (rename, project, delete).
+ * Routes messages through useOrchestrator for both local commands
+ * and server-side LLM orchestration with UI action dispatch.
  */
-export function ChannelPanel({ onClose }: { onClose: () => void }) {
+export function ChannelPanel({
+  onClose,
+  onOpenTerminal,
+  onCreateTask,
+  onOpenBrowser,
+  onOpenActivity,
+  onEditProject,
+  onSystemSettings,
+}: {
+  onClose: () => void
+  onOpenTerminal?: (project: string) => void
+  onCreateTask?: () => void
+  onOpenBrowser?: () => void
+  onOpenActivity?: () => void
+  onEditProject?: () => void
+  onSystemSettings?: () => void
+}) {
   const channels = useChannelStore((s) => s.channels)
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
   const messages = useChannelStore((s) => s.messages)
@@ -24,6 +36,17 @@ export function ChannelPanel({ onClose }: { onClose: () => void }) {
 
   const channel = channels.find((c) => c.id === activeChannelId)
   const projectName = channel?.project_names?.[0] || channel?.name.replace(/^#/, "").split("/")[0] || ""
+
+  // Use the same orchestrator hook that ChatFAB used — gets local commands + server dispatch
+  const orchestrator = useOrchestrator({
+    channel: "desktop",
+    onOpenTerminal,
+    onCreateTask,
+    onOpenBrowser,
+    onOpenActivity,
+    onEditProject,
+    onSystemSettings,
+  })
 
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
@@ -39,26 +62,21 @@ export function ChannelPanel({ onClose }: { onClose: () => void }) {
     setSending(true)
     setInput("")
 
+    // Save user message to channel history
     await postMessage(activeChannelId, userMessage, "user")
 
-    try {
-      const result = await POST<OrchestratorResponse>("/orchestrator", {
-        message: userMessage,
-        project: projectName || undefined,
-        channel: "desktop",
-        channel_id: activeChannelId,
-      })
-      if (result?.response) {
-        await postMessage(activeChannelId, result.response, "orchestrator")
-      }
-    } catch (e) {
-      await postMessage(activeChannelId, `Error: ${e}`, "system")
+    // Route through orchestrator (local commands + server LLM + action dispatch)
+    const result = await orchestrator.send(userMessage, projectName || undefined)
+
+    // Save orchestrator response to channel history
+    if (result?.response) {
+      await postMessage(activeChannelId, result.response, "orchestrator")
     }
 
     setSending(false)
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
     requestAnimationFrame(() => inputRef.current?.focus())
-  }, [input, sending, activeChannelId, projectName, postMessage])
+  }, [input, sending, activeChannelId, projectName, postMessage, orchestrator])
 
   const handleRename = async () => {
     if (!renameTo.trim() || !activeChannelId) return
@@ -89,16 +107,12 @@ export function ChannelPanel({ onClose }: { onClose: () => void }) {
           <span className="text-[9px] bg-yellow-600/30 text-yellow-400 px-1.5 py-0.5 rounded">Auto</span>
         )}
         <div className="flex-1" />
-
-        {/* Settings toggle */}
         <button
           onClick={() => setSettingsOpen(!settingsOpen)}
           className={`text-[10px] px-1.5 py-0.5 rounded ${settingsOpen ? "bg-gray-700 text-white" : "text-gray-500 hover:text-gray-300"}`}
         >
           Settings
         </button>
-
-        {/* Minimize */}
         <button
           onClick={onClose}
           className="text-gray-500 hover:text-gray-300 text-xs px-1"
@@ -149,7 +163,7 @@ export function ChannelPanel({ onClose }: { onClose: () => void }) {
               )}
               <div className="flex-1" />
               <span className="text-[9px] text-gray-600">
-                {channel.project_names.length > 0 ? `Projects: ${channel.project_names.join(", ")}` : "No project"}
+                {channel.project_names?.length > 0 ? `Projects: ${channel.project_names.join(", ")}` : "No project"}
               </span>
             </>
           )}
@@ -160,7 +174,7 @@ export function ChannelPanel({ onClose }: { onClose: () => void }) {
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5">
         {messages.length === 0 && (
           <div className="text-center text-gray-600 text-[10px] py-4">
-            Talk to the orchestrator. Commands like "show tasks", "start terminal", "run tests" work here.
+            Talk to the orchestrator. Try "show tasks", "open terminal", "start server", or ask anything.
           </div>
         )}
         {messages.map((msg) => (

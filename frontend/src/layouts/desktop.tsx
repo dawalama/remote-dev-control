@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useState } from "react"
+import type { TabId } from "@/types"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useAuthStore } from "@/stores/auth-store"
@@ -28,6 +29,7 @@ export function DesktopLayout() {
   const loadProjects = useProjectStore((s) => s.loadProjects)
   const loadCollections = useProjectStore((s) => s.loadCollections)
   const currentProject = useProjectStore((s) => s.currentProject)
+  const selectProject = useProjectStore((s) => s.selectProject)
   const logout = useAuthStore((s) => s.logout)
   const connect = useStateStore((s) => s.connect)
   const disconnect = useStateStore((s) => s.disconnect)
@@ -36,8 +38,8 @@ export function DesktopLayout() {
   const toast = useUIStore((s) => s.toast)
   const toggleCommandPalette = useUIStore((s) => s.toggleCommandPalette)
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen)
-  const toggleChat = useUIStore((s) => s.toggleChat)
   const layout = useUIStore((s) => s.layout)
+  const setTab = useUIStore((s) => s.setTab)
   const setLayout = useUIStore((s) => s.setLayout)
   const spawnTerminal = useTerminalStore((s) => s.spawnTerminal)
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
@@ -84,10 +86,10 @@ export function DesktopLayout() {
         return
       }
 
-      // ⌘/ — toggle chat
+      // ⌘/ — toggle channel panel
       if (meta && e.key === "/") {
         e.preventDefault()
-        toggleChat()
+        setChannelPanelOpen((o) => !o)
         return
       }
 
@@ -111,7 +113,7 @@ export function DesktopLayout() {
         setAgentPickerOpen(false)
       }
     },
-    [currentProject, toggleCommandPalette, setCommandPaletteOpen, toggleChat, spawnTerminal, toast, cycleActiveProject, setAgentPickerOpen]
+    [currentProject, toggleCommandPalette, setCommandPaletteOpen, spawnTerminal, toast, cycleActiveProject, setAgentPickerOpen]
   )
 
   useEffect(() => {
@@ -270,7 +272,19 @@ export function DesktopLayout() {
 
           {/* Channel panel — toggleable bottom dock */}
           {channelPanelOpen ? (
-            <ChannelPanel onClose={() => setChannelPanelOpen(false)} />
+            <ChannelPanel
+              onClose={() => setChannelPanelOpen(false)}
+              onOpenTerminal={(project) => {
+                if (project && project !== "all") selectProject(project)
+                setAgentPickerOpen(true)
+              }}
+              onCreateTask={() => {
+                /* TODO: wire create task */
+              }}
+              onOpenActivity={() => setTab("activity" as TabId)}
+              onEditProject={() => setSystemSettingsOpen(true)}
+              onSystemSettings={() => setSystemSettingsOpen(true)}
+            />
           ) : (
             <button
               onClick={() => setChannelPanelOpen(true)}
