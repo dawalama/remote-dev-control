@@ -168,8 +168,11 @@ export function ChannelSidebar() {
             onChange={(e) => setNewProjectId(e.target.value)}
             className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
           >
-            <option value="">No project (ephemeral)</option>
-            {projects.map((p) => (
+            {currentCollection === "all" && <option value="">No project (ephemeral)</option>}
+            {(currentCollection === "all"
+              ? projects
+              : projects.filter((p) => p.collection_id === currentCollection)
+            ).map((p) => (
               <option key={p.name} value={p.name}>{p.name}</option>
             ))}
           </select>
