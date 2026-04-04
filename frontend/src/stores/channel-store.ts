@@ -6,6 +6,7 @@ export interface Channel {
   name: string
   type: "project" | "mission" | "ephemeral" | "system" | "event"
   parent_channel_id: string | null
+  collection_id: string
   project_ids: string[]
   project_names: string[]
   collection_ids: string[]
@@ -33,7 +34,7 @@ interface ChannelState {
 
   loadChannels: () => Promise<void>
   selectChannel: (id: string) => void
-  createChannel: (name: string, type?: string, projectIds?: string[]) => Promise<Channel | null>
+  createChannel: (name: string, type?: string, projectIds?: string[], collectionId?: string) => Promise<Channel | null>
   archiveChannel: (id: string) => Promise<void>
   deleteChannel: (id: string) => Promise<void>
   loadMessages: (channelId: string) => Promise<void>
@@ -63,12 +64,13 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
     get().loadMessages(id)
   },
 
-  createChannel: async (name, type = "ephemeral", projectIds = []) => {
+  createChannel: async (name, type = "ephemeral", projectIds = [], collectionId = "general") => {
     try {
       const ch = await POST<Channel>("/channels", {
         name,
         type,
         project_ids: projectIds,
+        collection_id: collectionId,
       })
       if (ch) {
         set((s) => ({ channels: [ch, ...s.channels] }))

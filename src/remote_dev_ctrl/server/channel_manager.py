@@ -39,15 +39,16 @@ class ChannelManager:
         type: ChannelType = ChannelType.PROJECT,
         project_ids: list[str] | None = None,
         parent_channel_id: str | None = None,
+        collection_id: str = "general",
     ) -> Channel:
         """Create a new channel."""
         channel_id = f"ch-{secrets.token_hex(6)}"
         now = datetime.now()
 
         self.db.execute(
-            """INSERT INTO channels (id, name, type, parent_channel_id, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (channel_id, name, type.value, parent_channel_id, now.isoformat()),
+            """INSERT INTO channels (id, name, type, parent_channel_id, collection_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (channel_id, name, type.value, parent_channel_id, collection_id, now.isoformat()),
         )
 
         # Link projects
@@ -65,6 +66,7 @@ class ChannelManager:
             name=name,
             type=type,
             parent_channel_id=parent_channel_id,
+            collection_id=collection_id,
             project_ids=project_ids or [],
             created_at=now,
         )
@@ -324,6 +326,7 @@ class ChannelManager:
             name=d["name"],
             type=ChannelType(d["type"]),
             parent_channel_id=d.get("parent_channel_id"),
+            collection_id=d.get("collection_id", "general"),
             project_ids=project_ids,
             auto_mode=bool(d.get("auto_mode", False)),
             token_spent=d.get("token_spent", 0),

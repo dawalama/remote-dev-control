@@ -383,6 +383,7 @@ class Channel(BaseModel):
     name: str
     type: ChannelType = ChannelType.PROJECT
     parent_channel_id: Optional[str] = None
+    collection_id: str = "general"
     project_ids: list[str] = Field(default_factory=list)  # from channel_projects
     auto_mode: bool = False
     token_spent: int = 0

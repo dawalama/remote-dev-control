@@ -8208,9 +8208,10 @@ async def list_channels(include_archived: bool = False):
             "name": ch.name,
             "type": ch.type.value,
             "parent_channel_id": ch.parent_channel_id,
+            "collection_id": ch.collection_id,
             "project_ids": ch.project_ids,
             "project_names": project_names,
-            "collection_ids": list(collection_ids),
+            "collection_ids": list(collection_ids | {ch.collection_id}),
             "auto_mode": ch.auto_mode,
             "token_spent": ch.token_spent,
             "token_budget": ch.token_budget,
@@ -8249,6 +8250,7 @@ async def create_channel(request: Request):
         type=ChannelType(body.get("type", "ephemeral")),
         project_ids=project_ids,
         parent_channel_id=body.get("parent_channel_id"),
+        collection_id=body.get("collection_id", "general"),
     )
 
     # Resolve project names and collection IDs for the response

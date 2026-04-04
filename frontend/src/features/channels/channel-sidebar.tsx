@@ -7,7 +7,7 @@ import { useMountEffect } from "@/hooks/use-mount-effect"
 type GroupMode = "flat" | "project"
 type FilterMode = "all" | "active"
 
-export function ChannelSidebar() {
+export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } = {}) {
   const channels = useChannelStore((s) => s.channels)
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
   const selectChannelRaw = useChannelStore((s) => s.selectChannel)
@@ -83,11 +83,11 @@ export function ChannelSidebar() {
     if (!newName.trim()) return
     const projectIds = newProjectId ? [newProjectId] : []
     const type = projectIds.length > 0 ? "project" : "ephemeral"
-    await createChannel(newName.trim(), type, projectIds)
+    await createChannel(newName.trim(), type, projectIds, currentCollection !== "all" ? currentCollection : "general")
     setNewName("")
     setNewProjectId("")
     setCreating(false)
-  }, [newName, newProjectId, createChannel])
+  }, [newName, newProjectId, createChannel, currentCollection])
 
   const grouped = groupMode === "project" ? groupByProject(filteredChannels) : null
 
@@ -168,11 +168,8 @@ export function ChannelSidebar() {
             onChange={(e) => setNewProjectId(e.target.value)}
             className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
           >
-            {currentCollection === "all" && <option value="">No project (ephemeral)</option>}
-            {(currentCollection === "all"
-              ? projects
-              : projects.filter((p) => p.collection_id === currentCollection)
-            ).map((p) => (
+            <option value="">No project (ephemeral)</option>
+            {projects.map((p) => (
               <option key={p.name} value={p.name}>{p.name}</option>
             ))}
           </select>
@@ -232,6 +229,18 @@ export function ChannelSidebar() {
           </div>
         )}
       </div>
+
+      {/* Bottom actions */}
+      {onAddProject && (
+        <div className="flex-shrink-0 border-t border-gray-800 px-2 py-1.5">
+          <button
+            onClick={onAddProject}
+            className="w-full px-2 py-1 text-[10px] text-gray-500 hover:text-gray-300 hover:bg-gray-800 rounded text-left"
+          >
+            + Add Project
+          </button>
+        </div>
+      )}
     </div>
   )
 }

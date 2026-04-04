@@ -262,7 +262,18 @@ export function DesktopLayout() {
       {/* Main content: channel sidebar + workspace + right tabs */}
       <div className="flex-1 flex gap-0 min-h-0 pb-[60px]">
         {/* Channel sidebar */}
-        <ChannelSidebar />
+        <ChannelSidebar onAddProject={() => {
+          const path = prompt("Project path (e.g. ~/my-project):")
+          if (path) {
+            const name = prompt("Project name:", path.split("/").pop() || "")
+            if (name) {
+              POST("/projects", { name, path, description: "" }).then(() => {
+                useProjectStore.getState().loadProjects()
+                useChannelStore.getState().loadChannels()
+              })
+            }
+          }
+        }} />
 
         {/* Workspace: terminal (full width) + channel panel (bottom dock) */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
