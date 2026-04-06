@@ -6,10 +6,9 @@ import { getClientId } from "@/lib/client-id"
 import { LogsPill } from "@/features/logs/logs-panel"
 import { useVoice } from "@/hooks/use-voice"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
+import { useChannelStore } from "@/stores/channel-store"
 
 export function CommandBar() {
-  const toggleChat = useUIStore((s) => s.toggleChat)
-  const chatOpen = useUIStore((s) => s.chatOpen)
   const toast = useUIStore((s) => s.toast)
   const phone = useStateStore((s) => s.phone)
   const theme = useUIStore((s) => s.theme)
@@ -97,18 +96,8 @@ export function CommandBar() {
           </span>
         )}
 
-        {/* Chat */}
-        <button
-          className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${
-            chatOpen
-              ? "bg-purple-600 text-white"
-              : "bg-gray-600 text-gray-300 hover:bg-gray-500"
-          }`}
-          onClick={toggleChat}
-          title="Chat"
-        >
-          💬
-        </button>
+        {/* Chat toggle */}
+        <ChatToggle />
 
         {/* Theme picker */}
         <div className="flex rounded overflow-hidden border border-gray-600">
@@ -129,5 +118,28 @@ export function CommandBar() {
         </div>
       </div>
     </div>
+  )
+}
+
+function ChatToggle() {
+  const chatOpen = useUIStore((s) => s.chatOpen)
+  const toggleChat = useUIStore((s) => s.toggleChat)
+  const messages = useChannelStore((s) => s.messages)
+
+  return (
+    <button
+      className={`h-8 rounded-full flex items-center gap-1.5 px-3 text-xs font-medium transition-colors ${
+        chatOpen
+          ? "bg-blue-600 text-white"
+          : "bg-gray-600 text-gray-300 hover:bg-gray-500"
+      }`}
+      onClick={toggleChat}
+      title="Toggle chat (⌘/)"
+    >
+      💬
+      {!chatOpen && messages.length > 0 && (
+        <span className="text-[10px] bg-gray-500 text-white px-1 rounded-full">{messages.length}</span>
+      )}
+    </button>
   )
 }

@@ -272,7 +272,7 @@ interface BrowseResult {
   dirs: DirEntry[]
 }
 
-function AddProjectModal({
+export function AddProjectModal({
   onClose,
   onCreated,
   scaffoldProject,

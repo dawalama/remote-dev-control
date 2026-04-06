@@ -202,6 +202,18 @@
 [data-theme] .bg-red-600 { background-color: var(--t-red) !important; color: #fff !important; }
 [data-theme] .hover\:bg-red-700:hover { background-color: var(--t-red-hover) !important; }
 [data-theme] .bg-yellow-600 { background-color: var(--t-yellow) !important; color: #fff !important; }
+
+/* Text inside accent containers must stay readable (white/light) */
+[data-theme] .bg-blue-600 .text-gray-100,
+[data-theme] .bg-blue-600 .text-gray-200,
+[data-theme] .bg-blue-600 .text-gray-300,
+[data-theme] .bg-blue-600 .text-white { color: #fff !important; }
+[data-theme] .bg-blue-600 .text-gray-400,
+[data-theme] .bg-blue-600 .text-gray-500,
+[data-theme] .bg-blue-600 .text-gray-600 { color: rgba(255,255,255,0.65) !important; }
+[data-theme] .bg-blue-600 .text-blue-300,
+[data-theme] .bg-blue-600 .text-blue-200,
+[data-theme] .bg-blue-600 .text-blue-100 { color: rgba(255,255,255,0.75) !important; }
 [data-theme] .bg-green-500 { background-color: var(--t-green) !important; }
 [data-theme] .bg-red-500 { background-color: var(--t-red) !important; }
 [data-theme] .bg-gray-500 { background-color: var(--t-text3) !important; }
@@ -267,8 +279,12 @@
    MODERN THEME — contrast fixes for light background
    ============================================================ */
 
-/* text-white must become dark on light surfaces */
+/* text-white must become dark on light surfaces, EXCEPT inside accent-colored containers */
 [data-theme="modern"] .text-white { color: var(--t-text) !important; }
+[data-theme="modern"] .bg-blue-600 .text-white,
+[data-theme="modern"] .bg-green-600 .text-white,
+[data-theme="modern"] .bg-red-600 .text-white,
+[data-theme="modern"] .bg-purple-600 .text-white { color: #fff !important; }
 
 /* Saturated-color buttons keep white text */
 [data-theme="modern"] .bg-blue-600,
