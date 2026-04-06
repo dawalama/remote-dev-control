@@ -43,6 +43,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      '/channels': proxyOpts,
       '/projects': proxyOpts,
       '/processes': proxyOpts,
       '/tasks': proxyOpts,
