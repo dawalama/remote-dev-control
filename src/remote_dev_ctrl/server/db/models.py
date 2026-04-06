@@ -363,3 +363,59 @@ class Event(BaseModel):
     level: EventLevel = EventLevel.INFO
     message: Optional[str] = None
     data: Optional[dict[str, Any]] = None
+
+
+# =============================================================================
+# Channels (v2)
+# =============================================================================
+
+class ChannelType(str, Enum):
+    PROJECT = "project"
+    MISSION = "mission"
+    EPHEMERAL = "ephemeral"
+    SYSTEM = "system"
+    EVENT = "event"
+
+
+class Channel(BaseModel):
+    """A workspace: contains messages, terminals, and missions."""
+    id: str
+    name: str
+    type: ChannelType = ChannelType.PROJECT
+    parent_channel_id: Optional[str] = None
+    collection_id: str = "general"
+    project_ids: list[str] = Field(default_factory=list)  # from channel_projects
+    auto_mode: bool = False
+    token_spent: int = 0
+    token_budget: Optional[int] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    archived_at: Optional[datetime] = None
+
+
+class ChannelMessageRole(str, Enum):
+    USER = "user"
+    ORCHESTRATOR = "orchestrator"
+    SYSTEM = "system"
+    AGENT = "agent"
+
+
+class ChannelMessage(BaseModel):
+    """A message in a channel's queue."""
+    id: str
+    channel_id: str
+    role: ChannelMessageRole
+    content: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+    synced: bool = True
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class StructuredEvent(BaseModel):
+    """A structured event in the event store."""
+    id: str
+    timestamp: datetime = Field(default_factory=datetime.now)
+    type: str  # e.g. "terminal.error_occurred", "mission.step_completed"
+    channel_id: Optional[str] = None
+    project_id: Optional[str] = None
+    mission_id: Optional[str] = None
+    data: Optional[dict[str, Any]] = None

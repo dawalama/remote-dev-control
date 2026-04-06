@@ -111,6 +111,8 @@ class StateSnapshot(BaseModel):
     sessions: list[dict]
     terminals: list[dict] = []
     collections: list[dict] = []
+    channels: list[dict] = []
+    terminal_channels: dict[str, list[str]] = {}  # terminal_id -> [channel_ids]
     phone: dict = {}
     conversation: dict = {}
     queue_stats: dict
@@ -909,6 +911,26 @@ class ServerStateMachine:
 
         all_actions = self._enrich_processes(pm.list())
 
+        # Channels + terminal↔channel mapping
+        channels_data = []
+        terminal_channels_map: dict[str, list[str]] = {}
+        try:
+            from .channel_manager import get_channel_manager
+            cm = get_channel_manager()
+            for ch in cm.list_channels():
+                channels_data.append({
+                    "id": ch.id, "name": ch.name, "type": ch.type.value,
+                    "project_ids": ch.project_ids,
+                    "auto_mode": ch.auto_mode,
+                })
+                # Build terminal -> channels map
+                for tid in cm.get_channel_terminals(ch.id):
+                    if tid not in terminal_channels_map:
+                        terminal_channels_map[tid] = []
+                    terminal_channels_map[tid].append(ch.id)
+        except Exception:
+            pass
+
         return StateSnapshot(
             server_state=self.state,
             tasks=tasks,
@@ -918,6 +940,8 @@ class ServerStateMachine:
             sessions=[s.to_dict() for s in self._sessions.values()],
             terminals=terminals,
             collections=collections,
+            channels=channels_data,
+            terminal_channels=terminal_channels_map,
             phone=phone_info,
             conversation=conversation_info,
             queue_stats=queue_stats,
