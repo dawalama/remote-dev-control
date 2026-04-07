@@ -185,6 +185,27 @@ async def lifespan(app: FastAPI):
             metadata={"name": info.name, "role": info.role.value},
         )
     
+    # Sync channel collections with project collections (fix drift)
+    try:
+        from .db.connection import get_db
+        db = get_db("rdc")
+        fixed = db.execute("""
+            UPDATE channels SET collection_id = (
+                SELECT p.collection_id FROM projects p
+                JOIN channel_projects cp ON cp.project_id = p.id
+                WHERE cp.channel_id = channels.id LIMIT 1
+            ) WHERE id IN (
+                SELECT cp.channel_id FROM channel_projects cp
+                JOIN projects p ON p.id = cp.project_id
+                WHERE p.collection_id != channels.collection_id
+            )
+        """).rowcount
+        if fixed:
+            db.commit()
+            logger.info("Synced %d channel collection_ids with projects", fixed)
+    except Exception:
+        logger.debug("Channel collection sync failed", exc_info=True)
+
     # Recover active sessions from previous server run
     try:
         from .session_manager import get_session_manager
@@ -7738,6 +7759,15 @@ async def move_project(name: str, req: MoveProjectRequest):
     if not collection_repo.get(req.collection_id):
         raise HTTPException(status_code=404, detail=f"Collection not found: {req.collection_id}")
     project_repo.move_to_collection(db_proj.id, req.collection_id)
+    # Sync channel collection to match project
+    try:
+        from .channel_manager import get_channel_manager
+        cm = get_channel_manager()
+        for ch in cm.list_channels_for_project(db_proj.id):
+            cm.db.execute("UPDATE channels SET collection_id = ? WHERE id = ?", (req.collection_id, ch.id))
+        cm.db.commit()
+    except Exception:
+        pass
     return {"success": True, "project": name, "collection_id": req.collection_id}
 
 
