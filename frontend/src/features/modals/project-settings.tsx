@@ -265,7 +265,7 @@ function GeneralSection({
           onClick={save}
           disabled={saving}
         >
-          {saving ? "Saving..." : "Save General"}
+          {saving ? "Saving..." : "Save"}
         </button>
       </div>
     </div>
@@ -359,7 +359,7 @@ function TerminalSection({
           onClick={save}
           disabled={saving}
         >
-          {saving ? "Saving..." : "Save Terminal"}
+          {saving ? "Saving..." : "Save"}
         </button>
       </div>
     </div>
@@ -530,7 +530,7 @@ function ProcessesSection({
           onClick={save}
           disabled={saving}
         >
-          {saving ? "Saving..." : "Save Actions"}
+          {saving ? "Saving..." : "Save"}
         </button>
       </div>
     </div>
@@ -719,7 +719,7 @@ function ProfileSection({
           onClick={save}
           disabled={saving}
         >
-          {saving ? "Saving..." : "Save Profile"}
+          {saving ? "Saving..." : "Save"}
         </button>
       </div>
     </div>
