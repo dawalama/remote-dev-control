@@ -2,6 +2,8 @@ import { useState, useCallback, useMemo } from "react"
 import { useChannelStore, type Channel } from "@/stores/channel-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useStateStore } from "@/stores/state-store"
+import { useUIStore } from "@/stores/ui-store"
+import { POST } from "@/lib/api"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 
 type GroupMode = "flat" | "project"
@@ -95,12 +97,12 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
     <div className="flex flex-col h-full bg-gray-900 border-r border-gray-800 w-56 flex-shrink-0">
       {/* Header with filters */}
       <div className="flex-shrink-0 border-b border-gray-800">
-        {/* Collection selector */}
-        <div className="px-2 pt-2 pb-1">
+        {/* Collection selector + create */}
+        <div className="px-2 pt-2 pb-1 flex gap-1">
           <select
             value={currentCollection}
             onChange={(e) => selectCollection(e.target.value)}
-            className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
+            className="flex-1 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none min-w-0"
           >
             <option value="all">All Collections</option>
             {collections.map((c) => (
@@ -109,6 +111,7 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
               })</option>
             ))}
           </select>
+          <CollectionCreateButton />
         </div>
 
         {/* Filter + group toggles */}
@@ -313,4 +316,55 @@ function groupByProject(channels: Channel[]): Record<string, Channel[]> {
   }
 
   return groups
+}
+
+// ── Create Collection Button ──
+
+function CollectionCreateButton() {
+  const [creating, setCreating] = useState(false)
+  const [name, setName] = useState("")
+  const toast = useUIStore((s) => s.toast)
+  const loadCollections = useProjectStore((s) => s.loadCollections)
+
+  const handleCreate = async () => {
+    if (!name.trim()) return
+    try {
+      await POST("/collections", { name: name.trim() })
+      toast(`Collection "${name.trim()}" created`, "success")
+      setName("")
+      setCreating(false)
+      loadCollections()
+    } catch {
+      toast("Failed to create collection", "error")
+    }
+  }
+
+  if (creating) {
+    return (
+      <div className="flex gap-1">
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleCreate()
+            if (e.key === "Escape") { setCreating(false); setName("") }
+          }}
+          placeholder="Name"
+          className="w-20 px-1.5 py-1 text-[10px] bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-blue-500"
+        />
+        <button onClick={handleCreate} className="px-1.5 py-1 text-[10px] bg-blue-600 rounded text-white">OK</button>
+      </div>
+    )
+  }
+
+  return (
+    <button
+      onClick={() => setCreating(true)}
+      className="px-1.5 py-1 text-[10px] text-gray-500 hover:text-gray-300 bg-gray-800 border border-gray-700 rounded flex-shrink-0"
+      title="New collection"
+    >
+      +
+    </button>
+  )
 }
