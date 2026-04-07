@@ -2471,10 +2471,12 @@ class ActionExecutor:
                         tm = get_terminal_manager()
                         provider = params.get("provider", "claude")
                         if provider == "shell":
-                            command = task_desc
+                            inner = task_desc
                         else:
                             escaped = task_desc[:500].replace('"', '\\"')
-                            command = f'claude --dangerously-skip-permissions "{escaped}"'
+                            inner = f'claude --dangerously-skip-permissions "{escaped}"'
+                        # Wrap with exit signal so session monitor detects completion instantly
+                        command = f"trap 'echo __RDC_EXIT:$?' EXIT; {inner}"
                         term = tm.create(project=project, command=command)
                         terminal_id = term.id
                         sm.link_terminal(session.id, terminal_id)

@@ -8581,9 +8581,11 @@ async def retry_session(session_id: str):
     tm = get_terminal_manager()
     provider = s.agent_provider or "claude"
     if provider == "shell":
-        command = s.description
+        inner = s.description
     else:
-        command = f'claude --dangerously-skip-permissions "{s.description[:500]}"'
+        escaped = s.description[:500].replace('"', '\\"')
+        inner = f'claude --dangerously-skip-permissions "{escaped}"'
+    command = f"trap 'echo __RDC_EXIT:$?' EXIT; {inner}"
 
     try:
         term = tm.create(project=s.project, command=command)

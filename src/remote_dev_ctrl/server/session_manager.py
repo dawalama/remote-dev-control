@@ -72,6 +72,9 @@ _INPUT_PATTERNS = [
 # Shell prompt — indicates agent command has exited
 _SHELL_PROMPT_RE = re.compile(r"[$%>]\s*$")
 
+# Exit signal from trap wrapper — instant completion detection
+_EXIT_SIGNAL_RE = re.compile(r"__RDC_EXIT:(\d+)")
+
 
 @dataclass
 class Session:
@@ -367,6 +370,26 @@ class SessionManager:
                 output_seen = True
                 self._last_output_pos[pos_key] = len(buf)
                 text = strip_ansi(buf[last_pos:].decode("utf-8", errors="replace"))
+
+                # Check for exit signal (instant completion)
+                exit_match = _EXIT_SIGNAL_RE.search(text)
+                if exit_match:
+                    exit_code = int(exit_match.group(1))
+                    end_status = SessionStatus.DONE if exit_code == 0 else SessionStatus.FAILED
+                    self.log_event(session, "session.agent_exited", {"terminal_id": terminal_id, "exit_code": exit_code})
+                    # Save log + generate summary
+                    self._save_terminal_log(session)
+                    summary = await self._generate_summary(session)
+                    self.update_status(session.id, end_status, output_summary=summary)
+                    components: list[dict] = [
+                        {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
+                    ]
+                    if summary:
+                        components.append({"type": "text", "content": summary})
+                    cm.post_message(session.channel_id, role="system",
+                        content=f"Session {'completed' if exit_code == 0 else 'failed'} (exit {exit_code}).",
+                        metadata={"type": "a2ui", "components": components})
+                    break
 
                 # Check for input prompts in new output
                 for pattern in _INPUT_PATTERNS:
