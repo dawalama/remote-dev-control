@@ -7,6 +7,7 @@ import { LogsPill } from "@/features/logs/logs-panel"
 import { useVoice } from "@/hooks/use-voice"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
 import { useChannelStore } from "@/stores/channel-store"
+import { useProjectStore } from "@/stores/project-store"
 
 export function CommandBar() {
   const toast = useUIStore((s) => s.toast)
@@ -96,6 +97,9 @@ export function CommandBar() {
           </span>
         )}
 
+        {/* Settings */}
+        <SettingsButton />
+
         {/* Chat toggle */}
         <ChatToggle />
 
@@ -141,5 +145,50 @@ function ChatToggle() {
         <span className="text-[10px] bg-gray-500 text-white px-1 rounded-full">{messages.length}</span>
       )}
     </button>
+  )
+}
+
+function SettingsButton() {
+  const [open, setOpen] = useState(false)
+  const currentProject = useProjectStore((s) => s.currentProject)
+
+  return (
+    <div className="relative">
+      <button
+        className="w-8 h-8 rounded-full flex items-center justify-center text-sm bg-gray-600 text-gray-300 hover:bg-gray-500"
+        onClick={() => setOpen(!open)}
+        title="Settings"
+      >
+        ⚙
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-10 right-0 z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 w-44">
+            {currentProject !== "all" && (
+              <button
+                className="w-full px-3 py-2 text-xs text-gray-200 hover:bg-gray-700 text-left"
+                onClick={() => {
+                  setOpen(false)
+                  useUIStore.getState().setProjectSettingsOpen(true)
+                }}
+              >
+                Project Settings
+                <span className="text-[10px] text-gray-500 ml-1">{currentProject}</span>
+              </button>
+            )}
+            <button
+              className="w-full px-3 py-2 text-xs text-gray-200 hover:bg-gray-700 text-left"
+              onClick={() => {
+                setOpen(false)
+                useUIStore.getState().setSystemSettingsOpen(true)
+              }}
+            >
+              System Settings
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   )
 }

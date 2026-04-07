@@ -14,6 +14,7 @@ import { RightTabs } from "@/features/right-tabs/right-tabs"
 // ChatFAB replaced by ChannelPanel in v2
 import { CommandBar } from "@/features/command-bar/command-bar"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
+import { ProjectSettingsModal } from "@/features/modals/project-settings"
 import { GlobalTextInput } from "@/components/global-text-input"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
 import { useChannelStore } from "@/stores/channel-store"
@@ -46,7 +47,10 @@ export function DesktopLayout() {
   const setLayout = useUIStore((s) => s.setLayout)
   const spawnTerminal = useTerminalStore((s) => s.spawnTerminal)
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
-  const [systemSettingsOpen, setSystemSettingsOpen] = useState(false)
+  const systemSettingsOpen = useUIStore((s) => s.systemSettingsOpen)
+  const setSystemSettingsOpen = useUIStore((s) => s.setSystemSettingsOpen)
+  const projectSettingsOpen = useUIStore((s) => s.projectSettingsOpen)
+  const setProjectSettingsOpen = useUIStore((s) => s.setProjectSettingsOpen)
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
   // channelPanelOpen removed — FloatingChannelPanel manages its own state
   const [addProjectOpen, setAddProjectOpen] = useState(false)
@@ -198,13 +202,6 @@ export function DesktopLayout() {
           >
             KB
           </a>
-          <button
-            className="text-xs text-gray-400 hover:text-gray-200"
-            onClick={() => setSystemSettingsOpen(true)}
-            title="System settings"
-          >
-            Settings
-          </button>
           <button className="text-xs text-gray-400 hover:text-gray-200" onClick={logout}>
             Logout
           </button>
@@ -319,6 +316,9 @@ export function DesktopLayout() {
       <CommandPalette />
       {systemSettingsOpen && (
         <SystemSettingsModal onClose={() => setSystemSettingsOpen(false)} />
+      )}
+      {projectSettingsOpen && currentProject !== "all" && (
+        <ProjectSettingsModal projectName={currentProject} onClose={() => setProjectSettingsOpen(false)} fullPage />
       )}
       {addProjectOpen && (
         <AddProjectModal

@@ -21,6 +21,8 @@ interface UIState {
   selectedTaskId: string | null
   agentPanelOpen: boolean
   viewingSessionId: string | null
+  projectSettingsOpen: boolean
+  systemSettingsOpen: boolean
 
   // Global text input — any component can register as the target
   textInputOpen: boolean
@@ -49,6 +51,8 @@ interface UIState {
   toggleAgentPanel: () => void
   setAgentPanelOpen: (open: boolean) => void
   setViewingSessionId: (id: string | null) => void
+  setProjectSettingsOpen: (open: boolean) => void
+  setSystemSettingsOpen: (open: boolean) => void
   openTextInput: (callback: (text: string) => void, label?: string, initialValue?: string, keepOpen?: boolean, targetEl?: HTMLElement | null) => void
   appendTextInput: (text: string) => void
   closeTextInput: () => void
@@ -70,6 +74,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   selectedTaskId: null,
   agentPanelOpen: false,
   viewingSessionId: null,
+  projectSettingsOpen: false,
+  systemSettingsOpen: false,
   textInputOpen: false,
   textInputLabel: "Terminal",
   textInputCallback: null,
@@ -130,6 +136,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),
   setAgentPanelOpen: (open) => set({ agentPanelOpen: open }),
   setViewingSessionId: (id) => set({ viewingSessionId: id }),
+  setProjectSettingsOpen: (open) => set({ projectSettingsOpen: open }),
+  setSystemSettingsOpen: (open) => set({ systemSettingsOpen: open }),
 
   openTextInput: (callback, label, initialValue, keepOpen, targetEl) =>
     set({ textInputOpen: true, textInputCallback: callback, textInputLabel: label || "Input", textInputInitialValue: initialValue || "", textInputKeepOpen: keepOpen || false, textInputTargetEl: targetEl || null }),
