@@ -156,10 +156,20 @@ class ChannelManager:
         existing = self.get_project_default_channel(project_id)
         if existing:
             return existing
+        # Inherit collection from the project
+        collection_id = "general"
+        try:
+            from .db.repositories import get_project_repo
+            p = get_project_repo().get_by_id(project_id) or get_project_repo().get(project_name)
+            if p and p.collection_id:
+                collection_id = p.collection_id
+        except Exception:
+            pass
         return self.create_channel(
             name=f"#{project_name}",
             type=ChannelType.PROJECT,
             project_ids=[project_id],
+            collection_id=collection_id,
         )
 
     # ── Messages ──────────────────────────────────────────────────
