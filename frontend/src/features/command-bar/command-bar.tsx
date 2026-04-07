@@ -12,8 +12,6 @@ import { useProjectStore } from "@/stores/project-store"
 export function CommandBar() {
   const toast = useUIStore((s) => s.toast)
   const phone = useStateStore((s) => s.phone)
-  const theme = useUIStore((s) => s.theme)
-  const setTheme = useUIStore((s) => s.setTheme)
   const toggleBottomPanel = useUIStore((s) => s.toggleBottomPanel)
   const [phoneCalling, setPhoneCalling] = useState(false)
 
@@ -46,12 +44,6 @@ export function CommandBar() {
       finally { setPhoneCalling(false) }
     }
   }
-
-  const themes = [
-    { id: "default", label: "STD" },
-    { id: "modern", label: "MOD" },
-    { id: "brutalist", label: "BRT" },
-  ]
 
   return (
     <div className="fixed bottom-0 left-0 right-0 h-[48px] bg-gray-800 border-t border-gray-700 z-40 flex items-center px-4 gap-2">
@@ -97,29 +89,11 @@ export function CommandBar() {
           </span>
         )}
 
-        {/* Settings */}
-        <SettingsButton />
-
         {/* Chat toggle */}
         <ChatToggle />
 
-        {/* Theme picker */}
-        <div className="flex rounded overflow-hidden border border-gray-600">
-          {themes.map((t) => (
-            <button
-              key={t.id}
-              className={`px-2 py-1 text-xs font-medium ${
-                theme === t.id
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-700 text-gray-400 hover:bg-gray-600"
-              }`}
-              onClick={() => setTheme(t.id)}
-              title={t.id}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        {/* Settings (rightmost) */}
+        <SettingsButton />
       </div>
     </div>
   )
@@ -151,6 +125,14 @@ function ChatToggle() {
 function SettingsButton() {
   const [open, setOpen] = useState(false)
   const currentProject = useProjectStore((s) => s.currentProject)
+  const theme = useUIStore((s) => s.theme)
+  const setTheme = useUIStore((s) => s.setTheme)
+
+  const themes = [
+    { id: "default", label: "Dark" },
+    { id: "modern", label: "Modern" },
+    { id: "brutalist", label: "Brutal" },
+  ]
 
   return (
     <div className="relative">
@@ -164,14 +146,11 @@ function SettingsButton() {
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-10 right-0 z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 w-44">
+          <div className="absolute bottom-10 right-0 z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 w-48">
             {currentProject !== "all" && (
               <button
                 className="w-full px-3 py-2 text-xs text-gray-200 hover:bg-gray-700 text-left"
-                onClick={() => {
-                  setOpen(false)
-                  useUIStore.getState().setProjectSettingsOpen(true)
-                }}
+                onClick={() => { setOpen(false); useUIStore.getState().setProjectSettingsOpen(true) }}
               >
                 Project Settings
                 <span className="text-[10px] text-gray-500 ml-1">{currentProject}</span>
@@ -179,13 +158,27 @@ function SettingsButton() {
             )}
             <button
               className="w-full px-3 py-2 text-xs text-gray-200 hover:bg-gray-700 text-left"
-              onClick={() => {
-                setOpen(false)
-                useUIStore.getState().setSystemSettingsOpen(true)
-              }}
+              onClick={() => { setOpen(false); useUIStore.getState().setSystemSettingsOpen(true) }}
             >
               System Settings
             </button>
+            <div className="border-t border-gray-700 my-1" />
+            <div className="px-3 py-1.5">
+              <div className="text-[10px] text-gray-500 mb-1">Theme</div>
+              <div className="flex gap-1">
+                {themes.map((t) => (
+                  <button
+                    key={t.id}
+                    className={`px-2 py-0.5 text-[10px] rounded ${
+                      theme === t.id ? "bg-blue-600 text-white" : "bg-gray-700 text-gray-400 hover:bg-gray-600"
+                    }`}
+                    onClick={() => setTheme(t.id)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </>
       )}
