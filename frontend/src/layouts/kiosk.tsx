@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { ChevronDown, Menu } from "lucide-react"
 import { SessionViewer } from "@/features/sessions/session-viewer"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
@@ -197,7 +198,7 @@ export function KioskLayout() {
               return ch ? (ch as { name: string }).name.replace(/^#/, "") : (currentProject === "all" ? "All" : currentProject)
             })()}
           </span>
-          <span className="text-gray-500 text-xs">▼</span>
+          <ChevronDown className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
         </button>
 
         <div className="flex items-center gap-2">
@@ -211,8 +212,9 @@ export function KioskLayout() {
           <button
             className="text-gray-400 hover:text-gray-200 text-xl px-2"
             onClick={() => setHamburgerOpen(true)}
+            title="Menu"
           >
-            ☰
+            <Menu className="w-5 h-5" />
           </button>
         </div>
       </div>
@@ -301,6 +303,7 @@ export function KioskLayout() {
 
       {projectSheetOpen && (
         <WorkspaceSelectorSheet
+          position="top"
           onClose={() => setProjectSheetOpen(false)}
           onSelect={(channelId) => {
             const { channels, selectChannel } = useChannelStore.getState()

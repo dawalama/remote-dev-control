@@ -2,6 +2,7 @@ import { useState, useMemo } from "react"
 import { useChannelStore } from "@/stores/channel-store"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
+import { useUIStore } from "@/stores/ui-store"
 import { Sheet } from "@/features/mobile/sheet"
 
 type FilterMode = "all" | "active"
@@ -13,9 +14,11 @@ type FilterMode = "all" | "active"
 export function WorkspaceSelectorSheet({
   onClose,
   onSelect,
+  position = "bottom",
 }: {
   onClose: () => void
   onSelect: (channelId: string) => void
+  position?: "bottom" | "top"
 }) {
   const channels = useChannelStore((s) => s.channels)
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
@@ -24,6 +27,7 @@ export function WorkspaceSelectorSheet({
   const collections = useProjectStore((s) => s.collections)
   const currentCollection = useProjectStore((s) => s.currentCollection)
   const selectCollection = useProjectStore((s) => s.selectCollection)
+  const layout = useUIStore((s) => s.layout)
 
   const [search, setSearch] = useState("")
   const [filterMode, setFilterMode] = useState<FilterMode>("all")
@@ -65,7 +69,7 @@ export function WorkspaceSelectorSheet({
   }, [channels, currentCollection, filterMode, search, activeProjectNames])
 
   return (
-    <Sheet title="Workstreams" onClose={onClose}>
+    <Sheet title="Workstreams" onClose={onClose} position={position}>
       <div className="space-y-2">
         {/* Search */}
         <input
@@ -77,18 +81,45 @@ export function WorkspaceSelectorSheet({
         />
 
         {/* Filters */}
-        <div className="flex items-center gap-2">
-          {/* Collection */}
-          <select
-            value={currentCollection}
-            onChange={(e) => selectCollection(e.target.value)}
-            className="flex-1 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
-          >
-            <option value="all">All</option>
-            {collections.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
+        <div className="space-y-2">
+          {layout === "kiosk" ? (
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              <button
+                onClick={() => selectCollection("all")}
+                className={`px-3 py-1.5 text-xs rounded-full whitespace-nowrap border ${
+                  currentCollection === "all"
+                    ? "bg-blue-600 text-white border-blue-500"
+                    : "bg-gray-800 text-gray-300 border-gray-700"
+                }`}
+              >
+                All
+              </button>
+              {collections.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => selectCollection(c.id)}
+                  className={`px-3 py-1.5 text-xs rounded-full whitespace-nowrap border ${
+                    currentCollection === c.id
+                      ? "bg-blue-600 text-white border-blue-500"
+                      : "bg-gray-800 text-gray-300 border-gray-700"
+                  }`}
+                >
+                  {c.name}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <select
+              value={currentCollection}
+              onChange={(e) => selectCollection(e.target.value)}
+              className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
+            >
+              <option value="all">All</option>
+              {collections.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          )}
 
           {/* Active toggle */}
           <button
