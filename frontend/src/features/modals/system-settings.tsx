@@ -288,6 +288,16 @@ function TerminalSectionGlobal() {
     setEditList((prev) => prev.filter((_, i) => i !== idx))
   }
 
+  const moveStarter = (idx: number, dir: -1 | 1) => {
+    setEditList((prev) => {
+      const next = [...prev]
+      const target = idx + dir
+      if (target < 0 || target >= next.length) return prev
+      ;[next[idx], next[target]] = [next[target], next[idx]]
+      return next
+    })
+  }
+
   const addStarter = () => {
     setEditList((prev) => [
       ...prev,
@@ -342,13 +352,9 @@ function TerminalSectionGlobal() {
               onChange={(e) => updateStarter(idx, { command: e.target.value })}
               placeholder="command"
             />
-            <button
-              type="button"
-              className="text-red-400 hover:text-red-300"
-              onClick={() => removeStarter(idx)}
-            >
-              ×
-            </button>
+            <button type="button" className="text-gray-500 hover:text-gray-300 text-[10px]" onClick={() => moveStarter(idx, -1)} disabled={idx === 0} title="Move up">▲</button>
+            <button type="button" className="text-gray-500 hover:text-gray-300 text-[10px]" onClick={() => moveStarter(idx, 1)} disabled={idx === editList.length - 1} title="Move down">▼</button>
+            <button type="button" className="text-red-400 hover:text-red-300" onClick={() => removeStarter(idx)}>×</button>
           </div>
         ))}
         <div className="flex gap-2">

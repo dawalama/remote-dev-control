@@ -101,6 +101,14 @@ export function MessageRenderer({ message, compact, variant = "default", onRespo
         return <ActionResults meta={meta} compact={compact} variant={variant} />
       case "mission_started":
         return <MissionStarted meta={meta} variant={variant} />
+      case "file_attached":
+        return (
+          <div className="flex items-center gap-1.5 text-xs">
+            <span>📎</span>
+            <span className={variant === "user" ? "text-blue-100" : "text-gray-300"}>{String(meta.filename || "file")}</span>
+            {meta.size ? <span className="text-[10px] text-gray-500">({Math.round(Number(meta.size) / 1024)}KB)</span> : null}
+          </div>
+        )
       case "options":
         return <LegacyOptionButtons meta={meta} onRespond={onRespond} />
       case "code":

@@ -80,23 +80,32 @@ export function EmbeddedTerminal({
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
   const terminalChannels = useStateStore((s) => s.terminalChannels)
 
-  // Show project terminals + any channel-linked terminals (union, not exclusive)
+  // Terminal filtering: show terminals for the active workstream
+  const activeChannel = useChannelStore((s) => s.channels.find((c) => c.id === s.activeChannelId))
+
   const projectTerminals = (() => {
+    // Get channel-linked terminals
+    const channelTerminalIds = new Set<string>()
+    if (activeChannelId && terminalChannels) {
+      for (const [tid, chIds] of Object.entries(terminalChannels)) {
+        if (chIds.includes(activeChannelId)) channelTerminalIds.add(tid)
+      }
+    }
+
+    // System/ephemeral channels with no project: only show linked terminals
+    if (activeChannel && (activeChannel.type === "system" || !activeChannel.project_names?.length)) {
+      return terminals.filter((t) => channelTerminalIds.has(t.id))
+    }
+
+    // Project channels: show project terminals + channel-linked
     const projectFiltered = currentProject !== "all"
       ? terminals.filter((t) => t.project === currentProject)
       : terminals
-    // Also include channel-linked terminals that might be from a different project
-    if (activeChannelId && terminalChannels) {
-      const channelTerminalIds = new Set(
-        Object.entries(terminalChannels)
-          .filter(([, chIds]) => chIds.includes(activeChannelId))
-          .map(([tid]) => tid)
-      )
-      if (channelTerminalIds.size > 0) {
-        const existing = new Set(projectFiltered.map((t) => t.id))
-        const extra = terminals.filter((t) => channelTerminalIds.has(t.id) && !existing.has(t.id))
-        return [...projectFiltered, ...extra]
-      }
+
+    if (channelTerminalIds.size > 0) {
+      const existing = new Set(projectFiltered.map((t) => t.id))
+      const extra = terminals.filter((t) => channelTerminalIds.has(t.id) && !existing.has(t.id))
+      return [...projectFiltered, ...extra]
     }
     return projectFiltered
   })()

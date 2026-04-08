@@ -839,6 +839,14 @@ class TerminalManager:
         if dims:
             self._resize_pty(session_id, dims[0], dims[1])
 
+    def redraw_for_client(self, session_id: str, client_id: str) -> bool:
+        """Force a repaint for a specific client without changing its dimensions."""
+        clients = self._client_dims.get(session_id, {})
+        dims = clients.get(client_id)
+        if not dims:
+            return False
+        return self._resize_pty(session_id, dims[0], dims[1], force=True)
+
     def resize(self, session_id: str, cols: int, rows: int, client_id: str | None = None) -> bool:
         """Resize terminal.
 
@@ -851,7 +859,7 @@ class TerminalManager:
             return True
         return self._resize_pty(session_id, cols, rows)
 
-    def _resize_pty(self, session_id: str, cols: int, rows: int) -> bool:
+    def _resize_pty(self, session_id: str, cols: int, rows: int, force: bool = False) -> bool:
         """Actually resize the PTY file descriptor."""
         session = self._sessions.get(session_id)
         if not session or session.fd is None:
@@ -860,13 +868,13 @@ class TerminalManager:
         # Force SIGWINCH on first client connect after server restart,
         # even if dimensions match. This makes the program repaint cleanly
         # instead of relying on the garbled ring buffer replay.
-        force = session_id in self._needs_sigwinch
-        if force:
+        pending_sigwinch = session_id in self._needs_sigwinch
+        if pending_sigwinch:
             self._needs_sigwinch.discard(session_id)
             # Clear stale ring buffer data so client gets only fresh repaint
             session._output_buffer.clear()
 
-        if not force and session.cols == cols and session.rows == rows:
+        if not force and not pending_sigwinch and session.cols == cols and session.rows == rows:
             return True
 
         try:
@@ -995,6 +1003,27 @@ class TerminalManager:
     def get_snapshot(self, session_id: str, cols: int, rows: int) -> str | None:
         """Get a stored snapshot matching the exact dimensions."""
         return self._snapshots.get((session_id, cols, rows))
+
+    def get_best_snapshot(self, session_id: str, cols: int, rows: int) -> str | None:
+        """Get the best available snapshot for a session.
+
+        Prefer exact dimensions. Otherwise, use the closest stored dimensions
+        for the same session rather than falling back straight to raw byte replay.
+        """
+        exact = self.get_snapshot(session_id, cols, rows)
+        if exact:
+            return exact
+
+        candidates = [
+            (snap_cols, snap_rows, data)
+            for (snap_session_id, snap_cols, snap_rows), data in self._snapshots.items()
+            if snap_session_id == session_id
+        ]
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: (abs(item[0] - cols) + abs(item[1] - rows), -item[0], -item[1]))
+        return candidates[0][2]
 
     def is_waiting_for_input(self, session_id: str) -> bool:
         """Heuristic: is this terminal waiting for user input?"""

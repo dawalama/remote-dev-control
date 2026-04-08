@@ -2,6 +2,7 @@ import { useState, useRef } from "react"
 import { useChannelStore } from "@/stores/channel-store"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
 import { useChannelSend } from "@/hooks/use-channel-send"
+import { useFileUpload } from "@/hooks/use-file-upload"
 import { MessageRenderer } from "./message-renderer"
 import type { ChannelMessage } from "@/stores/channel-store"
 
@@ -60,9 +61,11 @@ export function MobileChannelPanel({
     postMessage,
   })
 
+  const { uploadMultiple } = useFileUpload()
   const [input, setInput] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
   const fullscreenInputRef = useRef<HTMLInputElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const handleSend = async () => {
@@ -143,6 +146,8 @@ export function MobileChannelPanel({
 
         {/* Input */}
         <div className="flex items-center gap-2 px-3 py-2 border-t border-gray-800 flex-shrink-0">
+          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files?.length) uploadMultiple(e.target.files); e.target.value = "" }} />
+          <button onClick={() => fileInputRef.current?.click()} className="text-gray-500 hover:text-gray-300 flex-shrink-0" title="Attach file">📎</button>
           <input
             ref={fullscreenInputRef}
             autoFocus

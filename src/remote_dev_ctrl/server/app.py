@@ -4406,12 +4406,22 @@ async def orchestrator_endpoint(
                 content = result.get("response") or ""
                 # Don't post empty messages unless they have UI components
                 if content or metadata:
-                    cm.post_message(
+                    msg = cm.post_message(
                         channel_id,
                         role="orchestrator",
                         content=content,
                         metadata=metadata if metadata else None,
                     )
+                    # Push to all WS clients so they pick up the new message instantly
+                    try:
+                        from .state_machine import get_state_machine
+                        sm = get_state_machine()
+                        await sm._broadcast_event("channel_message", {
+                            "channel_id": channel_id,
+                            "message_id": msg.id,
+                        })
+                    except Exception:
+                        pass
             except Exception:
                 logger.exception("Background orchestrator task failed")
                 try:
@@ -6367,9 +6377,12 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
         except asyncio.TimeoutError:
             break
 
-    # Replay: client snapshot > server snapshot > raw buffer
-    # Register output callback BEFORE replay so no data is lost
-    # between get_buffer() and callback registration.
+    live_repaint = not skip_replay and not is_stopped and client_cols > 0 and client_rows > 0
+
+    # Replay: for live sessions, do not attach the output callback until after
+    # we force a clean repaint. Attaching in the middle of an application's
+    # existing render stream can start xterm on a continuation byte/control
+    # sequence and leave the parser in a broken state.
     output_queue: asyncio.Queue[bytes] = asyncio.Queue()
 
     def on_output(data: bytes):
@@ -6378,22 +6391,34 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
         except asyncio.QueueFull:
             pass
 
-    tm.on_output(session_id, on_output)
-
     # Start/re-attach the reader (no-op if already running)
     tm.start_reader(session_id)
 
     if not skip_replay:
-        snapshot_data = None
-        if client_cols > 0 and client_rows > 0:
-            snapshot_data = tm.get_snapshot(session_id, client_cols, client_rows)
-
-        if snapshot_data:
-            await websocket.send_text(snapshot_data)
+        # For live sessions, avoid replaying serialized snapshots or raw PTY
+        # tails into xterm. Both can reconnect mid-control-sequence and leave
+        # the parser in a broken state. A forced PTY repaint is slower but
+        # much more reliable.
+        if live_repaint:
+            tm.redraw_for_client(session_id, client_id)
         else:
-            buffered = tm.get_buffer(session_id)
-            if buffered:
-                await websocket.send_bytes(buffered)
+            snapshot_data = None
+            if client_cols > 0 and client_rows > 0:
+                snapshot_data = tm.get_best_snapshot(session_id, client_cols, client_rows)
+
+            if snapshot_data:
+                await websocket.send_text(snapshot_data)
+            else:
+                buffered = tm.get_buffer(session_id)
+                if buffered:
+                    await websocket.send_bytes(buffered)
+
+    tm.on_output(session_id, on_output)
+
+    if live_repaint:
+        # Now that the client callback is attached, trigger a second repaint so
+        # the first bytes the browser sees are a fresh, self-contained render.
+        tm.redraw_for_client(session_id, client_id)
 
     # If terminal is stopped, send a marker and close
     if is_stopped:
@@ -6455,6 +6480,8 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
                                     rows=cmd.get("rows", 0),
                                     data=cmd.get("data", ""),
                                 )
+                            elif cmd["type"] == "redraw":
+                                tm.redraw_for_client(session_id, client_id)
                             elif cmd["type"] == "skip_replay":
                                 pass  # Already handled above
                         else:

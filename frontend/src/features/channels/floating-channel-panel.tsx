@@ -3,6 +3,7 @@ import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
 import { useChannelSend } from "@/hooks/use-channel-send"
+import { useFileUpload } from "@/hooks/use-file-upload"
 import { ChannelSettings } from "./channel-settings"
 import { MessageRenderer } from "./message-renderer"
 
@@ -50,13 +51,16 @@ export function FloatingChannelPanel({
     postMessage,
   })
 
+  const { uploadMultiple } = useFileUpload()
   const chatOpen = useUIStore((s) => s.chatOpen)
   const toggleChat = useUIStore((s) => s.toggleChat)
   const [size, setSize] = useState<PanelSize>("half")
   const [input, setInput] = useState("")
   const [showSettings, setShowSettings] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleSend = async () => {
     if (!input.trim()) return
@@ -82,9 +86,16 @@ export function FloatingChannelPanel({
 
   return (
     <div
-      className="fixed bottom-20 right-6 z-[110] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl flex flex-col overflow-hidden transition-[height] duration-200"
+      className={`fixed bottom-20 right-6 z-[110] bg-gray-900 border rounded-xl shadow-2xl flex flex-col overflow-hidden transition-[height] duration-200 ${
+        dragOver ? "border-blue-500 ring-2 ring-blue-500/30" : "border-gray-700"
+      }`}
       style={{ height, width: "420px", maxHeight: "calc(100vh - 120px)" }}
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files.length) uploadMultiple(e.dataTransfer.files) }}
     >
+      {/* Hidden file input for attach button */}
+      <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files?.length) uploadMultiple(e.target.files); e.target.value = "" }} />
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800 flex-shrink-0">
         <span className="text-xs font-medium text-gray-300 truncate">{channel.name.replace(/^#/, "")}</span>
@@ -155,9 +166,23 @@ export function FloatingChannelPanel({
         }} />
       </div>
 
+      {/* Drag overlay */}
+      {dragOver && (
+        <div className="absolute inset-0 z-10 bg-blue-600/10 flex items-center justify-center pointer-events-none">
+          <span className="text-sm text-blue-400 font-medium">Drop files here</span>
+        </div>
+      )}
+
       {/* Input */}
       <div className="flex-shrink-0 px-3 py-2 border-t border-gray-800">
         <div className="flex gap-2">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="text-gray-500 hover:text-gray-300 flex-shrink-0 px-1"
+            title="Attach file"
+          >
+            📎
+          </button>
           <input
             ref={inputRef}
             data-no-global-intercept
