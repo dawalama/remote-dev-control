@@ -39,6 +39,8 @@ frontend/src/
 
 ## Development Rules
 
+0. **No Co-Authored-By in commits**: Do not add `Co-Authored-By` lines to commit messages.
+
 1. **All three layouts are first-class**: desktop, mobile, kiosk. Never make a change that applies to all layouts in only one place. Check all three.
 
 2. **Frontend build**: `cd frontend && pnpm run build` (runs `tsc -b && vite build`). Must pass with zero errors — unused variables/imports are build errors.
