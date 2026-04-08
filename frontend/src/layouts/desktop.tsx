@@ -195,13 +195,6 @@ export function DesktopLayout() {
               {getClientName() || getClientId().slice(0, 12)}
             </span>
           </div>
-          <a
-            href="/kb"
-            className="text-xs text-gray-400 hover:text-gray-200"
-            title="Knowledge Base"
-          >
-            KB
-          </a>
           <button className="text-xs text-gray-400 hover:text-gray-200" onClick={logout}>
             Logout
           </button>

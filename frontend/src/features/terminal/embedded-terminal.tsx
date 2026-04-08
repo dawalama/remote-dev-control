@@ -32,7 +32,9 @@ export function EmbeddedTerminal({
   const terminals = useStateStore((s) => s.terminals)
   const terminalStore = useTerminalStore()
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId)
+  const scopedTerminalIds = useTerminalStore((s) => s.scopedTerminalIds)
   const setActiveTerminalId = useTerminalStore((s) => s.setActiveTerminalId)
+  const rememberTerminalForScope = useTerminalStore((s) => s.rememberTerminalForScope)
   const mode = useTerminalStore((s) => s.mode)
   const setMode = useTerminalStore((s) => s.setMode)
   const toast = useUIStore((s) => s.toast)
@@ -82,6 +84,11 @@ export function EmbeddedTerminal({
 
   // Terminal filtering: show terminals for the active workstream
   const activeChannel = useChannelStore((s) => s.channels.find((c) => c.id === s.activeChannelId))
+  const scopeKey = activeChannelId
+    ? `channel:${activeChannelId}`
+    : currentProject !== "all"
+      ? `project:${currentProject}`
+      : "global"
 
   const projectTerminals = (() => {
     // Get channel-linked terminals
@@ -123,17 +130,27 @@ export function EmbeddedTerminal({
     }
   }, [logsOpen, activePaneId])
 
+  const scopedTerminalId = scopedTerminalIds[scopeKey] || null
+
   // Auto-select: if activeTerminalId is set and valid, use it.
   // Otherwise fall back to first terminal.
   const resolvedTerminalId =
+    projectTerminals.find((t) => t.id === scopedTerminalId)?.id ||
     projectTerminals.find((t) => t.id === activeTerminalId)?.id ||
     projectTerminals[0]?.id ||
     null
 
-  // Keep activeTerminalId in sync (derived — update store inline)
-  if (resolvedTerminalId && resolvedTerminalId !== activeTerminalId) {
-    setActiveTerminalId(resolvedTerminalId)
-  }
+  // Keep activeTerminalId in sync after filtered terminal state settles.
+  useEffect(() => {
+    if (resolvedTerminalId !== activeTerminalId) {
+      setActiveTerminalId(resolvedTerminalId)
+    }
+  }, [resolvedTerminalId, activeTerminalId, setActiveTerminalId])
+
+  useEffect(() => {
+    if (resolvedTerminalId) rememberTerminalForScope(scopeKey, resolvedTerminalId)
+    else rememberTerminalForScope(scopeKey, null)
+  }, [scopeKey, resolvedTerminalId, rememberTerminalForScope])
 
   // Determine what's actually shown
   const isLogTab = activeTab?.startsWith("log:")
@@ -157,12 +174,13 @@ export function EmbeddedTerminal({
         toast("Terminal started", "success")
         setMode("embedded")
         setActiveTerminalId(session.id)
+        rememberTerminalForScope(scopeKey, session.id)
         setActiveTab(null)
       } else {
         toast("Failed to start terminal", "error")
       }
     },
-    [currentProject, terminalStore, toast, setMode, setActiveTerminalId]
+    [currentProject, terminalStore, toast, setMode, setActiveTerminalId, rememberTerminalForScope, scopeKey]
   )
 
   const handleRestart = useCallback(async () => {
@@ -180,10 +198,13 @@ export function EmbeddedTerminal({
     const remaining = projectTerminals.filter((t) => t.id !== showingTerminalId)
     if (remaining.length > 0) {
       setActiveTerminalId(remaining[0].id)
+      rememberTerminalForScope(scopeKey, remaining[0].id)
       setActiveTab(null)
+    } else {
+      rememberTerminalForScope(scopeKey, null)
     }
     toast("Terminal killed", "success")
-  }, [showingTerminalId, terminalStore, toast, setMode, projectTerminals, setActiveTerminalId])
+  }, [showingTerminalId, terminalStore, toast, setMode, projectTerminals, setActiveTerminalId, rememberTerminalForScope, scopeKey])
 
   // No project selected and no terminals anywhere
   if (currentProject === "all" && projectTerminals.length === 0 && logPanes.length === 0) {
@@ -396,6 +417,7 @@ export function EmbeddedTerminal({
               }`}
               onClick={() => {
                 setActiveTerminalId(t.id)
+                rememberTerminalForScope(scopeKey, t.id)
                 setActiveTab(null)
               }}
             >
@@ -570,6 +592,4 @@ function LogContent({ pane }: { pane: { id: string; content: string; paused: boo
     </pre>
   )
 }
-
-
 

@@ -52,6 +52,7 @@ export function TerminalView({
   onSendReady,
   onRedrawReady,
 }: TerminalViewProps) {
+  const layout = useUIStore((s) => s.layout)
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -64,6 +65,8 @@ export function TerminalView({
   const intentionalCloseRef = useRef(false)
   const isAtBottomRef = useRef(true)
   const pendingFitRef = useRef<number | null>(null)
+  const startupTimersRef = useRef<number[]>([])
+  const startupRafRef = useRef<number | null>(null)
   const connectStartedRef = useRef(false)
   const onSendReadyRef = useRef(onSendReady)
   onSendReadyRef.current = onSendReady
@@ -94,10 +97,12 @@ export function TerminalView({
   }, [])
 
   const redraw = useCallback(() => {
+    const container = containerRef.current
     const term = termRef.current
     const fit = fitRef.current
     const ws = wsRef.current
-    if (!term || !fit) return
+    if (!container || !term || !fit) return
+    if (container.clientWidth <= 0 || container.clientHeight <= 0) return
     try { fit.fit() } catch {}
     try { term.refresh(0, Math.max(term.rows - 1, 0)) } catch {}
 
@@ -274,15 +279,17 @@ export function TerminalView({
 
     term.open(containerRef.current)
 
-    // WebGL renderer: GPU-accelerated glyph rendering, eliminates canvas
-    // jitter on devices like Tesla browser. Falls back to default canvas
-    // renderer if WebGL is unavailable.
-    try {
-      const webgl = new WebglAddon()
-      webgl.onContextLoss(() => { webgl.dispose() })
-      term.loadAddon(webgl)
-    } catch {
-      // WebGL not available — canvas renderer remains active
+    // WebGL is useful in kiosk browsers where canvas jitter is visible,
+    // but on desktop refresh/reconnect it can leave the glyph layer blank
+    // until a later resize. Use the default renderer outside kiosk mode.
+    if (layout === "kiosk") {
+      try {
+        const webgl = new WebglAddon()
+        webgl.onContextLoss(() => { webgl.dispose() })
+        term.loadAddon(webgl)
+      } catch {
+        // WebGL not available — canvas renderer remains active
+      }
     }
 
     const connectWhenReady = () => {
@@ -365,11 +372,43 @@ export function TerminalView({
     const observer = new ResizeObserver(debouncedFit)
     observer.observe(containerRef.current)
 
+    const runStartupRecovery = () => {
+      if (startupRafRef.current) cancelAnimationFrame(startupRafRef.current)
+      startupRafRef.current = requestAnimationFrame(() => {
+        startupRafRef.current = null
+        connectWhenReady()
+        redraw()
+      })
+    }
+
+    // Refresh reloads and BFCache restores can leave xterm mounted before the
+    // final viewport size is stable. A short recovery window removes the need
+    // for the user to toggle fullscreen just to force the first repaint.
+    const queueStartupRecovery = () => {
+      startupTimersRef.current.forEach(clearTimeout)
+      startupTimersRef.current = [0, 120, 400, 1200].map((delay) =>
+        window.setTimeout(runStartupRecovery, delay)
+      )
+    }
+    queueStartupRecovery()
+
     // VisualViewport resize — safety net for mobile browsers where the
     // visible viewport changes (Safari address bar, Android toolbar) but
     // ResizeObserver on the container doesn't fire quickly enough.
     const vv = window.visualViewport
     if (vv) vv.addEventListener("resize", debouncedFit)
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") queueStartupRecovery()
+    }
+    const onPageShow = () => queueStartupRecovery()
+    window.addEventListener("pageshow", onPageShow)
+    document.addEventListener("visibilitychange", onVisibilityChange)
+    window.addEventListener("focus", runStartupRecovery)
+
+    if ("fonts" in document) {
+      void (document.fonts as FontFaceSet).ready.then(runStartupRecovery).catch(() => {})
+    }
 
     // Post-layout verification — on slow devices (Tesla kiosk, low-end
     // tablets), the grid+flex layout may not settle before the initial fit
@@ -441,9 +480,15 @@ export function TerminalView({
       intentionalCloseRef.current = true
       if (reconnectRef.current.timer) clearTimeout(reconnectRef.current.timer)
       if (pendingFitRef.current) cancelAnimationFrame(pendingFitRef.current)
+      if (startupRafRef.current) cancelAnimationFrame(startupRafRef.current)
+      startupTimersRef.current.forEach(clearTimeout)
+      startupTimersRef.current = []
       wsRef.current?.close()
       observer.disconnect()
       if (vv) vv.removeEventListener("resize", debouncedFit)
+      window.removeEventListener("pageshow", onPageShow)
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+      window.removeEventListener("focus", runStartupRecovery)
       verifyTimers.forEach(clearTimeout)
       if (screenEl) {
         screenEl.removeEventListener("touchstart", onTouchStart)
@@ -454,7 +499,7 @@ export function TerminalView({
       fitRef.current = null
       wsRef.current = null
     }
-  }, [sessionId, connectWs, checkIfAtBottom, fontSize])
+  }, [sessionId, connectWs, checkIfAtBottom, fontSize, layout])
 
   return (
     <div className={`w-full h-full min-h-0 relative ${className}`}>

@@ -1,6 +1,24 @@
 import { create } from "zustand"
 import { POST, DELETE } from "@/lib/api"
 
+const ACTIVE_TERMINAL_KEY = "rdc_active_terminal_id"
+const SCOPED_TERMINAL_KEY = "rdc_scoped_terminal_ids"
+
+function loadScopedTerminalIds(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(SCOPED_TERMINAL_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === "object" ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveScopedTerminalIds(value: Record<string, string>) {
+  localStorage.setItem(SCOPED_TERMINAL_KEY, JSON.stringify(value))
+}
+
 export interface TerminalSession {
   id: string
   project: string
@@ -14,6 +32,7 @@ type TerminalMode = "embedded" | "fullscreen" | "minimized"
 interface TerminalStoreState {
   activeProject: string | null
   activeTerminalId: string | null
+  scopedTerminalIds: Record<string, string>
   mode: TerminalMode
   // Track which projects have local xterm connections (managed by component)
   connectedProjects: Set<string>
@@ -22,6 +41,7 @@ interface TerminalStoreState {
 
   setActiveProject: (project: string | null) => void
   setActiveTerminalId: (id: string | null) => void
+  rememberTerminalForScope: (scope: string, id: string | null) => void
   setMode: (mode: TerminalMode) => void
   markConnected: (project: string) => void
   markDisconnected: (project: string) => void
@@ -33,14 +53,28 @@ interface TerminalStoreState {
 
 export const useTerminalStore = create<TerminalStoreState>((set) => ({
   activeProject: null,
-  activeTerminalId: null,
+  activeTerminalId: localStorage.getItem(ACTIVE_TERMINAL_KEY),
+  scopedTerminalIds: loadScopedTerminalIds(),
   mode: "embedded",
   connectedProjects: new Set(),
   terminalFocused: false,
 
   setActiveProject: (project) => set({ activeProject: project }),
 
-  setActiveTerminalId: (id) => set({ activeTerminalId: id }),
+  setActiveTerminalId: (id) => {
+    if (id) localStorage.setItem(ACTIVE_TERMINAL_KEY, id)
+    else localStorage.removeItem(ACTIVE_TERMINAL_KEY)
+    set({ activeTerminalId: id })
+  },
+
+  rememberTerminalForScope: (scope, id) =>
+    set((s) => {
+      const next = { ...s.scopedTerminalIds }
+      if (id) next[scope] = id
+      else delete next[scope]
+      saveScopedTerminalIds(next)
+      return { scopedTerminalIds: next }
+    }),
 
   setMode: (mode) => set({ mode }),
 
@@ -70,6 +104,8 @@ export const useTerminalStore = create<TerminalStoreState>((set) => ({
         url += `&channel_id=${encodeURIComponent(channelId)}`
       }
       const session = await POST<TerminalSession>(url)
+      if (session?.id) localStorage.setItem(ACTIVE_TERMINAL_KEY, session.id)
+      else localStorage.removeItem(ACTIVE_TERMINAL_KEY)
       set({ activeProject: project, activeTerminalId: session?.id || null })
       return session
     } catch {
