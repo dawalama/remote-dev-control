@@ -26,7 +26,7 @@ interface TerminalStoreState {
   markConnected: (project: string) => void
   markDisconnected: (project: string) => void
   setTerminalFocused: (focused: boolean) => void
-  spawnTerminal: (project: string, command?: string) => Promise<TerminalSession | null>
+  spawnTerminal: (project: string, command?: string, channelId?: string) => Promise<TerminalSession | null>
   killTerminal: (sessionId: string) => Promise<void>
   restartTerminal: (sessionId: string) => Promise<TerminalSession | null>
 }
@@ -60,11 +60,14 @@ export const useTerminalStore = create<TerminalStoreState>((set) => ({
       return { connectedProjects: next }
     }),
 
-  spawnTerminal: async (project, command) => {
+  spawnTerminal: async (project, command, channelId) => {
     try {
       let url = `/terminals?project=${encodeURIComponent(project)}`
       if (command !== undefined) {
         url += `&command=${encodeURIComponent(command)}`
+      }
+      if (channelId) {
+        url += `&channel_id=${encodeURIComponent(channelId)}`
       }
       const session = await POST<TerminalSession>(url)
       set({ activeProject: project, activeTerminalId: session?.id || null })

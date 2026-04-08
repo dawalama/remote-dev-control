@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
+import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useLogsStore } from "@/stores/logs-store"
 import { useDictationStore } from "@/stores/dictation-store"
@@ -14,6 +15,7 @@ import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { ContextViewerModal } from "@/features/modals/context-viewer"
 import { useModels, ModelSelector, CreateTaskForm } from "@/features/tasks/create-task-form"
 import { AddActionForm } from "@/features/processes/add-action-form"
+import { SessionsCard } from "@/features/sessions/sessions-card"
 import type { ActivityEvent, Task } from "@/types"
 
 type RightTab = "activity" | "processes" | "tasks" | "browser" | "attachments" | "system" | "dictation"
@@ -40,7 +42,7 @@ export function RightTabs() {
   const tabs: { id: RightTab; label: string; badge?: number }[] = [
     { id: "activity", label: "Activity" },
     { id: "processes", label: "Actions" },
-    { id: "tasks", label: "Tasks", badge: runningCount > 0 ? runningCount : undefined },
+    { id: "tasks", label: "Sessions", badge: runningCount > 0 ? runningCount : undefined },
     { id: "browser", label: "Browser" },
     { id: "attachments", label: "Attachments" },
     ...(phoneActive ? [{ id: "dictation" as RightTab, label: "Dictation", badge: dictationBlocks.length > 0 ? dictationBlocks.length : undefined }] : []),
@@ -72,7 +74,7 @@ export function RightTabs() {
       <div className="px-3 pb-3 pt-2 flex-1 min-h-0 overflow-auto">
         {tab === "activity" && <ActivityTab />}
         {tab === "processes" && <ProcessesTab />}
-        {tab === "tasks" && <TasksTab />}
+        {tab === "tasks" && <SessionsCard />}
         {tab === "browser" && <UnifiedBrowserPanel />}
         {tab === "attachments" && <ContextsTab />}
         {tab === "dictation" && <DictationTab />}
@@ -90,14 +92,21 @@ function ActivityTab() {
   const currentProject = useProjectStore((s) => s.currentProject)
   const wsRef = useRef<ManagedWebSocket | null>(null)
 
+  // Channel-first: use active channel's primary project for filtering
+  const activeChannel = useChannelStore((s) => {
+    const ch = s.channels.find((c) => c.id === s.activeChannelId)
+    return ch ?? null
+  })
+  const filterProject = activeChannel?.project_names?.[0] || (currentProject !== "all" ? currentProject : null)
+
   const loadActivity = useCallback(
     (before?: string) => {
       const params = new URLSearchParams({ limit: "30" })
-      if (currentProject !== "all") params.set("project", currentProject)
+      if (filterProject) params.set("project", filterProject)
       if (before) params.set("before", before)
       return GET<ActivityEvent[]>(`/activity?${params}`)
     },
-    [currentProject]
+    [filterProject]
   )
 
   useEffect(() => {
@@ -503,8 +512,8 @@ function SystemTab() {
   )
 }
 
-// ─── Tasks Tab ─────────────────────────────────────────────────────────
-function TasksTab() {
+// ─── Legacy Tasks Tab (kept exported to avoid unused-function build error) ──
+export function TasksTab() {
   const tasks = useStateStore((s) => s.tasks)
   const currentProject = useProjectStore((s) => s.currentProject)
   const toast = useUIStore((s) => s.toast)

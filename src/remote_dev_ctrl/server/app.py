@@ -185,6 +185,34 @@ async def lifespan(app: FastAPI):
             metadata={"name": info.name, "role": info.role.value},
         )
     
+    # Sync channel collections with project collections (fix drift)
+    try:
+        from .db.connection import get_db
+        db = get_db("rdc")
+        fixed = db.execute("""
+            UPDATE channels SET collection_id = (
+                SELECT p.collection_id FROM projects p
+                JOIN channel_projects cp ON cp.project_id = p.id
+                WHERE cp.channel_id = channels.id LIMIT 1
+            ) WHERE id IN (
+                SELECT cp.channel_id FROM channel_projects cp
+                JOIN projects p ON p.id = cp.project_id
+                WHERE p.collection_id != channels.collection_id
+            )
+        """).rowcount
+        if fixed:
+            db.commit()
+            logger.info("Synced %d channel collection_ids with projects", fixed)
+    except Exception:
+        logger.debug("Channel collection sync failed", exc_info=True)
+
+    # Recover active sessions from previous server run
+    try:
+        from .session_manager import get_session_manager
+        get_session_manager().recover_sessions()
+    except Exception:
+        logger.debug("Session recovery failed", exc_info=True)
+
     # Subscribe to events to broadcast to WebSocket clients
     @event_bus.subscribe()
     async def broadcast_event(event: Event):
@@ -261,6 +289,16 @@ async def lifespan(app: FastAPI):
     if config.agents.auto_spawn:
         await orchestrator.start()
     
+    # Ensure all existing projects have a default channel
+    try:
+        from .channel_manager import get_channel_manager
+        from .db.repositories import ProjectRepository
+        cm = get_channel_manager()
+        for proj in ProjectRepository().list():
+            cm.ensure_project_channel(proj.id, proj.name)
+    except Exception as e:
+        logger.warning(f"Channel sync for existing projects failed: {e}")
+
     # Re-attach to any relay terminal sessions that survived the last shutdown
     from .terminal import get_terminal_manager as _get_tm
     from .state_machine import get_state_machine
@@ -277,6 +315,9 @@ async def lifespan(app: FastAPI):
 
     # Emit server started event
     event_bus.emit(EventType.SERVER_STARTED)
+
+    from .channel_manager import emit
+    emit("system.server_started", data={"version": "0.1.1"})
     
     try:
         yield
@@ -4242,6 +4283,7 @@ async def orchestrator_endpoint(
     # Accept params from query string OR JSON body
     conversation_history: list[dict] | None = None
     client_id: str | None = None
+    channel_id: str | None = None
     try:
         body = await request.json()
         if isinstance(body, dict):
@@ -4249,6 +4291,7 @@ async def orchestrator_endpoint(
             project = project or body.get("project")
             channel = body.get("channel", channel)
             client_id = body.get("client_id")
+            channel_id = body.get("channel_id")
             conversation_history = body.get("conversation_history")
     except Exception:
         pass
@@ -4256,59 +4299,143 @@ async def orchestrator_endpoint(
     if not message:
         return {"response": "No message provided.", "actions": [], "usage": {}}
 
-    engine = get_intent_engine()
-    executor = get_action_executor()
-
-    # Build context from current state
-    ctx = build_orchestrator_context(project, session_id, channel, client_id=client_id)
-
-    # Process intent via LLM, passing conversation history for multi-turn context
-    result = await engine.process(message, ctx, conversation_history=conversation_history)
-
-    # Execute actions
-    executed = []
-    for action in result.actions:
-        outcome = await executor.execute(action.name, action.params, ctx)
-        executed.append(outcome)
-
-    # Save turns to server-side conversation thread
+    # Check for async mode
+    mode = "sync"
     try:
-        conv_mgr = get_conversation_manager()
-        thread_id = conv_mgr.get_or_create_thread(project)
-        conv_mgr.append_turn(thread_id, "user", message, channel=channel, client_id=client_id)
-        conv_mgr.append_turn(thread_id, "assistant", result.response, channel=channel, actions=executed)
-    except Exception:
-        logger.debug("Failed to save conversation turn", exc_info=True)
-
-    # Layer 1: Log raw interaction (audit)
-    try:
-        log_nanobot_interaction(
-            channel=channel,
-            project=project,
-            message=message,
-            response=result.response,
-            actions=executed,
-            model=result.usage.get("model", "unknown"),
-            prompt_tokens=result.usage.get("prompt_tokens", 0),
-            completion_tokens=result.usage.get("completion_tokens", 0),
-            duration_ms=result.usage.get("duration_ms", 0),
-        )
+        body_check = await request.json() if hasattr(request, "json") else {}
+        if isinstance(body_check, dict):
+            mode = body_check.get("mode", "sync")
     except Exception:
         pass
 
-    # Layer 2: Extract knowledge async (fire-and-forget)
-    # Skip for local models to avoid doubling Ollama load
-    cfg = load_nanobot_config()
-    if project and cfg.get("llm_provider") != "ollama":
-        asyncio.create_task(extract_knowledge(message, result.response, project, executed))
+    # Emit structured event for the user message
+    from .channel_manager import emit
+    emit("orchestrator.message_received", channel_id=channel_id, data={
+        "message": message[:200], "project": project, "channel": channel,
+    })
 
-    return {
-        "response": result.response,
-        "executed": executed,
-        "actions": [{"name": a.name, "params": a.params} for a in result.actions],
-        "options": result.options or None,
-        "usage": result.usage,
-    }
+    async def _process_orchestrator():
+        """Core orchestrator logic — runs sync or as background task."""
+        engine = get_intent_engine()
+        executor = get_action_executor()
+
+        # Build context from current state
+        ctx = build_orchestrator_context(project, session_id, channel, client_id=client_id)
+        # Override active workstream if frontend sent the channel_id
+        if channel_id:
+            ctx.active_workstream_id = channel_id
+            if not ctx.active_workstream:
+                for ws in ctx.workstreams:
+                    if ws.get("id") == channel_id:
+                        ctx.active_workstream = ws.get("name")
+                        break
+
+        # Process intent via LLM, passing conversation history for multi-turn context
+        result = await engine.process(message, ctx, conversation_history=conversation_history)
+
+        # Execute actions (skip tools already executed in the LLM tool loop)
+        from .intent import TOOLS_WITH_OUTPUT as _ALREADY_EXECUTED
+        executed = []
+        for action in result.actions:
+            if action.name in _ALREADY_EXECUTED:
+                executed.append({"action": action.name, "success": True, "type": "server", **action.params})
+            else:
+                outcome = await executor.execute(action.name, action.params, ctx)
+                executed.append(outcome)
+
+        # Save turns to server-side conversation thread
+        try:
+            conv_mgr = get_conversation_manager()
+            thread_id = conv_mgr.get_or_create_thread(project)
+            conv_mgr.append_turn(thread_id, "user", message, channel=channel, client_id=client_id)
+            conv_mgr.append_turn(thread_id, "assistant", result.response, channel=channel, actions=executed)
+        except Exception:
+            logger.debug("Failed to save conversation turn", exc_info=True)
+
+        # Layer 1: Log raw interaction (audit)
+        try:
+            log_nanobot_interaction(
+                channel=channel,
+                project=project,
+                message=message,
+                response=result.response,
+                actions=executed,
+                model=result.usage.get("model", "unknown"),
+                prompt_tokens=result.usage.get("prompt_tokens", 0),
+                completion_tokens=result.usage.get("completion_tokens", 0),
+                duration_ms=result.usage.get("duration_ms", 0),
+            )
+        except Exception:
+            pass
+
+        # Layer 2: Extract knowledge async (fire-and-forget)
+        cfg = load_nanobot_config()
+        if project and cfg.get("llm_provider") != "ollama":
+            asyncio.create_task(extract_knowledge(message, result.response, project, executed))
+
+        resp = {
+            "response": result.response,
+            "executed": executed,
+            "actions": [{"name": a.name, "params": a.params} for a in result.actions],
+            "options": result.options or None,
+            "usage": result.usage,
+        }
+        # Include A2UI components if present
+        if result.ui_components:
+            resp["ui_components"] = result.ui_components
+        return resp
+
+    # Async mode: return immediately, post result to channel when done
+    if mode == "async" and channel_id:
+        async def _background():
+            try:
+                result = await _process_orchestrator()
+                # Post the response as a channel message
+                from .channel_manager import get_channel_manager
+                cm = get_channel_manager()
+                metadata = {}
+                if result.get("ui_components"):
+                    metadata["type"] = "a2ui"
+                    metadata["components"] = result["ui_components"]
+                elif result.get("executed"):
+                    metadata["type"] = "action_results"
+                    metadata["actions"] = result["executed"]
+                    metadata["response"] = result.get("response", "")
+                if result.get("usage"):
+                    metadata["usage"] = result["usage"]
+                content = result.get("response") or ""
+                # Don't post empty messages unless they have UI components
+                if content or metadata:
+                    msg = cm.post_message(
+                        channel_id,
+                        role="orchestrator",
+                        content=content,
+                        metadata=metadata if metadata else None,
+                    )
+                    # Push to all WS clients so they pick up the new message instantly
+                    try:
+                        from .state_machine import get_state_machine
+                        sm = get_state_machine()
+                        await sm._broadcast_event("channel_message", {
+                            "channel_id": channel_id,
+                            "message_id": msg.id,
+                        })
+                    except Exception:
+                        pass
+            except Exception:
+                logger.exception("Background orchestrator task failed")
+                try:
+                    from .channel_manager import get_channel_manager
+                    cm = get_channel_manager()
+                    cm.post_message(channel_id, role="system", content="Orchestrator error — please try again.")
+                except Exception:
+                    pass
+
+        asyncio.create_task(_background())
+        return {"response": "Working on it...", "async": True, "executed": [], "actions": [], "usage": {}}
+
+    # Sync mode: wait for result
+    return await _process_orchestrator()
 
 
 @app.post("/conversation/clear")
@@ -6037,8 +6164,12 @@ async def create_terminal(
     cols: int = 120,
     rows: int = 30,
     mode: str | None = None,
+    channel_id: str | None = None,
 ):
-    """Create a new terminal session for a project."""
+    """Create a new terminal session for a project.
+
+    If channel_id is provided, the terminal is auto-linked to that channel.
+    """
     from .terminal import get_terminal_manager
 
     tm = get_terminal_manager()
@@ -6051,11 +6182,25 @@ async def create_terminal(
         mode=mode,
     )
 
+    # Auto-link terminal to channel if provided
+    if channel_id:
+        try:
+            from .channel_manager import get_channel_manager
+            get_channel_manager().link_terminal(session.id, channel_id)
+        except Exception:
+            pass  # Don't fail terminal creation if channel linking fails
+
     event_repo.log(
         "terminal.created",
         project=project,
         message=f"Terminal started for {project}",
     )
+
+    # Emit structured event
+    from .channel_manager import emit
+    emit("terminal.created", channel_id=channel_id, data={
+        "terminal_id": session.id, "project": project, "command": command or "",
+    })
 
     # Broadcast state so all clients see the new terminal
     machine = get_state_machine()
@@ -6068,6 +6213,7 @@ async def create_terminal(
         "status": session.status.value,
         "pid": session.pid,
         "ws_url": f"/terminals/{session.id}/ws",
+        "channel_id": channel_id,
     }
 
 
@@ -6231,9 +6377,12 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
         except asyncio.TimeoutError:
             break
 
-    # Replay: client snapshot > server snapshot > raw buffer
-    # Register output callback BEFORE replay so no data is lost
-    # between get_buffer() and callback registration.
+    live_repaint = not skip_replay and not is_stopped and client_cols > 0 and client_rows > 0
+
+    # Replay: for live sessions, do not attach the output callback until after
+    # we force a clean repaint. Attaching in the middle of an application's
+    # existing render stream can start xterm on a continuation byte/control
+    # sequence and leave the parser in a broken state.
     output_queue: asyncio.Queue[bytes] = asyncio.Queue()
 
     def on_output(data: bytes):
@@ -6242,22 +6391,34 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
         except asyncio.QueueFull:
             pass
 
-    tm.on_output(session_id, on_output)
-
     # Start/re-attach the reader (no-op if already running)
     tm.start_reader(session_id)
 
     if not skip_replay:
-        snapshot_data = None
-        if client_cols > 0 and client_rows > 0:
-            snapshot_data = tm.get_snapshot(session_id, client_cols, client_rows)
-
-        if snapshot_data:
-            await websocket.send_text(snapshot_data)
+        # For live sessions, avoid replaying serialized snapshots or raw PTY
+        # tails into xterm. Both can reconnect mid-control-sequence and leave
+        # the parser in a broken state. A forced PTY repaint is slower but
+        # much more reliable.
+        if live_repaint:
+            tm.redraw_for_client(session_id, client_id)
         else:
-            buffered = tm.get_buffer(session_id)
-            if buffered:
-                await websocket.send_bytes(buffered)
+            snapshot_data = None
+            if client_cols > 0 and client_rows > 0:
+                snapshot_data = tm.get_best_snapshot(session_id, client_cols, client_rows)
+
+            if snapshot_data:
+                await websocket.send_text(snapshot_data)
+            else:
+                buffered = tm.get_buffer(session_id)
+                if buffered:
+                    await websocket.send_bytes(buffered)
+
+    tm.on_output(session_id, on_output)
+
+    if live_repaint:
+        # Now that the client callback is attached, trigger a second repaint so
+        # the first bytes the browser sees are a fresh, self-contained render.
+        tm.redraw_for_client(session_id, client_id)
 
     # If terminal is stopped, send a marker and close
     if is_stopped:
@@ -6319,6 +6480,8 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
                                     rows=cmd.get("rows", 0),
                                     data=cmd.get("data", ""),
                                 )
+                            elif cmd["type"] == "redraw":
+                                tm.redraw_for_client(session_id, client_id)
                             elif cmd["type"] == "skip_replay":
                                 pass  # Already handled above
                         else:
@@ -7183,6 +7346,12 @@ async def create_project(req: CreateProjectRequest):
 
     event_repo.log("project.created", project=project_name, message=f"Project registered: {project_name}")
 
+    # Auto-create default channel for this project
+    try:
+        from .channel_manager import get_channel_manager
+        get_channel_manager().ensure_project_channel(db_proj.id, project_name)
+    except Exception:
+        pass  # Don't fail project creation if channel creation fails
 
     # Create and run setup task in-process (stack detection, process discovery, profile)
     try:
@@ -7617,6 +7786,15 @@ async def move_project(name: str, req: MoveProjectRequest):
     if not collection_repo.get(req.collection_id):
         raise HTTPException(status_code=404, detail=f"Collection not found: {req.collection_id}")
     project_repo.move_to_collection(db_proj.id, req.collection_id)
+    # Sync channel collection to match project
+    try:
+        from .channel_manager import get_channel_manager
+        cm = get_channel_manager()
+        for ch in cm.list_channels_for_project(db_proj.id):
+            cm.db.execute("UPDATE channels SET collection_id = ? WHERE id = ?", (req.collection_id, ch.id))
+        cm.db.commit()
+    except Exception:
+        pass
     return {"success": True, "project": name, "collection_id": req.collection_id}
 
 
@@ -8120,6 +8298,536 @@ async def caddy_restart():
             await cm.add_route(p.id, sub, p.port)
 
     return {"success": True, "routes": cm.list_routes()}
+
+
+# =============================================================================
+# Channels (v2)
+# =============================================================================
+
+@app.get("/channels")
+async def list_channels(include_archived: bool = False):
+    """List all channels."""
+    from .channel_manager import get_channel_manager
+    from .db.repositories import ProjectRepository
+    cm = get_channel_manager()
+    channels = cm.list_channels(include_archived=include_archived)
+
+    # Resolve project IDs to names + collection_ids for frontend filtering
+    repo = ProjectRepository()
+    project_cache: dict = {}
+    def _resolve(pid: str):
+        if pid not in project_cache:
+            p = repo.get_by_id(pid) if hasattr(repo, 'get_by_id') else repo.get(pid)
+            project_cache[pid] = p
+        return project_cache[pid]
+
+    result = []
+    for ch in channels:
+        project_names = []
+        collection_ids = set()
+        for pid in ch.project_ids:
+            p = _resolve(pid)
+            if p:
+                project_names.append(p.name)
+                if p.collection_id:
+                    collection_ids.add(p.collection_id)
+        result.append({
+            "id": ch.id,
+            "name": ch.name,
+            "type": ch.type.value,
+            "parent_channel_id": ch.parent_channel_id,
+            "collection_id": ch.collection_id,
+            "project_ids": ch.project_ids,
+            "project_names": project_names,
+            "collection_ids": list(collection_ids | {ch.collection_id}),
+            "auto_mode": ch.auto_mode,
+            "token_spent": ch.token_spent,
+            "token_budget": ch.token_budget,
+            "created_at": ch.created_at.isoformat(),
+            "archived_at": ch.archived_at.isoformat() if ch.archived_at else None,
+        })
+    return result
+
+
+@app.post("/channels")
+async def create_channel(request: Request):
+    """Create a new channel."""
+    from .channel_manager import get_channel_manager
+    from .db.models import ChannelType
+
+    body = await request.json()
+    name = body.get("name", "")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if not name.startswith("#"):
+        name = f"#{name}"
+
+    # Resolve project names to IDs
+    from .db.repositories import ProjectRepository
+    raw_ids = body.get("project_ids", [])
+    project_ids = []
+    repo = ProjectRepository()
+    for name_or_id in raw_ids:
+        proj = repo.get(name_or_id)  # accepts name or UUID
+        if proj:
+            project_ids.append(proj.id)
+
+    cm = get_channel_manager()
+    ch = cm.create_channel(
+        name=name,
+        type=ChannelType(body.get("type", "ephemeral")),
+        project_ids=project_ids,
+        parent_channel_id=body.get("parent_channel_id"),
+        collection_id=body.get("collection_id", "general"),
+    )
+
+    # Resolve project names and collection IDs for the response
+    project_names = []
+    collection_ids = set()
+    for pid in project_ids:
+        proj = repo.get(pid)
+        if proj:
+            project_names.append(proj.name)
+            if proj.collection_id:
+                collection_ids.add(proj.collection_id)
+
+    return {
+        "id": ch.id,
+        "name": ch.name,
+        "type": ch.type.value,
+        "parent_channel_id": ch.parent_channel_id,
+        "project_ids": ch.project_ids,
+        "project_names": project_names,
+        "collection_ids": list(collection_ids),
+        "auto_mode": ch.auto_mode,
+        "token_spent": 0,
+        "token_budget": None,
+        "created_at": ch.created_at.isoformat(),
+        "archived_at": None,
+    }
+
+
+@app.get("/channels/{channel_id}")
+async def get_channel(channel_id: str):
+    """Get a channel by ID."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    ch = cm.get_channel(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    return {
+        "id": ch.id,
+        "name": ch.name,
+        "type": ch.type.value,
+        "parent_channel_id": ch.parent_channel_id,
+        "project_ids": ch.project_ids,
+        "auto_mode": ch.auto_mode,
+        "token_spent": ch.token_spent,
+        "token_budget": ch.token_budget,
+        "created_at": ch.created_at.isoformat(),
+        "archived_at": ch.archived_at.isoformat() if ch.archived_at else None,
+    }
+
+
+@app.get("/channels/{channel_id}/context")
+async def get_channel_context(channel_id: str, project: str | None = None):
+    """Get assembled workstream context for a channel. Useful for debugging and UI display."""
+    from .workstream_context import assemble_workstream_context, ContextBudget
+    ctx = assemble_workstream_context(channel_id=channel_id, project=project, budget=ContextBudget())
+    return {
+        "channel_id": ctx.channel_id,
+        "channel_name": ctx.channel_name,
+        "project": ctx.project,
+        "total_tokens": ctx.total_tokens,
+        "truncated": ctx.truncated,
+        "layers": [
+            {
+                "name": l.name,
+                "priority": l.priority,
+                "token_budget": l.token_budget,
+                "estimated_tokens": l.estimated_tokens,
+                "content": l.content,
+            }
+            for l in ctx.layers
+        ],
+        "prompt": ctx.to_prompt(),
+    }
+
+
+@app.get("/channels/{channel_id}/sessions")
+async def list_channel_sessions(channel_id: str):
+    """List sessions for a channel."""
+    from .session_manager import get_session_manager
+    sm = get_session_manager()
+    sessions = sm.list_for_channel(channel_id)
+    return [
+        {
+            "id": s.id, "channel_id": s.channel_id, "project": s.project,
+            "terminal_ids": s.terminal_ids, "task_id": s.task_id,
+            "description": s.description, "status": s.status,
+            "agent_provider": s.agent_provider,
+            "created_at": s.created_at.isoformat(),
+            "updated_at": s.updated_at.isoformat(),
+            "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+            "output_summary": s.output_summary,
+        }
+        for s in sessions
+    ]
+
+
+@app.get("/sessions/{session_id}")
+async def get_session(session_id: str):
+    """Get a session by ID."""
+    from .session_manager import get_session_manager
+    sm = get_session_manager()
+    s = sm.get(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "id": s.id, "channel_id": s.channel_id, "project": s.project,
+        "terminal_ids": s.terminal_ids, "task_id": s.task_id,
+        "description": s.description, "status": s.status,
+        "agent_provider": s.agent_provider,
+        "created_at": s.created_at.isoformat(),
+        "updated_at": s.updated_at.isoformat(),
+        "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+        "output_summary": s.output_summary,
+    }
+
+
+@app.get("/sessions/{session_id}/log")
+async def get_session_log(session_id: str, tail: int = 200):
+    """Get the session's terminal output log."""
+    from .config import get_rdc_home
+    log_file = get_rdc_home() / "sessions" / f"{session_id}.log"
+    if not log_file.exists():
+        return {"log": None, "message": "No log file found for this session."}
+    try:
+        content = log_file.read_text(errors="replace")
+        # Strip ANSI escape codes + control chars for readability
+        from .utils import strip_ansi
+        content = strip_ansi(content)
+        # Also strip remaining control characters (cursor movement, etc.)
+        import re
+        content = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", content)
+        # Collapse excessive blank lines
+        content = re.sub(r"\n{3,}", "\n\n", content)
+        # Return tail lines
+        lines = content.split("\n")
+        if len(lines) > tail:
+            lines = lines[-tail:]
+        return {"log": "\n".join(lines), "lines": len(lines), "total_lines": len(content.split("\n"))}
+    except Exception as e:
+        return {"log": None, "error": str(e)}
+
+
+@app.get("/sessions/{session_id}/events")
+async def get_session_events(session_id: str, limit: int = 100):
+    """Get the unified event timeline for a session."""
+    from .session_manager import get_session_manager
+    sm = get_session_manager()
+    events = sm.get_events(session_id, limit=limit)
+    return events
+
+
+@app.post("/sessions/{session_id}/complete")
+async def complete_session(session_id: str):
+    """Manually mark a session as done — kills terminals and generates summary."""
+    from .session_manager import get_session_manager, SessionStatus
+    from .terminal import get_terminal_manager
+    sm = get_session_manager()
+    tm = get_terminal_manager()
+    s = sm.get(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    # Save terminal log before killing
+    sm._save_terminal_log(s)
+    # Kill associated terminals
+    for tid in s.terminal_ids:
+        try:
+            tm.kill(tid)
+        except Exception:
+            pass
+    summary = await sm._generate_summary(s)
+    sm.update_status(session_id, SessionStatus.DONE, output_summary=summary)
+    sm.stop_monitor(session_id)
+    # Post completion to channel
+    try:
+        from .utils import get_channel_manager
+        cm = get_channel_manager()
+        components = [{"type": "task_card", "title": s.description[:80], "status": "done", "project": s.project}]
+        if summary:
+            components.append({"type": "text", "content": summary})
+        cm.post_message(s.channel_id, role="system", content="Session completed.",
+            metadata={"type": "a2ui", "components": components})
+    except Exception:
+        pass
+    return {"success": True, "session_id": session_id}
+
+
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Delete a session and its events."""
+    from .session_manager import get_session_manager
+    sm = get_session_manager()
+    s = sm.get(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    sm.stop_monitor(session_id)
+    db = sm._db()
+    db.execute("DELETE FROM session_terminals WHERE session_id = ?", (session_id,))
+    db.execute("DELETE FROM events WHERE mission_id = ?", (session_id,))
+    db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    db.commit()
+    sm._sessions.pop(session_id, None)
+    # Remove log file
+    try:
+        from .utils import get_rdc_home
+        log_file = get_rdc_home() / "sessions" / f"{session_id}.log"
+        if log_file.exists():
+            log_file.unlink()
+    except Exception:
+        pass
+    return {"success": True}
+
+
+@app.post("/sessions/{session_id}/retry")
+async def retry_session(session_id: str):
+    """Retry a failed/pending session — re-spawns the terminal."""
+    from .session_manager import get_session_manager
+    from .terminal import get_terminal_manager
+    from .channel_manager import get_channel_manager
+
+    sm = get_session_manager()
+    s = sm.get(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if s.status not in ("pending", "failed"):
+        raise HTTPException(status_code=400, detail=f"Cannot retry session in status: {s.status}")
+
+    tm = get_terminal_manager()
+    provider = s.agent_provider or "claude"
+    if provider == "shell":
+        inner = s.description
+    else:
+        escaped = s.description[:500].replace('"', '\\"')
+        inner = f'claude --dangerously-skip-permissions "{escaped}"'
+    command = f"trap 'echo __RDC_EXIT:$?' EXIT; {inner}"
+
+    try:
+        term = tm.create(project=s.project, command=command)
+        sm.link_terminal(s.id, term.id)
+
+        cm = get_channel_manager()
+        cm.post_message(
+            s.channel_id,
+            role="system",
+            content=f"Session retried — agent restarted.",
+            metadata={"type": "a2ui", "components": [
+                {"type": "task_card", "title": s.description[:80], "status": "running", "project": s.project},
+            ]},
+        )
+        return {"success": True, "session_id": s.id, "terminal_id": term.id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/channels/{channel_id}")
+async def update_channel(channel_id: str, request: Request):
+    """Update a channel (rename, toggle auto-mode, set budget)."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    ch = cm.get_channel(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    body = await request.json()
+    if "name" in body:
+        cm.rename_channel(channel_id, body["name"])
+    if "auto_mode" in body:
+        cm.set_auto_mode(channel_id, bool(body["auto_mode"]))
+    if "token_budget" in body:
+        cm.db.execute(
+            "UPDATE channels SET token_budget = ? WHERE id = ?",
+            (body["token_budget"], channel_id),
+        )
+        cm.db.commit()
+
+    return {"success": True}
+
+
+@app.post("/channels/{channel_id}/archive")
+async def archive_channel(channel_id: str):
+    """Archive a channel."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    cm.archive_channel(channel_id)
+    return {"success": True}
+
+
+@app.delete("/channels/{channel_id}")
+async def delete_channel(channel_id: str):
+    """Permanently delete a channel and its messages."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    ch = cm.get_channel(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if ch.type.value == "system":
+        raise HTTPException(status_code=403, detail="Cannot delete system channels")
+    # Delete messages, terminal links, and the channel itself
+    cm.db.execute("DELETE FROM channel_messages WHERE channel_id = ?", (channel_id,))
+    cm.db.execute("DELETE FROM terminal_channels WHERE channel_id = ?", (channel_id,))
+    cm.db.execute("DELETE FROM channel_projects WHERE channel_id = ?", (channel_id,))
+    cm.db.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
+    cm.db.commit()
+    return {"success": True}
+
+
+# ── Channel Projects ──
+
+@app.post("/channels/{channel_id}/projects")
+async def add_project_to_channel(channel_id: str, request: Request):
+    """Link a project to a channel."""
+    from .channel_manager import get_channel_manager
+    from .db.repositories import ProjectRepository
+
+    body = await request.json()
+    project_name = body.get("project_name", "")
+    if not project_name:
+        raise HTTPException(status_code=400, detail="project_name is required")
+
+    repo = ProjectRepository()
+    proj = repo.get(project_name)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_name}")
+
+    cm = get_channel_manager()
+    cm.db.execute(
+        "INSERT OR IGNORE INTO channel_projects (channel_id, project_id) VALUES (?, ?)",
+        (channel_id, proj.id),
+    )
+    cm.db.commit()
+    return {"success": True, "project_id": proj.id, "project_name": proj.name}
+
+
+@app.delete("/channels/{channel_id}/projects/{project_name}")
+async def remove_project_from_channel(channel_id: str, project_name: str):
+    """Unlink a project from a channel."""
+    from .channel_manager import get_channel_manager
+    from .db.repositories import ProjectRepository
+
+    repo = ProjectRepository()
+    proj = repo.get(project_name)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_name}")
+
+    cm = get_channel_manager()
+    cm.db.execute(
+        "DELETE FROM channel_projects WHERE channel_id = ? AND project_id = ?",
+        (channel_id, proj.id),
+    )
+    cm.db.commit()
+    return {"success": True}
+
+
+# ── Channel Messages ──
+
+@app.get("/channels/{channel_id}/messages")
+async def list_channel_messages(channel_id: str, limit: int = 50, before: str | None = None):
+    """List messages in a channel (chronological order)."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    messages = cm.list_messages(channel_id, limit=limit, before=before)
+    return [
+        {
+            "id": m.id,
+            "channel_id": m.channel_id,
+            "role": m.role.value,
+            "content": m.content,
+            "metadata": m.metadata,
+            "created_at": m.created_at.isoformat(),
+        }
+        for m in messages
+    ]
+
+
+@app.post("/channels/{channel_id}/messages")
+async def post_channel_message(channel_id: str, request: Request):
+    """Post a message to a channel."""
+    from .channel_manager import get_channel_manager
+    from .db.models import ChannelMessageRole
+
+    body = await request.json()
+    content = body.get("content", "")
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    cm = get_channel_manager()
+    msg = cm.post_message(
+        channel_id=channel_id,
+        role=ChannelMessageRole(body.get("role", "user")),
+        content=content,
+        metadata=body.get("metadata"),
+    )
+    return {
+        "id": msg.id,
+        "channel_id": msg.channel_id,
+        "role": msg.role.value,
+        "content": msg.content,
+        "created_at": msg.created_at.isoformat(),
+    }
+
+
+# ── Channel Terminals ──
+
+@app.post("/channels/{channel_id}/terminals")
+async def link_terminal_to_channel(channel_id: str, request: Request):
+    """Link a terminal to a channel."""
+    from .channel_manager import get_channel_manager
+    body = await request.json()
+    terminal_id = body.get("terminal_id", "")
+    if not terminal_id:
+        raise HTTPException(status_code=400, detail="terminal_id is required")
+
+    cm = get_channel_manager()
+    cm.link_terminal(terminal_id, channel_id)
+    return {"success": True}
+
+
+@app.get("/channels/{channel_id}/terminals")
+async def get_channel_terminals(channel_id: str):
+    """Get terminal IDs linked to a channel."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    return {"terminal_ids": cm.get_channel_terminals(channel_id)}
+
+
+# ── Events ──
+
+@app.get("/events/search")
+async def search_events(
+    q: str | None = None,
+    type: str | None = None,
+    channel_id: str | None = None,
+    limit: int = 50,
+):
+    """Search the event store."""
+    from .channel_manager import get_channel_manager
+    cm = get_channel_manager()
+    events = cm.search_events(query=q, type=type, channel_id=channel_id, limit=limit)
+    return [
+        {
+            "id": e.id,
+            "timestamp": e.timestamp.isoformat(),
+            "type": e.type,
+            "channel_id": e.channel_id,
+            "project_id": e.project_id,
+            "mission_id": e.mission_id,
+            "data": e.data,
+        }
+        for e in events
+    ]
 
 
 # =============================================================================

@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react"
+import { SessionViewer } from "@/features/sessions/session-viewer"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { ProcessesCard } from "@/features/mobile/processes-card"
-import { TasksCard } from "@/features/mobile/tasks-card"
+import { SessionsCard } from "@/features/sessions/sessions-card"
 import { ContextsCard } from "@/features/mobile/contexts-card"
 import { BrowserCard } from "@/features/mobile/browser-card"
 import { TerminalOverlay } from "@/features/mobile/terminal-overlay"
-import { ProjectSheet } from "@/features/mobile/project-sheet"
+// ProjectSheet replaced by WorkspaceSelectorSheet in v2
 import { HamburgerSheet } from "@/features/mobile/hamburger-sheet"
 import { CreateTaskSheet } from "@/features/mobile/create-task-sheet"
 import { ActivitySheet } from "@/features/mobile/activity-sheet"
@@ -19,6 +20,9 @@ import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { RecordingPlayer } from "@/features/browser/recording-player"
 import { EmbeddedTerminal } from "@/features/terminal/embedded-terminal"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
+import { useChannelStore } from "@/stores/channel-store"
+import { MobileChannelPanel } from "@/features/channels/mobile-channel-panel"
+import { WorkspaceSelectorSheet } from "@/features/channels/mobile-workspace-selector"
 import { ProjectCard } from "@/features/mobile/project-card"
 import { useLogsStore } from "@/stores/logs-store"
 import { Sheet } from "@/features/mobile/sheet"
@@ -28,8 +32,7 @@ import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
 import { getClientId, getClientName } from "@/lib/client-id"
 import { GlobalTextInput } from "@/components/global-text-input"
 import { useBrowserStore } from "@/stores/browser-store"
-import { useVoice } from "@/hooks/use-voice"
-import { useOrchestrator } from "@/hooks/use-orchestrator"
+import { useWorkstreamVoice } from "@/hooks/use-workstream-voice"
 import type { BrowserSession, Action, TabId } from "@/types"
 
 export function KioskLayout() {
@@ -45,6 +48,8 @@ export function KioskLayout() {
   const terminals = useStateStore((s) => s.terminals)
   const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
+  const viewingSessionId = useUIStore((s) => s.viewingSessionId)
+  const setViewingSessionId = useUIStore((s) => s.setViewingSessionId)
   const openProcessLog = useLogsStore((s) => s.openProcessLog)
 
   const [projectSheetOpen, setProjectSheetOpen] = useState(false)
@@ -61,78 +66,17 @@ export function KioskLayout() {
   const [playingRecording, setPlayingRecording] = useState<string | null>(null)
   const [sideTabsCollapsed, setSideTabsCollapsed] = useState(false)
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
-  // PinchTab overlay removed — unified into Browser tab
-  const [voiceIndicator, setVoiceIndicator] = useState("")
-  const voiceSubmitRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const voiceIndicatorRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [chatFullscreen, setChatFullscreen] = useState(false)
+  const browserActiveSession = useBrowserStore((s) => s.activeSession)
 
   // Terminal send function ref for voice dictation
   const terminalSendRef = useRef<((data: string) => void) | null>(null)
-  // Direct orchestrator ref for voice commands (doesn't need chat panel mounted)
-  const voiceOrchestratorRef = useRef<((text: string) => Promise<void>) | null>(null)
-
-  const browserActiveSession = useBrowserStore((s) => s.activeSession)
-  const openTextInput = useUIStore((s) => s.openTextInput)
-
-  const voice = useVoice({
-    onFinal: (text) => {
-      const isTerminalMode = useTerminalStore.getState().terminalFocused
-
-      if (isTerminalMode) {
-        // Dictation mode: append to text input popup for review before sending
-        setVoiceIndicator("")
-        const uiState = useUIStore.getState()
-        if (uiState.textInputOpen) {
-          // Already open — append the new text
-          uiState.appendTextInput(text)
-        } else {
-          // First utterance — open with initial text
-          openTextInput(
-            (confirmed) => terminalSendRef.current?.(confirmed.replace(/\n/g, "\r") + "\r"),
-            "Voice → Terminal",
-            text,
-            true, // keepOpen for follow-up dictation
-          )
-        }
-      } else {
-        // Command mode: send through orchestrator directly
-        setVoiceIndicator(text)
-        if (voiceSubmitRef.current) clearTimeout(voiceSubmitRef.current)
-        voiceSubmitRef.current = setTimeout(() => {
-          voiceOrchestratorRef.current?.(text)
-          // Clear indicator after a moment
-          if (voiceIndicatorRef.current) clearTimeout(voiceIndicatorRef.current)
-          voiceIndicatorRef.current = setTimeout(() => setVoiceIndicator(""), 2000)
-        }, 600)
-      }
-    },
-    onInterim: (text) => {
-      setVoiceIndicator(text)
-    },
-  })
-
-  useEffect(() => {
-    if (voice.error) toast(voice.error, "warning")
-  }, [voice.error, toast])
-
-  useEffect(() => {
-    return () => {
-      if (voiceSubmitRef.current) clearTimeout(voiceSubmitRef.current)
-      if (voiceIndicatorRef.current) clearTimeout(voiceIndicatorRef.current)
-    }
-  }, [])
-
-
-  useEffect(() => {
-    loadProjects()
-    loadCollections()
-  }, [loadProjects, loadCollections])
-
   const spawnTerminal = useTerminalStore((s) => s.spawnTerminal)
 
-  // Voice orchestrator — lives at layout level so it works regardless of which tab is active
-  const voiceOrchestrator = useOrchestrator({
+  // Workstream-aware voice
+  const { voice, indicatorRef, cleanup: voiceCleanup } = useWorkstreamVoice({
     channel: "mobile",
+    terminalSendRef,
     onOpenTerminal: async (project) => {
       const proj = project && project !== "all" ? project : currentProject
       if (proj === "all") { toast("Select a project first", "warning"); return }
@@ -146,17 +90,42 @@ export function KioskLayout() {
     onOpenMenu: () => setHamburgerOpen(true),
     onEditProject: () => setProjectSettingsOpen(true),
     onSystemSettings: () => setSystemSettingsOpen(true),
+    toast,
   })
+  const [voiceIndicator, setVoiceIndicator] = useState("")
 
-  // Wire voice orchestrator ref
   useEffect(() => {
-    voiceOrchestratorRef.current = async (text: string) => {
-      const result = await voiceOrchestrator.send(text)
-      if (result?.response) {
-        toast(result.response, "info")
-      }
+    if (voice.error) toast(voice.error, "warning")
+  }, [voice.error, toast])
+
+  // Sync voice indicator from ref
+  useEffect(() => {
+    if (!voice.listening) { setVoiceIndicator(""); return }
+    let raf: number
+    const poll = () => {
+      setVoiceIndicator(indicatorRef.current)
+      raf = requestAnimationFrame(poll)
     }
-  }, [voiceOrchestrator, toast])
+    raf = requestAnimationFrame(poll)
+    return () => { cancelAnimationFrame(raf); voiceCleanup() }
+  }, [voice.listening, indicatorRef, voiceCleanup])
+
+  useEffect(() => {
+    loadProjects()
+    loadCollections()
+    useChannelStore.getState().loadChannels()
+  }, [loadProjects, loadCollections])
+
+  // Sync channel with project selection
+  useEffect(() => {
+    if (currentProject && currentProject !== "all") {
+      const { channels, selectChannel } = useChannelStore.getState()
+      const ch = channels.find((c: { name: string; project_names?: string[] }) =>
+        c.name === `#${currentProject}` || c.project_names?.includes(currentProject)
+      )
+      if (ch) selectChannel(ch.id)
+    }
+  }, [currentProject])
 
   useEffect(() => {
     connect()
@@ -221,7 +190,12 @@ export function KioskLayout() {
             </span>
           )}
           <span className="text-base font-semibold text-gray-100 truncate">
-            {currentProject === "all" ? "All Projects" : currentProject}
+            {(() => {
+              const ch = useChannelStore.getState().channels.find(
+                (c: { id: string }) => c.id === useChannelStore.getState().activeChannelId
+              )
+              return ch ? (ch as { name: string }).name.replace(/^#/, "") : (currentProject === "all" ? "All" : currentProject)
+            })()}
           </span>
           <span className="text-gray-500 text-xs">▼</span>
         </button>
@@ -280,19 +254,6 @@ export function KioskLayout() {
             }}
             onPlayRecording={(id) => setPlayingRecording(id)}
             onEditProject={() => setProjectSettingsOpen(true)}
-            onOpenTerminal={async (project) => {
-              const proj = project && project !== "all" ? project : currentProject
-              if (proj === "all") { toast("Select a project first", "warning"); return }
-              const session = await spawnTerminal(proj)
-              if (session) { toast("Terminal started", "success") }
-              else { toast("Failed to create terminal", "error") }
-            }}
-            onCreateTask={() => setCreateTaskOpen(true)}
-            onOpenBrowser={() => setBrowserUrlOpen(true)}
-            onOpenActivity={() => setActivityOpen(true)}
-            onOpenMenu={() => setHamburgerOpen(true)}
-            onSystemSettings={() => setSystemSettingsOpen(true)}
-            voiceListening={voice.listening}
           />
         </div>
       </div>
@@ -325,10 +286,7 @@ export function KioskLayout() {
         }}
         onOpenBrowser={() => setBrowserUrlOpen(true)}
         onOpenActivity={() => setActivityOpen(true)}
-        onOpenChat={() => {
-          useUIStore.getState().setTab("chat" as TabId)
-          if (sideTabsCollapsed) setSideTabsCollapsed(false)
-        }}
+        onOpenChat={() => setChatFullscreen(true)}
         onOpenMenu={() => setHamburgerOpen(true)}
         voice={voice}
       />
@@ -341,7 +299,19 @@ export function KioskLayout() {
         />
       )}
 
-      {projectSheetOpen && <ProjectSheet onClose={() => setProjectSheetOpen(false)} />}
+      {projectSheetOpen && (
+        <WorkspaceSelectorSheet
+          onClose={() => setProjectSheetOpen(false)}
+          onSelect={(channelId) => {
+            const { channels, selectChannel } = useChannelStore.getState()
+            selectChannel(channelId)
+            const ch = channels.find((c: { id: string; project_names?: string[] }) => c.id === channelId)
+            if (ch && (ch as { project_names?: string[] }).project_names?.[0]) {
+              useProjectStore.getState().selectProject((ch as { project_names: string[] }).project_names[0])
+            }
+          }}
+        />
+      )}
       {hamburgerOpen && (
         <HamburgerSheet
           onClose={() => setHamburgerOpen(false)}
@@ -417,13 +387,42 @@ export function KioskLayout() {
         />
       )}
 
+      {chatFullscreen && (
+        <MobileChannelPanel
+          startFullscreen
+          hideActions
+          onClose={() => setChatFullscreen(false)}
+          onOpenTerminal={async (project) => {
+            const proj = project && project !== "all" ? project : currentProject
+            if (proj === "all") return
+            await spawnTerminal(proj)
+          }}
+          onCreateTask={() => setCreateTaskOpen(true)}
+          onOpenBrowser={() => setBrowserUrlOpen(true)}
+          onOpenActivity={() => setActivityOpen(true)}
+          onOpenMenu={() => setHamburgerOpen(true)}
+          onEditProject={() => setProjectSettingsOpen(true)}
+          onSystemSettings={() => setSystemSettingsOpen(true)}
+        />
+      )}
+
+      {/* Session viewer overlay */}
+      {viewingSessionId && (
+        <div className="fixed inset-0 z-[140] bg-gray-900 flex flex-col h-app">
+          <SessionViewer
+            sessionId={viewingSessionId}
+            onClose={() => setViewingSessionId(null)}
+          />
+        </div>
+      )}
+
       <FloatingAgentPanel channel="kiosk" />
       <GlobalTextInput />
     </div>
   )
 }
 
-type SideTab = "project" | "processes" | "tasks" | "browser" | "attachments" | "chat"
+type SideTab = "project" | "processes" | "tasks" | "browser" | "attachments"
 
 function KioskSideTabs({
   collapsed,
@@ -432,13 +431,6 @@ function KioskSideTabs({
   onOpenSession,
   onPlayRecording,
   onEditProject,
-  onOpenTerminal,
-  onCreateTask,
-  onOpenBrowser,
-  onOpenActivity,
-  onOpenMenu,
-  onSystemSettings,
-  voiceListening,
 }: {
   collapsed: boolean
   onToggle: () => void
@@ -446,13 +438,6 @@ function KioskSideTabs({
   onOpenSession: (session: { viewer_url: string; session_id: string }) => void
   onPlayRecording: (id: string) => void
   onEditProject: () => void
-  onOpenTerminal?: (project: string) => void
-  onCreateTask: () => void
-  onOpenBrowser: () => void
-  onOpenActivity: () => void
-  onOpenMenu: () => void
-  onSystemSettings?: () => void
-  voiceListening?: boolean
 }) {
   const setTerminalFocused = useTerminalStore((s) => s.setTerminalFocused)
 
@@ -468,7 +453,6 @@ function KioskSideTabs({
     browser: "browser",
     pinchtab: "browser",  // legacy: map to unified browser tab
     attachments: "attachments",
-    chat: "chat",
   }
 
   const sideTab = GLOBAL_TO_SIDE[globalTab] || "processes"
@@ -477,10 +461,9 @@ function KioskSideTabs({
   const tabs: { id: SideTab; label: string; short: string }[] = [
     { id: "project", label: "Project", short: "Proj" },
     { id: "processes", label: "Actions", short: "Acts" },
-    { id: "tasks", label: "Tasks", short: "Tasks" },
+    { id: "tasks", label: "Sessions", short: "Sess" },
     { id: "browser", label: "Browser", short: "Brws" },
     { id: "attachments", label: "Attachments", short: "Atch" },
-    { id: "chat", label: "Chat", short: "Chat" },
   ]
 
   if (collapsed) {
@@ -538,7 +521,7 @@ function KioskSideTabs({
         {sideTab === "processes" && (
           <ProcessesCard onLogs={(id, name) => onLogs(id, name)} />
         )}
-        {sideTab === "tasks" && <TasksCard />}
+        {sideTab === "tasks" && <SessionsCard />}
         {sideTab === "browser" && (
           <BrowserCard
             onOpenSession={(session) => onOpenSession(session)}
@@ -547,18 +530,6 @@ function KioskSideTabs({
         )}
         {/* PinchTab merged into Browser */}
         {sideTab === "attachments" && <ContextsCard defaultExpanded />}
-        {sideTab === "chat" && (
-          <KioskChatPanel
-            onOpenTerminal={onOpenTerminal}
-            onCreateTask={onCreateTask}
-            onOpenBrowser={onOpenBrowser}
-            onOpenActivity={onOpenActivity}
-            onOpenMenu={onOpenMenu}
-            onEditProject={onEditProject}
-            onSystemSettings={onSystemSettings}
-            listening={voiceListening}
-          />
-        )}
       </div>
     </div>
   )
@@ -649,128 +620,6 @@ function KioskActionBar({
             📞
           </button>
         </div>
-      </div>
-    </div>
-  )
-}
-
-import { ChatRenderer } from "@/features/chat/chat-renderer"
-import type { ChatMessage as ChatMsg } from "@/features/chat/chat-renderer"
-
-function KioskChatPanel({
-  onOpenTerminal,
-  onCreateTask,
-  onOpenBrowser,
-  onOpenActivity,
-  onOpenMenu,
-  onEditProject,
-  onSystemSettings,
-  listening,
-}: {
-  onOpenTerminal?: (project: string) => void
-  onCreateTask: () => void
-  onOpenBrowser: () => void
-  onOpenActivity: () => void
-  onOpenMenu: () => void
-  onEditProject?: () => void
-  onSystemSettings?: () => void
-  listening?: boolean
-}) {
-  const [input, setInput] = useState("")
-  const [loading, setLoading] = useState(false)
-  const [messages, setMessages] = useState<ChatMsg[]>([])
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  const orchestrator = useOrchestrator({
-    channel: "mobile",
-    onOpenTerminal,
-    onCreateTask,
-    onOpenBrowser,
-    onOpenActivity,
-    onOpenMenu,
-    onEditProject,
-    onSystemSettings,
-  })
-
-  const send = async (text?: string) => {
-    const msg = (text || input).trim()
-    if (!msg || loading) return
-    setInput("")
-    setLoading(true)
-
-    setMessages((prev) => [...prev, { role: "user", content: msg, timestamp: Date.now() }])
-
-    try {
-      const result = await orchestrator.send(msg)
-      if (result?.response) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: result.response!,
-            actions: result.actions as ChatMsg["actions"],
-            timestamp: Date.now(),
-          },
-        ])
-      }
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "Something went wrong.", timestamp: Date.now() },
-      ])
-    } finally {
-      setLoading(false)
-      setTimeout(() => inputRef.current?.focus(), 50)
-    }
-  }
-
-  const handleClear = () => {
-    setMessages([])
-    orchestrator.clearHistory()
-  }
-
-  return (
-    <div className="flex flex-col h-full min-h-0">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-2 flex-shrink-0">
-        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Chat</span>
-        {messages.length > 0 && (
-          <button
-            className="text-[10px] text-gray-500 hover:text-gray-300"
-            onClick={handleClear}
-          >
-            Clear
-          </button>
-        )}
-      </div>
-
-      {/* Messages */}
-      <ChatRenderer
-        messages={messages}
-        loading={loading}
-        emptyText="Send a message to the orchestrator agent"
-      />
-
-      {/* Input area */}
-      <div className="flex items-center gap-1.5 flex-shrink-0">
-        <input
-          ref={inputRef}
-          data-global-text-input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") send() }}
-          placeholder={listening ? "Listening..." : "Message..."}
-          className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-500 min-w-0"
-          disabled={loading}
-        />
-        <button
-          className="px-3 h-9 rounded bg-blue-600 text-white text-sm font-medium disabled:opacity-50 flex-shrink-0"
-          onClick={() => send()}
-          disabled={loading || !input.trim()}
-        >
-          Send
-        </button>
       </div>
     </div>
   )

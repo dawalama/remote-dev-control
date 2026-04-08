@@ -660,17 +660,237 @@ ORCHESTRATOR_TOOLS = [
             },
         },
     },
+    # ── A2UI: structured UI components in responses ──
+    {
+        "type": "function",
+        "function": {
+            "name": "present_ui",
+            "description": "Present structured UI components to the user. Use for: approval requests, multi-choice, progress indicators, diff summaries, file lists. The components render as interactive elements in the chat.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "components": {
+                        "type": "array",
+                        "description": "Array of UI components to render",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["text", "code", "actions", "confirm", "input", "progress", "diff", "file_list", "task_card"],
+                                    "description": "Component type",
+                                },
+                                "content": {"type": "string", "description": "Text content (for text/code types)"},
+                                "language": {"type": "string", "description": "Language hint (for code type)"},
+                                "label": {"type": "string", "description": "Label or title"},
+                                "title": {"type": "string", "description": "Title (for confirm/task_card)"},
+                                "description": {"type": "string", "description": "Description text"},
+                                "placeholder": {"type": "string", "description": "Placeholder (for input type)"},
+                                "multiline": {"type": "boolean", "description": "Multiline input"},
+                                "items": {
+                                    "type": "array",
+                                    "description": "Action buttons (for actions type)",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {"type": "string"},
+                                            "label": {"type": "string"},
+                                            "style": {"type": "string", "enum": ["primary", "danger", "default"]},
+                                        },
+                                        "required": ["id", "label"],
+                                    },
+                                },
+                                "confirm_label": {"type": "string"},
+                                "cancel_label": {"type": "string"},
+                                "steps": {
+                                    "type": "array",
+                                    "description": "Progress steps",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {"type": "string"},
+                                            "status": {"type": "string", "enum": ["pending", "running", "done", "failed"]},
+                                        },
+                                        "required": ["label", "status"],
+                                    },
+                                },
+                                "files": {
+                                    "type": "array",
+                                    "description": "File entries (for diff/file_list)",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "path": {"type": "string"},
+                                            "additions": {"type": "integer"},
+                                            "deletions": {"type": "integer"},
+                                            "status": {"type": "string"},
+                                            "description": {"type": "string"},
+                                        },
+                                        "required": ["path"],
+                                    },
+                                },
+                                "summary": {"type": "string"},
+                                "status": {"type": "string"},
+                                "project": {"type": "string"},
+                            },
+                            "required": ["type"],
+                        },
+                    },
+                },
+                "required": ["components"],
+            },
+        },
+    },
+    # ── Shell execution tools (orchestrator runs commands, gets output) ──
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": "Run a shell command in the project directory and return its output. Use for git status, git diff, ls, cat, test commands, build commands, etc. The output is returned to you — the user does NOT see it unless you include it in your response.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to run (e.g. 'git diff --stat', 'npm test', 'cat package.json')"},
+                    "project": {"type": "string", "description": "Project to run in (optional — uses active project if omitted)"},
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read a file from the project directory. Use when user asks about a specific file or you need to inspect code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to project root (e.g. 'src/main.py', 'package.json')"},
+                    "project": {"type": "string", "description": "Project name (optional — uses active project if omitted)"},
+                    "max_lines": {"type": "integer", "description": "Max lines to return (default: 100)"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write content to a file in the project directory. Creates the file if it doesn't exist, overwrites if it does. Use for creating new files or completely replacing file content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to project root"},
+                    "content": {"type": "string", "description": "Full file content to write"},
+                    "project": {"type": "string", "description": "Project name (optional — uses active project)"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": "Make a targeted edit to a file — replace a specific string with new content. More precise than write_file. Use for fixing bugs, updating functions, changing config values.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to project root"},
+                    "old_text": {"type": "string", "description": "Exact text to find and replace (must match exactly)"},
+                    "new_text": {"type": "string", "description": "Replacement text"},
+                    "project": {"type": "string", "description": "Project name (optional — uses active project)"},
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+        },
+    },
+    # ── Workstream (channel) tools ──
+    {
+        "type": "function",
+        "function": {
+            "name": "list_workstreams",
+            "description": "List all workstreams (channels). Returns names, projects, and status.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_workstream",
+            "description": "Switch to a different workstream by name (fuzzy matched). Use when user says 'switch to X', 'open workstream X'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Workstream name (fuzzy matched)"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_workstream",
+            "description": "Create a new workstream, optionally linked to a project.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Workstream name"},
+                    "project": {"type": "string", "description": "Project to link (optional)"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "archive_workstream",
+            "description": "Archive a workstream. Use when user says 'archive workstream', 'close workstream', 'remove workstream'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Workstream name (fuzzy matched). If omitted, archives the current active workstream."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_workstream",
+            "description": "Permanently delete a workstream and all its messages. Use when user says 'delete workstream' or 'delete this workstream'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Workstream name (fuzzy matched). If omitted, deletes the current active workstream."},
+                },
+            },
+        },
+    },
 ]
 
 # Trimmed tool set for local models — fewer tools = less context = faster responses
 _LOCAL_TOOL_NAMES = {
     "navigate", "select_project", "show_tab", "open_terminal",
     "start_action", "stop_action", "execute_action", "create_task", "create_project",
-    "spawn_agent", "present_options", "select_collection",
+    "spawn_agent", "present_options", "present_ui", "select_collection",
     "set_layout", "set_theme", "restart_server", "restart_action",
     "kill_terminal", "restart_terminal", "toggle_sidebar", "toggle_chat",
+    "run_command", "read_file", "write_file", "edit_file",
+    "list_workstreams", "switch_workstream", "create_workstream",
+    "archive_workstream", "delete_workstream",
 }
 ORCHESTRATOR_TOOLS_LOCAL = [t for t in ORCHESTRATOR_TOOLS if t["function"]["name"] in _LOCAL_TOOL_NAMES]
+
+# Tools whose results should be fed back to the LLM (triggers follow-up call)
+TOOLS_WITH_OUTPUT = {
+    "run_command", "read_file", "write_file", "edit_file",
+    "list_workstreams", "browser_snapshot", "browser_text",
+    "browser_tabs", "browser_find", "server_status",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -688,6 +908,7 @@ class IntentResult:
     response: str
     actions: list[ToolCall] = field(default_factory=list)
     options: list[str] = field(default_factory=list)
+    ui_components: list[dict] = field(default_factory=list)
     usage: dict = field(default_factory=dict)
 
 
@@ -721,6 +942,9 @@ class OrchestratorContext:
     project_profile: Optional[dict] = None
     pinchtab_available: bool = False
     pinchtab_tabs: list[dict] = field(default_factory=list)
+    workstreams: list[dict] = field(default_factory=list)
+    active_workstream: Optional[str] = None
+    active_workstream_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -790,9 +1014,9 @@ def fuzzy_match_action(query: str, processes: list[dict]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 AVAILABLE_MODELS = [
+    {"id": "qwen/qwen3.6-plus:free", "name": "Qwen 3.6 Plus (Free)", "tier": "fast"},
+    {"id": "google/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "tier": "fast"},
     {"id": "google/gemini-2.0-flash-001", "name": "Gemini 2.0 Flash", "tier": "fast"},
-    {"id": "minimax/minimax-m2.5", "name": "MiniMax M2.5", "tier": "fast"},
-    {"id": "minimax/minimax-m2.1", "name": "MiniMax M2.1", "tier": "fast"},
     {"id": "anthropic/claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5", "tier": "fast"},
     {"id": "anthropic/claude-sonnet-4", "name": "Claude Sonnet 4", "tier": "mid"},
     {"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini", "tier": "fast"},
@@ -800,14 +1024,14 @@ AVAILABLE_MODELS = [
 ]
 
 DEFAULT_NANOBOT_CONFIG = {
-    "model_fast": "google/gemini-2.0-flash-001",
-    "model_mid": "anthropic/claude-sonnet-4",
+    "model_fast": "qwen/qwen3.6-plus:free",
+    "model_mid": "qwen/qwen3.6-plus:free",
     "word_threshold": 12,  # Messages with <= this many words use fast model
-    "max_tokens": 400,
+    "max_tokens": 1000,
     "compress_enabled": False,  # Enable LLMLingua-2 prompt compression
     "compress_rate": 0.5,      # Keep this fraction of tokens (0.5 = 50%)
     "projects_base_path": "",  # Base directory for new projects (empty = ~/projects)
-    "ollama_model": "qwen3.5",  # Local Ollama model name
+    "ollama_model": "gemma4",  # Local Ollama model name
     "llm_provider": "cloud",    # "cloud" (OpenRouter/OpenAI) or "ollama" (local)
     "routing_mode": "auto",     # "auto" (complexity-based) or "manual" (word-count)
     "model_overrides": {},      # e.g. {"model_reasoning": "anthropic/claude-sonnet-4"}
@@ -1366,14 +1590,43 @@ def build_system_prompt(
 
     # === STATIC INSTRUCTIONS (never compressed) ===
     instructions = [
-        "You are the RDC Command Center orchestrator. You understand user intent and execute actions via tool calls.",
-        "Be concise. Execute actions, then briefly confirm what you did.",
+        "You are the RDC workstream orchestrator. You help the user with their development work.",
+        "Be concise. When you use tools, explain what you found or did.",
         "You have memory of recent conversations and project knowledge — use it to answer questions.",
         "",
-        "Use tool calls to execute actions. If the user's message is conversational "
-        "(not a command), just respond naturally without tool calls.",
-        "IMPORTANT: Only use browser_eval/browser_snapshot/browser_click tools when the user explicitly "
-        "asks to interact with a browser tab. For general questions, answer from context data.",
+        "FOCUS on tasks that require intelligence:",
+        "- Use run_command to inspect code, run tests, check git status, etc. and SUMMARIZE the results.",
+        "- Use read_file to examine code and explain it.",
+        "- Use edit_file / write_file for focused changes to 1-2 files (fix a bug, update config, add a route).",
+        "- Answer questions about the project, architecture, or code from context.",
+        "",
+        "WHEN TO USE spawn_agent (creates a session with a CLI agent in a terminal):",
+        "- Task requires creating or modifying MORE than 2-3 files",
+        "- Task involves architecture changes, refactoring, or new features spanning multiple modules",
+        "- Task requires complex debugging with back-and-forth investigation",
+        "- User explicitly asks to 'build', 'implement', 'create a feature', 'refactor', or 'write tests for all'",
+        "- The work would take you more than 5 tool calls to complete",
+        "When in doubt between tool loop and spawn_agent, prefer spawn_agent for anything non-trivial.",
+        "spawn_agent launches a Claude Code agent that can handle complex multi-file work autonomously.",
+        "",
+        "DO NOT use UI navigation tools (show_tab, open_terminal, navigate, focus_terminal) unless the user is "
+        "on a phone call or explicitly asks to navigate. The user has buttons for those — they want you to "
+        "DO the work or ANALYZE something, not click buttons for them.",
+        "",
+        "When the user asks to 'review changes', 'check status', 'what's running', etc., use run_command "
+        "to gather information and respond with a clear summary. Don't just open a terminal.",
+        "",
+        "IMPORTANT: When you offer choices or ask for approval, ALWAYS use the present_ui tool instead of "
+        "writing 'Would you like me to...' as text. The user should be able to CLICK their choice, not type it.",
+        "- Offering 2-4 options → present_ui with 'actions' type",
+        "- Yes/no decision → present_ui with 'confirm' type",
+        "- Need user to type something → present_ui with 'input' type",
+        "- Showing file changes → present_ui with 'diff' type",
+        "- Multi-step plan → present_ui with 'progress' type",
+        "You can combine text content with a present_ui call — explain your reasoning in the response text, "
+        "then use present_ui for the interactive part.",
+        "",
+        "IMPORTANT: Only use browser tools when the user explicitly asks to interact with a browser tab.",
     ]
 
     if ctx.channel == "phone_paired":
@@ -1562,6 +1815,17 @@ def build_system_prompt(
         client_names = [c.get("client_name") or c.get("client_id", "?") for c in ctx.connected_clients]
         context_parts.append(f"Connected dashboard clients: {', '.join(client_names)}")
 
+    # Workstreams
+    if ctx.workstreams:
+        ws_lines = []
+        for ws in ctx.workstreams:
+            projs = ", ".join(ws.get("project_names", [])) or "no projects"
+            active_marker = " (ACTIVE)" if ws.get("id") == ctx.active_workstream_id else ""
+            ws_lines.append(f"  {ws['name']}: {projs} [{ws.get('type', '?')}]{active_marker}")
+        context_parts.append(f"Workstreams ({len(ctx.workstreams)}):\n" + "\n".join(ws_lines))
+    if ctx.active_workstream:
+        context_parts.append(f"Active workstream: {ctx.active_workstream}")
+
     context_parts.append(f"Channel: {ctx.channel}")
 
     # Current context from event synthesizer
@@ -1668,9 +1932,24 @@ class IntentEngine:
         # Synthesize context from events + conversation (skip for local models)
         current_context_str = None
         if not is_local:
-            synthesizer = get_context_synthesizer()
-            synthesized = synthesizer.synthesize(ctx.project, thread_id, ctx.client_id)
-            current_context_str = synthesizer.format_for_prompt(synthesized)
+            # Use workstream context assembler if we have a channel ID
+            if ctx.active_workstream_id:
+                try:
+                    from .workstream_context import assemble_workstream_context, ContextBudget
+                    ws_ctx = assemble_workstream_context(
+                        channel_id=ctx.active_workstream_id,
+                        project=ctx.project,
+                        budget=ContextBudget(),
+                    )
+                    current_context_str = ws_ctx.to_prompt()
+                except Exception:
+                    logger.debug("Workstream context assembly failed", exc_info=True)
+
+            # Fallback to old synthesizer if workstream context not available
+            if not current_context_str:
+                synthesizer = get_context_synthesizer()
+                synthesized = synthesizer.synthesize(ctx.project, thread_id, ctx.client_id)
+                current_context_str = synthesizer.format_for_prompt(synthesized)
 
         system_prompt = build_system_prompt(
             ctx,
@@ -1702,51 +1981,141 @@ class IntentEngine:
             _BROWSER_TOOLS = {"browser_navigate", "browser_snapshot", "browser_click", "browser_fill", "browser_tabs", "browser_eval", "browser_find"}
             tools = [t for t in tools if t["function"]["name"] not in _BROWSER_TOOLS]
 
-        # Run the synchronous OpenAI call in a thread to avoid blocking
-        def _call():
-            return client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tools,
-                max_tokens=max_tokens,
-            )
+        # Tools that return output the LLM should see (defined at module level as TOOLS_WITH_OUTPUT)
 
-        response = await asyncio.to_thread(_call)
-
-        choice = response.choices[0]
-        msg = choice.message
-
-        # Extract tool calls
-        actions: list[ToolCall] = []
+        executor = get_action_executor()
+        all_actions: list[ToolCall] = []
         options: list[str] = []
-        if msg.tool_calls:
+        ui_components: list[dict] = []
+        _executed_keys: set[str] = set()  # dedup: "read_file:src/main.py"
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+
+        # Fallback models when primary is rate-limited
+        _FALLBACK_MODELS = ["google/gemini-2.0-flash-001", "openai/gpt-4o-mini"]
+
+        # Multi-turn tool loop: LLM calls tools → execute → feed results back → LLM responds
+        max_iterations = 5
+        for _iteration in range(max_iterations):
+            def _call(msgs=messages, mdl=model):
+                return client.chat.completions.create(
+                    model=mdl,
+                    messages=msgs,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                )
+
+            try:
+                response = await asyncio.to_thread(_call)
+            except Exception as _llm_err:
+                # Rate limit or provider error — try fallback models
+                err_str = str(_llm_err)
+                if "429" in err_str or "rate" in err_str.lower():
+                    fallback_response = None
+                    for fb_model in _FALLBACK_MODELS:
+                        try:
+                            logger.info("Rate limited on %s, falling back to %s", model, fb_model)
+                            model = fb_model
+                            fallback_response = await asyncio.to_thread(lambda m=messages, mdl=fb_model: client.chat.completions.create(model=mdl, messages=m, tools=tools, max_tokens=max_tokens))
+                            break
+                        except Exception:
+                            continue
+                    if fallback_response is None:
+                        raise
+                    response = fallback_response
+                else:
+                    raise
+
+            choice = response.choices[0]
+            msg = choice.message
+            if response.usage:
+                total_prompt_tokens += response.usage.prompt_tokens or 0
+                total_completion_tokens += response.usage.completion_tokens or 0
+
+            # No tool calls — LLM gave a final text response
+            if not msg.tool_calls:
+                break
+
+            # Process tool calls
+            has_output_tools = False
+            # Add assistant message with tool calls to conversation
+            messages.append(msg.model_dump())
+
             for tc in msg.tool_calls:
                 try:
                     params = _json_mod.loads(tc.function.arguments) if tc.function.arguments else {}
                 except (ValueError, TypeError):
                     params = {}
-                # present_options → extract into options list, not an action
+
                 if tc.function.name == "present_options":
                     options = params.get("options", [])
-                else:
-                    actions.append(ToolCall(name=tc.function.name, params=params))
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": "Options presented."})
+                    continue
 
-        # Response text (may be None if only tool calls)
+                if tc.function.name == "present_ui":
+                    ui_components = params.get("components", [])
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": "UI rendered."})
+                    continue
+
+                action = ToolCall(name=tc.function.name, params=params)
+                all_actions.append(action)
+
+                # Dedup: skip if we already executed this exact tool+params
+                dedup_key = f"{tc.function.name}:{_json_mod.dumps(params, sort_keys=True)[:200]}"
+                if dedup_key in _executed_keys and tc.function.name in ("read_file", "run_command"):
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": "(already executed — see earlier result)"})
+                    continue
+                _executed_keys.add(dedup_key)
+
+                # Execute the tool and check if output should go back to LLM
+                if tc.function.name in TOOLS_WITH_OUTPUT:
+                    has_output_tools = True
+                    result = await executor.execute(action.name, action.params, ctx)
+                    result_text = _json_mod.dumps(result, default=str)[:3000]
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
+                else:
+                    # Client-side or fire-and-forget tool — acknowledge without output
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": "Done."})
+
+            # If no tools need output fed back, break out — don't waste an LLM call
+            if not has_output_tools:
+                break
+
+        # If loop exhausted without a text response, force a final synthesis call
         response_text = msg.content or ""
-        if not response_text and actions:
-            response_text = _auto_confirm(actions)
+        if not response_text and (all_actions or ui_components):
+            # Try one more call with no tools to force text output
+            try:
+                def _synth(msgs=messages, mdl=model):
+                    return client.chat.completions.create(
+                        model=mdl,
+                        messages=msgs + [{"role": "user", "content": "Now summarize what you found. Be concise."}],
+                        max_tokens=max_tokens,
+                    )
+                synth_resp = await asyncio.to_thread(_synth)
+                if synth_resp.choices[0].message.content:
+                    response_text = synth_resp.choices[0].message.content
+                    if synth_resp.usage:
+                        total_prompt_tokens += synth_resp.usage.prompt_tokens or 0
+                        total_completion_tokens += synth_resp.usage.completion_tokens or 0
+            except Exception:
+                pass
+
+        if not response_text and all_actions:
+            response_text = _auto_confirm(all_actions)
+        if not response_text and ui_components:
+            # LLM returned only UI components with no text — that's fine
+            response_text = ""
 
         duration_ms = int((time.monotonic() - start_time) * 1000)
-        usage = {}
-        if response.usage:
-            usage = {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "model": model,
-            }
-        usage["duration_ms"] = duration_ms
+        usage = {
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "model": model,
+            "duration_ms": duration_ms,
+        }
 
-        return IntentResult(response=response_text, actions=actions, options=options, usage=usage)
+        return IntentResult(response=response_text, actions=all_actions, options=options, ui_components=ui_components, usage=usage)
 
 
 def _auto_confirm(actions: list[ToolCall]) -> str:
@@ -1822,6 +2191,24 @@ def _auto_confirm(actions: list[ToolCall]) -> str:
                 parts.append("Listing browser tabs")
             case "browser_eval":
                 parts.append("Running JavaScript")
+            case "run_command":
+                parts.append(f"Running: {a.params.get('command', '...')[:60]}")
+            case "read_file":
+                parts.append(f"Reading {a.params.get('path', '...')}")
+            case "write_file":
+                parts.append(f"Writing {a.params.get('path', '...')}")
+            case "edit_file":
+                parts.append(f"Editing {a.params.get('path', '...')}")
+            case "list_workstreams":
+                parts.append("Here are your workstreams")
+            case "switch_workstream":
+                parts.append(f"Switched to {a.params.get('name', 'the workstream')}")
+            case "create_workstream":
+                parts.append(f"Created workstream: {a.params.get('name', '')}")
+            case "archive_workstream":
+                parts.append("Archived the workstream")
+            case "delete_workstream":
+                parts.append("Deleted the workstream")
             case _:
                 parts.append(f"Done — {a.name.replace('_', ' ')}")
     return ". ".join(parts) + "." if parts else "Done."
@@ -2060,18 +2447,72 @@ class ActionExecutor:
                 case "spawn_agent":
                     project = fuzzy_match(params.get("project", ""), ctx.projects) or params.get("project", "") or ctx.project
                     task_desc = params.get("task", "")
-                    # Create task + spawn via existing API
-                    from .db.repositories import get_task_repo, resolve_project_id
-                    task_repo = get_task_repo()
-                    project_id = resolve_project_id(project) if project else ""
-                    task = task_repo.create(
-                        project_id=project_id or "",
+                    if not project:
+                        return {"action": "spawn_agent", "error": "No project specified", "success": False, "type": "server"}
+
+                    channel_id = ctx.active_workstream_id
+                    if not channel_id:
+                        return {"action": "spawn_agent", "error": "No active workstream", "success": False, "type": "server"}
+
+                    # Create session
+                    from .session_manager import get_session_manager
+                    sm = get_session_manager()
+                    session = sm.create_session(
+                        channel_id=channel_id,
+                        project=project,
                         description=task_desc,
+                        agent_provider=params.get("provider", "claude"),
                     )
+
+                    # Spawn a terminal for the agent
+                    terminal_id = None
+                    try:
+                        from .terminal import get_terminal_manager
+                        tm = get_terminal_manager()
+                        provider = params.get("provider", "claude")
+                        if provider == "shell":
+                            inner = task_desc
+                        else:
+                            escaped = task_desc[:500].replace('"', '\\"')
+                            inner = f'claude --dangerously-skip-permissions "{escaped}"'
+                        # Wrap with exit signal so session monitor detects completion instantly
+                        command = f"trap 'echo __RDC_EXIT:$?' EXIT; {inner}"
+                        term = tm.create(project=project, command=command)
+                        terminal_id = term.id
+                        sm.link_terminal(session.id, terminal_id)
+                    except Exception as e:
+                        logger.warning("Failed to spawn terminal for session %s: %s", session.id, e)
+                        sm.update_status(session.id, "failed")
+
+                    # Post session-started message to channel
+                    try:
+                        from .channel_manager import get_channel_manager
+                        cm = get_channel_manager()
+                        cm.post_message(
+                            channel_id,
+                            role="system",
+                            content=f"Session started: {task_desc[:200]}",
+                            metadata={"type": "a2ui", "components": [
+                                {"type": "task_card", "title": task_desc[:80], "status": "running", "project": project, "description": f"Session {session.id}"},
+                                {"type": "progress", "steps": [
+                                    {"label": "Session created", "status": "done"},
+                                    {"label": "Agent started", "status": "running" if terminal_id else "failed"},
+                                    {"label": "Executing task", "status": "pending"},
+                                    {"label": "Verification", "status": "pending"},
+                                ]},
+                            ]},
+                        )
+                        cm.emit_event("session.started", channel_id=channel_id, project_id=project, data={
+                            "session_id": session.id, "description": task_desc[:200], "terminal_id": terminal_id,
+                        })
+                    except Exception:
+                        pass
+
                     return {
                         "action": "spawn_agent",
                         "project": project,
-                        "task_id": task.id,
+                        "session_id": session.id,
+                        "terminal_id": terminal_id,
                         "task": task_desc,
                         "success": True,
                         "type": "server",
@@ -2427,6 +2868,180 @@ class ActionExecutor:
                     result = await client.find(description, tab_id=params.get("tab_id"))
                     return {"action": "browser_find", "results": result, "success": True, "type": "server"}
 
+                # --- Shell execution actions ---
+                case "run_command":
+                    command = params.get("command", "")
+                    if not command:
+                        return {"action": "run_command", "error": "No command provided", "success": False, "type": "server"}
+                    # Safety: block destructive commands
+                    _BLOCKED = {"rm -rf", "mkfs", "dd if=", "> /dev/", ":(){ :|:&", "shutdown", "reboot"}
+                    if any(b in command.lower() for b in _BLOCKED):
+                        return {"action": "run_command", "error": "Command blocked for safety", "success": False, "type": "server"}
+                    proj = params.get("project") or ctx.project
+                    cwd = None
+                    if proj:
+                        cwd = _resolve_project_path(proj)
+                    import asyncio
+                    try:
+                        proc = await asyncio.create_subprocess_shell(
+                            command,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.STDOUT,
+                            cwd=str(cwd) if cwd else None,
+                        )
+                        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+                        output = stdout.decode("utf-8", errors="replace")[:4000]
+                        return {"action": "run_command", "command": command, "output": output, "exit_code": proc.returncode, "success": proc.returncode == 0, "type": "server"}
+                    except asyncio.TimeoutError:
+                        return {"action": "run_command", "command": command, "error": "Command timed out (30s)", "success": False, "type": "server"}
+
+                case "read_file":
+                    path = params.get("path", "")
+                    if not path:
+                        return {"action": "read_file", "error": "No path provided", "success": False, "type": "server"}
+                    proj = params.get("project") or ctx.project
+                    project_path = _resolve_project_path(proj) if proj else None
+                    if not project_path:
+                        return {"action": "read_file", "error": "No project selected", "success": False, "type": "server"}
+                    from pathlib import Path as _FP
+                    file_path = _FP(project_path) / path
+                    # Safety: don't escape project directory
+                    try:
+                        file_path = file_path.resolve()
+                        if not str(file_path).startswith(str(_FP(project_path).resolve())):
+                            return {"action": "read_file", "error": "Path escapes project directory", "success": False, "type": "server"}
+                    except Exception:
+                        return {"action": "read_file", "error": "Invalid path", "success": False, "type": "server"}
+                    if not file_path.exists():
+                        return {"action": "read_file", "error": f"File not found: {path}", "success": False, "type": "server"}
+                    max_lines = params.get("max_lines", 100)
+                    try:
+                        lines = file_path.read_text()[:8000].split("\n")[:max_lines]
+                        content = "\n".join(lines)
+                        return {"action": "read_file", "path": path, "content": content, "lines": len(lines), "success": True, "type": "server"}
+                    except Exception as e:
+                        return {"action": "read_file", "error": str(e), "success": False, "type": "server"}
+
+                case "write_file":
+                    path = params.get("path", "")
+                    content = params.get("content", "")
+                    if not path:
+                        return {"action": "write_file", "error": "No path provided", "success": False, "type": "server"}
+                    proj = params.get("project") or ctx.project
+                    project_path = _resolve_project_path(proj) if proj else None
+                    if not project_path:
+                        return {"action": "write_file", "error": "No project selected", "success": False, "type": "server"}
+                    from pathlib import Path as _WP
+                    file_path = (_WP(project_path) / path).resolve()
+                    if not str(file_path).startswith(str(_WP(project_path).resolve())):
+                        return {"action": "write_file", "error": "Path escapes project directory", "success": False, "type": "server"}
+                    try:
+                        file_path.parent.mkdir(parents=True, exist_ok=True)
+                        file_path.write_text(content)
+                        return {"action": "write_file", "path": path, "bytes": len(content), "success": True, "type": "server"}
+                    except Exception as e:
+                        return {"action": "write_file", "error": str(e), "success": False, "type": "server"}
+
+                case "edit_file":
+                    path = params.get("path", "")
+                    old_text = params.get("old_text", "")
+                    new_text = params.get("new_text", "")
+                    if not path or not old_text:
+                        return {"action": "edit_file", "error": "path and old_text are required", "success": False, "type": "server"}
+                    proj = params.get("project") or ctx.project
+                    project_path = _resolve_project_path(proj) if proj else None
+                    if not project_path:
+                        return {"action": "edit_file", "error": "No project selected", "success": False, "type": "server"}
+                    from pathlib import Path as _EP
+                    file_path = (_EP(project_path) / path).resolve()
+                    if not str(file_path).startswith(str(_EP(project_path).resolve())):
+                        return {"action": "edit_file", "error": "Path escapes project directory", "success": False, "type": "server"}
+                    if not file_path.exists():
+                        return {"action": "edit_file", "error": f"File not found: {path}", "success": False, "type": "server"}
+                    try:
+                        original = file_path.read_text()
+                        count = original.count(old_text)
+                        if count == 0:
+                            return {"action": "edit_file", "error": "old_text not found in file", "success": False, "type": "server"}
+                        updated = original.replace(old_text, new_text, 1)
+                        file_path.write_text(updated)
+                        return {"action": "edit_file", "path": path, "replacements": 1, "success": True, "type": "server"}
+                    except Exception as e:
+                        return {"action": "edit_file", "error": str(e), "success": False, "type": "server"}
+
+                # --- Workstream (channel) actions ---
+                case "list_workstreams":
+                    ws_list = [{"name": ws["name"], "projects": ws.get("project_names", []), "type": ws.get("type")} for ws in ctx.workstreams]
+                    return {"action": "list_workstreams", "workstreams": ws_list, "count": len(ws_list), "success": True, "type": "server"}
+
+                case "switch_workstream":
+                    name = params.get("name", "")
+                    ws_names = [ws["name"] for ws in ctx.workstreams]
+                    matched = fuzzy_match(name, ws_names)
+                    if not matched:
+                        return {"action": "switch_workstream", "error": f"No workstream matching '{name}'", "success": False, "type": "client"}
+                    # Find the channel id
+                    ws_id = None
+                    for ws in ctx.workstreams:
+                        if ws["name"] == matched:
+                            ws_id = ws["id"]
+                            break
+                    return {"action": "switch_workstream", "name": matched, "channel_id": ws_id, "success": True, "type": "client"}
+
+                case "create_workstream":
+                    name = params.get("name", "")
+                    project = params.get("project")
+                    if not name:
+                        return {"action": "create_workstream", "error": "Name is required", "success": False, "type": "server"}
+                    from .channel_manager import get_channel_manager
+                    cm = get_channel_manager()
+                    project_ids = []
+                    if project:
+                        project = fuzzy_match(project, ctx.projects) or project
+                        from .db.repositories import get_project_repo
+                        pr = get_project_repo()
+                        p = pr.get(project)
+                        if p:
+                            project_ids = [p.name]
+                    ch = cm.create_channel(name=name, channel_type="project" if project_ids else "ephemeral", project_ids=project_ids)
+                    return {"action": "create_workstream", "name": ch.name, "channel_id": ch.id, "success": True, "type": "client"}
+
+                case "archive_workstream":
+                    name = params.get("name")
+                    ws_id = ctx.active_workstream_id
+                    if name:
+                        ws_names = [ws["name"] for ws in ctx.workstreams]
+                        matched = fuzzy_match(name, ws_names)
+                        if matched:
+                            for ws in ctx.workstreams:
+                                if ws["name"] == matched:
+                                    ws_id = ws["id"]
+                                    break
+                    if not ws_id:
+                        return {"action": "archive_workstream", "error": "No workstream found", "success": False, "type": "server"}
+                    from .channel_manager import get_channel_manager
+                    cm = get_channel_manager()
+                    cm.archive_channel(ws_id)
+                    return {"action": "archive_workstream", "channel_id": ws_id, "success": True, "type": "client"}
+
+                case "delete_workstream":
+                    name = params.get("name")
+                    ws_id = ctx.active_workstream_id
+                    if name:
+                        ws_names = [ws["name"] for ws in ctx.workstreams]
+                        matched = fuzzy_match(name, ws_names)
+                        if matched:
+                            for ws in ctx.workstreams:
+                                if ws["name"] == matched:
+                                    ws_id = ws["id"]
+                                    break
+                    if not ws_id:
+                        return {"action": "delete_workstream", "error": "No workstream found", "success": False, "type": "server"}
+                    from .channel_manager import get_channel_manager
+                    cm = get_channel_manager()
+                    cm.delete_channel(ws_id)
+                    return {"action": "delete_workstream", "channel_id": ws_id, "success": True, "type": "client"}
+
                 case _:
                     return {"action": action_name, "error": f"Unknown action: {action_name}", "success": False, "type": "server"}
 
@@ -2619,6 +3234,40 @@ def build_orchestrator_context(
     except Exception:
         pass
 
+    # Workstreams (channels)
+    workstreams: list[dict] = []
+    active_workstream: Optional[str] = None
+    active_workstream_id: Optional[str] = None
+    try:
+        from .channel_manager import get_channel_manager
+        cm = get_channel_manager()
+        for ch in cm.list_channels():
+            ws = {
+                "id": ch.id,
+                "name": ch.name,
+                "type": ch.type.value if hasattr(ch.type, "value") else str(ch.type),
+                "project_names": [],
+            }
+            # Get linked projects
+            try:
+                proj_ids = cm.get_channel_projects(ch.id)
+                from .db.repositories import get_project_repo as _gpr
+                _pr = _gpr()
+                for pid in proj_ids:
+                    p = _pr.get(pid)
+                    if p:
+                        ws["project_names"].append(p.name)
+            except Exception:
+                pass
+            workstreams.append(ws)
+            # If the active project matches, mark this workstream as active
+            if project and project != "all":
+                if project in ws["project_names"] or ch.name == f"#{project}":
+                    active_workstream = ch.name
+                    active_workstream_id = ch.id
+    except Exception:
+        pass
+
     return OrchestratorContext(
         project=project,
         collection=active_collection,
@@ -2640,6 +3289,9 @@ def build_orchestrator_context(
         project_profile=project_profile,
         pinchtab_available=pinchtab_available,
         pinchtab_tabs=pinchtab_tabs,
+        workstreams=workstreams,
+        active_workstream=active_workstream,
+        active_workstream_id=active_workstream_id,
     )
 
 

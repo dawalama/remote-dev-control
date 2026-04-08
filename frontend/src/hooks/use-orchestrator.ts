@@ -4,6 +4,7 @@ import { getClientId, setClientName } from "@/lib/client-id"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useStateStore } from "@/stores/state-store"
+import { useChannelStore } from "@/stores/channel-store"
 import type { TabId } from "@/types"
 
 interface OrchestratorAction {
@@ -447,6 +448,39 @@ export function useOrchestrator(opts: {
         if (action.success) toast(`Started ${action.count || 0} actions`, "success")
         break
 
+      // Workstream actions
+      case "switch_workstream":
+        if (action.channel_id && typeof action.channel_id === "string") {
+          useChannelStore.getState().selectChannel(action.channel_id)
+          const ch = useChannelStore.getState().channels.find((c) => c.id === action.channel_id)
+          if (ch?.project_names?.[0]) selectProject(ch.project_names[0])
+        }
+        break
+
+      case "create_workstream":
+        if (action.success) {
+          useChannelStore.getState().loadChannels()
+          toast(`Created workstream: ${action.name || ""}`, "success")
+        }
+        break
+
+      case "archive_workstream":
+        if (action.success) {
+          useChannelStore.getState().loadChannels()
+          toast("Workstream archived", "success")
+        }
+        break
+
+      case "delete_workstream":
+        if (action.success) {
+          useChannelStore.getState().loadChannels()
+          toast("Workstream deleted", "success")
+        }
+        break
+
+      case "list_workstreams":
+        break
+
       default:
         break
     }
@@ -503,11 +537,14 @@ export function useOrchestrator(opts: {
     const proj = project || (currentProject !== "all" ? currentProject : undefined)
 
     try {
+      const activeChannelId = useChannelStore.getState().activeChannelId
       const result = await POST<OrchestratorResult>("/orchestrator", {
         message,
         channel: opts.channel,
         project: proj,
         client_id: getClientId(),
+        channel_id: activeChannelId || undefined,
+        mode: activeChannelId ? "async" : "sync",
       })
 
       // Server returns executed actions in the flattened {action, tab, ...} format

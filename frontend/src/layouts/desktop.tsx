@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useState } from "react"
+import type { TabId } from "@/types"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useAuthStore } from "@/stores/auth-store"
@@ -7,14 +8,20 @@ import { useTerminalStore } from "@/stores/terminal-store"
 import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
 import { POST } from "@/lib/api"
 import { getClientId, getClientName } from "@/lib/client-id"
-import { ProjectBar, CommandPalette } from "@/components/project-bar"
+import { CommandPalette } from "@/components/project-bar"
 import { EmbeddedTerminal } from "@/features/terminal/embedded-terminal"
 import { RightTabs } from "@/features/right-tabs/right-tabs"
-import { ChatFAB } from "@/features/chat/chat-fab"
+// ChatFAB replaced by ChannelPanel in v2
 import { CommandBar } from "@/features/command-bar/command-bar"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
+import { ProjectSettingsModal } from "@/features/modals/project-settings"
 import { GlobalTextInput } from "@/components/global-text-input"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
+import { useChannelStore } from "@/stores/channel-store"
+import { ChannelSidebar } from "@/features/channels/channel-sidebar"
+import { AddProjectModal } from "@/components/project-bar"
+import { FloatingChannelPanel } from "@/features/channels/floating-channel-panel"
+import { SessionViewer } from "@/features/sessions/session-viewer"
 
 const LAYOUTS = [
   { id: "desktop", label: "Desktop", short: "D" },
@@ -26,6 +33,7 @@ export function DesktopLayout() {
   const loadProjects = useProjectStore((s) => s.loadProjects)
   const loadCollections = useProjectStore((s) => s.loadCollections)
   const currentProject = useProjectStore((s) => s.currentProject)
+  const selectProject = useProjectStore((s) => s.selectProject)
   const logout = useAuthStore((s) => s.logout)
   const connect = useStateStore((s) => s.connect)
   const disconnect = useStateStore((s) => s.disconnect)
@@ -34,13 +42,20 @@ export function DesktopLayout() {
   const toast = useUIStore((s) => s.toast)
   const toggleCommandPalette = useUIStore((s) => s.toggleCommandPalette)
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen)
-  const toggleChat = useUIStore((s) => s.toggleChat)
   const layout = useUIStore((s) => s.layout)
+  const setTab = useUIStore((s) => s.setTab)
   const setLayout = useUIStore((s) => s.setLayout)
   const spawnTerminal = useTerminalStore((s) => s.spawnTerminal)
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
-  const [systemSettingsOpen, setSystemSettingsOpen] = useState(false)
+  const systemSettingsOpen = useUIStore((s) => s.systemSettingsOpen)
+  const setSystemSettingsOpen = useUIStore((s) => s.setSystemSettingsOpen)
+  const projectSettingsOpen = useUIStore((s) => s.projectSettingsOpen)
+  const setProjectSettingsOpen = useUIStore((s) => s.setProjectSettingsOpen)
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
+  // channelPanelOpen removed — FloatingChannelPanel manages its own state
+  const [addProjectOpen, setAddProjectOpen] = useState(false)
+  const viewingSessionId = useUIStore((s) => s.viewingSessionId)
+  const setViewingSessionId = useUIStore((s) => s.setViewingSessionId)
   const presets = useTerminalPresetsStore((s) => s.presets)
   const loadPresets = useTerminalPresetsStore((s) => s.load)
 
@@ -81,10 +96,10 @@ export function DesktopLayout() {
         return
       }
 
-      // ⌘/ — toggle chat
+      // ⌘/ — toggle chat panel
       if (meta && e.key === "/") {
         e.preventDefault()
-        toggleChat()
+        useUIStore.getState().toggleChat()
         return
       }
 
@@ -108,7 +123,7 @@ export function DesktopLayout() {
         setAgentPickerOpen(false)
       }
     },
-    [currentProject, toggleCommandPalette, setCommandPaletteOpen, toggleChat, spawnTerminal, toast, cycleActiveProject, setAgentPickerOpen]
+    [currentProject, toggleCommandPalette, setCommandPaletteOpen, spawnTerminal, toast, cycleActiveProject, setAgentPickerOpen]
   )
 
   useEffect(() => {
@@ -187,22 +202,10 @@ export function DesktopLayout() {
           >
             KB
           </a>
-          <button
-            className="text-xs text-gray-400 hover:text-gray-200"
-            onClick={() => setSystemSettingsOpen(true)}
-            title="System settings"
-          >
-            Settings
-          </button>
           <button className="text-xs text-gray-400 hover:text-gray-200" onClick={logout}>
             Logout
           </button>
         </div>
-      </div>
-
-      {/* Project selector */}
-      <div className="px-4 flex-shrink-0">
-        <ProjectBar />
       </div>
 
       {/* Attention: terminals waiting for input */}
@@ -258,26 +261,75 @@ export function DesktopLayout() {
         </div>
       )}
 
-      {/* Main content: 2-column IDE layout */}
-      <div className="flex-1 grid grid-cols-3 gap-3 px-4 py-3 min-h-0 pb-[60px]">
-        {/* Left column: terminal */}
-        <div className="col-span-2 flex flex-col min-h-0">
-          <EmbeddedTerminal />
+      {/* Main content: channel sidebar + workspace + right tabs */}
+      <div className="flex-1 flex gap-0 min-h-0 pb-[60px]">
+        {/* Channel sidebar */}
+        <ChannelSidebar onAddProject={() => setAddProjectOpen(true)} />
+
+        {/* Workspace: terminal + optional session viewer tab */}
+        <div className="flex-1 flex flex-col min-h-0 min-w-0 px-2 py-2">
+          {/* Tab bar when a session is open */}
+          {viewingSessionId && (
+            <div className="flex items-center gap-0.5 bg-gray-800 rounded-t-lg px-2 py-1 flex-shrink-0">
+              <button
+                onClick={() => setViewingSessionId(null)}
+                className="px-2 py-0.5 text-[10px] rounded text-gray-500 hover:text-gray-300 hover:bg-gray-700"
+              >
+                Terminals
+              </button>
+              <button
+                className="px-2 py-0.5 text-[10px] rounded bg-gray-700 text-white"
+              >
+                Session
+              </button>
+            </div>
+          )}
+          {viewingSessionId ? (
+            <SessionViewer
+              sessionId={viewingSessionId}
+              onClose={() => setViewingSessionId(null)}
+            />
+          ) : (
+            <EmbeddedTerminal />
+          )}
         </div>
 
-        {/* Right column: tabbed sidebar */}
-        <div className="col-span-1 min-h-0 min-w-0 overflow-hidden">
+        {/* Right tabs */}
+        <div className="w-80 min-h-0 min-w-0 overflow-hidden px-2 py-2 flex-shrink-0">
           <RightTabs />
         </div>
       </div>
 
       {/* Floating elements */}
+      <FloatingChannelPanel
+        onOpenTerminal={(project) => {
+          if (project && project !== "all") selectProject(project)
+          setAgentPickerOpen(true)
+        }}
+        onCreateTask={() => { /* TODO */ }}
+        onOpenActivity={() => setTab("activity" as TabId)}
+        onEditProject={() => setSystemSettingsOpen(true)}
+        onSystemSettings={() => setSystemSettingsOpen(true)}
+      />
       <CommandBar />
-      <ChatFAB />
       <FloatingAgentPanel channel="desktop" />
       <CommandPalette />
       {systemSettingsOpen && (
         <SystemSettingsModal onClose={() => setSystemSettingsOpen(false)} />
+      )}
+      {projectSettingsOpen && currentProject !== "all" && (
+        <ProjectSettingsModal projectName={currentProject} onClose={() => setProjectSettingsOpen(false)} fullPage />
+      )}
+      {addProjectOpen && (
+        <AddProjectModal
+          onClose={() => setAddProjectOpen(false)}
+          onCreated={() => {
+            setAddProjectOpen(false)
+            loadProjects()
+            useChannelStore.getState().loadChannels()
+          }}
+          scaffoldProject={useProjectStore.getState().scaffoldProject}
+        />
       )}
       {agentPickerOpen && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setAgentPickerOpen(false)}>
@@ -293,7 +345,7 @@ export function DesktopLayout() {
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-left"
                   onClick={() => {
                     setAgentPickerOpen(false)
-                    spawnTerminal(currentProject, preset.command)
+                    spawnTerminal(currentProject, preset.command, useChannelStore.getState().activeChannelId || undefined)
                     toast(`Terminal started: ${preset.label}`, "success")
                   }}
                 >
@@ -317,3 +369,4 @@ export function DesktopLayout() {
     </div>
   )
 }
+

@@ -3,6 +3,7 @@ import { stripAnsi } from "@/lib/utils"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useTerminalStore } from "@/stores/terminal-store"
+import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useLogsStore } from "@/stores/logs-store"
 import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
@@ -74,11 +75,40 @@ export function EmbeddedTerminal({
   const presets = useTerminalPresetsStore((s) => s.presets)
   const loadPresets = useTerminalPresetsStore((s) => s.load)
 
-  // All terminals — show every terminal for the project (or all projects)
-  const projectTerminals =
-    currentProject !== "all"
+  // Channel-first terminal filtering: show terminals linked to active channel,
+  // fall back to project-based filtering if no channel is active
+  const activeChannelId = useChannelStore((s) => s.activeChannelId)
+  const terminalChannels = useStateStore((s) => s.terminalChannels)
+
+  // Terminal filtering: show terminals for the active workstream
+  const activeChannel = useChannelStore((s) => s.channels.find((c) => c.id === s.activeChannelId))
+
+  const projectTerminals = (() => {
+    // Get channel-linked terminals
+    const channelTerminalIds = new Set<string>()
+    if (activeChannelId && terminalChannels) {
+      for (const [tid, chIds] of Object.entries(terminalChannels)) {
+        if (chIds.includes(activeChannelId)) channelTerminalIds.add(tid)
+      }
+    }
+
+    // System/ephemeral channels with no project: only show linked terminals
+    if (activeChannel && (activeChannel.type === "system" || !activeChannel.project_names?.length)) {
+      return terminals.filter((t) => channelTerminalIds.has(t.id))
+    }
+
+    // Project channels: show project terminals + channel-linked
+    const projectFiltered = currentProject !== "all"
       ? terminals.filter((t) => t.project === currentProject)
       : terminals
+
+    if (channelTerminalIds.size > 0) {
+      const existing = new Set(projectFiltered.map((t) => t.id))
+      const extra = terminals.filter((t) => channelTerminalIds.has(t.id) && !existing.has(t.id))
+      return [...projectFiltered, ...extra]
+    }
+    return projectFiltered
+  })()
 
   // Active tab: either a terminal id or a log pane id
   const [activeTab, setActiveTab] = useState<string | null>(null)
@@ -158,7 +188,7 @@ export function EmbeddedTerminal({
   // No project selected and no terminals anywhere
   if (currentProject === "all" && projectTerminals.length === 0 && logPanes.length === 0) {
     return (
-      <div className="flex-[65] flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
+      <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
         <p className="text-gray-500 text-sm">Select a project to open a terminal</p>
       </div>
     )
@@ -167,7 +197,7 @@ export function EmbeddedTerminal({
   // No terminals and no log panes — show new session prompt
   if (projectTerminals.length === 0 && logPanes.length === 0) {
     return (
-      <div className="flex-[65] flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
+      <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
         <div className="text-center space-y-3">
           <p className="text-gray-400 text-sm">No active terminal for {currentProject}</p>
           <AgentLauncher presets={presets} onSelect={handleSpawn} />
@@ -179,7 +209,7 @@ export function EmbeddedTerminal({
   // Minimized
   if (mode === "minimized" && !isLogTab) {
     return (
-      <div className="flex-[65] flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
+      <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
         <div className="text-center space-y-2">
           <p className="text-gray-500 text-sm">Terminal minimized</p>
           <button
@@ -315,12 +345,19 @@ export function EmbeddedTerminal({
   ) : null
 
   const labelFor = (command: string | undefined) => {
-    const exact = presets.find((p) => p.command === command)?.label
+    const cmd = (command || "").trim()
+    // Detect agent session terminals (claude --dangerously-skip-permissions "...")
+    if (cmd.startsWith("claude ") || cmd.startsWith("echo 2 | claude")) {
+      // Extract task description from the quoted arg
+      const match = cmd.match(/"([^"]{1,40})/)
+      return match ? `Agent: ${match[1]}...` : "Agent"
+    }
+    const exact = presets.find((p) => p.command === cmd)?.label
     if (exact) return exact
-    const base = (command || "").trim().split(/\s+/)[0] || ""
+    const base = cmd.split(/\s+/)[0] || ""
     const base2 = base.split("/").pop() || base
     const byBase = presets.find((p) => (p.command || "").trim().split(/\s+/)[0].split("/").pop() === base2)?.label
-    return byBase ?? (command || "Shell")
+    return byBase ?? (cmd || "Shell")
   }
 
   const getTabLabel = (terminal: typeof projectTerminals[0]) => {
@@ -410,7 +447,7 @@ export function EmbeddedTerminal({
   if (mode === "fullscreen" && !isLogTab) {
     return (
       <>
-        <div className="flex-[65] flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
+        <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
           <p className="text-gray-500 text-sm">Terminal in fullscreen mode</p>
         </div>
         <div className="fixed inset-0 h-app z-[100] bg-gray-900 flex flex-col">
@@ -422,7 +459,7 @@ export function EmbeddedTerminal({
 
   // Embedded (default)
   return (
-    <div className="flex-[65] flex flex-col min-h-0 rounded-lg overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 rounded-lg overflow-hidden">
       {tabBar}
       {isLogTab ? logContent : terminalContent}
     </div>

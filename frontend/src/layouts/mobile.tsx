@@ -1,15 +1,15 @@
-import { useEffect, useState, useMemo } from "react"
+import { useEffect, useState, useMemo, useRef } from "react"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore, getActiveProjectNames } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { AttentionCard } from "@/features/mobile/attention-card"
 import { TerminalsCard } from "@/features/mobile/terminals-card"
 import { ProcessesCard } from "@/features/mobile/processes-card"
-import { TasksCard } from "@/features/mobile/tasks-card"
+import { SessionsCard } from "@/features/sessions/sessions-card"
 import { ContextsCard } from "@/features/mobile/contexts-card"
 import { DictationCard } from "@/features/mobile/dictation-card"
 import { BrowserCard } from "@/features/mobile/browser-card"
-import { ChatCard } from "@/features/mobile/chat-card"
+// ChatCard replaced by MobileChannelPanel in v2
 // PinchTab card/overlay removed — unified into Browser
 import { GlobalTextInput } from "@/components/global-text-input"
 import { useBrowserStore } from "@/stores/browser-store"
@@ -26,10 +26,15 @@ import { ProjectSettingsModal } from "@/features/modals/project-settings"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { RecordingPlayer } from "@/features/browser/recording-player"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
+import { SessionViewer } from "@/features/sessions/session-viewer"
+import { useChannelStore } from "@/stores/channel-store"
+import { MobileChannelPanel } from "@/features/channels/mobile-channel-panel"
+import { WorkspaceSelectorSheet } from "@/features/channels/mobile-workspace-selector"
 import { Sheet } from "@/features/mobile/sheet"
 import { POST } from "@/lib/api"
 import { getClientId, getClientName } from "@/lib/client-id"
 import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
+import { useWorkstreamVoice } from "@/hooks/use-workstream-voice"
 import type { BrowserSession, Action } from "@/types"
 
 export function MobileLayout() {
@@ -47,6 +52,8 @@ export function MobileLayout() {
   const terminals = useStateStore((s) => s.terminals)
   const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
+  const viewingSessionId = useUIStore((s) => s.viewingSessionId)
+  const setViewingSessionId = useUIStore((s) => s.setViewingSessionId)
 
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
 
@@ -57,6 +64,7 @@ export function MobileLayout() {
   }, [terminals, processes])
 
   const [projectSheetOpen, setProjectSheetOpen] = useState(false)
+  const [workspaceSelectorOpen, setWorkspaceSelectorOpen] = useState(false)
   const [hamburgerOpen, setHamburgerOpen] = useState(false)
   const [createTaskOpen, setCreateTaskOpen] = useState(false)
   const [activityOpen, setActivityOpen] = useState(false)
@@ -71,7 +79,44 @@ export function MobileLayout() {
   const [browserUrlOpen, setBrowserUrlOpen] = useState(false)
   const [playingRecording, setPlayingRecording] = useState<string | null>(null)
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
-  // PinchTab overlay removed — unified into Browser
+
+  // Voice integration
+  const terminalSendRef = useRef<((data: string) => void) | null>(null)
+  const { voice, indicatorRef, cleanup: voiceCleanup } = useWorkstreamVoice({
+    channel: "mobile",
+    terminalSendRef,
+    onOpenTerminal: async (project) => {
+      const proj = project && project !== "all" ? project : currentProject
+      if (proj === "all") { toast("Select a project first", "warning"); return }
+      try {
+        const activeChId = useChannelStore.getState().activeChannelId
+        let url = `/terminals?project=${encodeURIComponent(proj)}`
+        if (activeChId) url += `&channel_id=${encodeURIComponent(activeChId)}`
+        const session = await POST<{ id: string }>(url)
+        if (session?.id) setTerminalOverlayId(session.id)
+      } catch { toast("Failed to create terminal", "error") }
+    },
+    onCreateTask: () => setCreateTaskOpen(true),
+    onOpenBrowser: () => setBrowserUrlOpen(true),
+    onOpenActivity: () => setActivityOpen(true),
+    onOpenMenu: () => setHamburgerOpen(true),
+    onEditProject: () => setProjectSettingsOpen(true),
+    onSystemSettings: () => setSystemSettingsOpen(true),
+    toast,
+  })
+  const [voiceIndicator, setVoiceIndicator] = useState("")
+
+  // Sync voice indicator from ref (poll on animation frame when listening)
+  useEffect(() => {
+    if (!voice.listening) { setVoiceIndicator(""); return }
+    let raf: number
+    const poll = () => {
+      setVoiceIndicator(indicatorRef.current)
+      raf = requestAnimationFrame(poll)
+    }
+    raf = requestAnimationFrame(poll)
+    return () => { cancelAnimationFrame(raf); voiceCleanup() }
+  }, [voice.listening, indicatorRef, voiceCleanup])
 
   useEffect(() => {
     loadProjects()
@@ -100,6 +145,24 @@ export function MobileLayout() {
     loadPresets()
   }, [loadPresets])
 
+  // Sync channel store with project selection
+  const loadChannels = useChannelStore((s) => s.loadChannels)
+  const selectChannel = useChannelStore((s) => s.selectChannel)
+  const channels = useChannelStore((s) => s.channels)
+
+  useEffect(() => {
+    loadChannels()
+  }, [loadChannels])
+
+  useEffect(() => {
+    if (currentProject && currentProject !== "all") {
+      const ch = channels.find((c) =>
+        c.name === `#${currentProject}` || c.project_names?.includes(currentProject)
+      )
+      if (ch) selectChannel(ch.id)
+    }
+  }, [currentProject, channels, selectChannel])
+
   const handleSpawnTerminal = async (command?: string) => {
     if (currentProject === "all") {
       toast("Select a project first", "warning")
@@ -109,6 +172,10 @@ export function MobileLayout() {
       let url = `/terminals?project=${encodeURIComponent(currentProject)}`
       if (command !== undefined) {
         url += `&command=${encodeURIComponent(command)}`
+      }
+      const activeChannelId = useChannelStore.getState().activeChannelId
+      if (activeChannelId) {
+        url += `&channel_id=${encodeURIComponent(activeChannelId)}`
       }
       const session = await POST<{ id: string }>(url)
       if (session?.id) setTerminalOverlayId(session.id)
@@ -153,7 +220,7 @@ export function MobileLayout() {
           )}
           <button
             className="flex items-center gap-1 min-w-0"
-            onClick={() => setProjectSheetOpen(true)}
+            onClick={() => setWorkspaceSelectorOpen(true)}
           >
             {collectionName && (
               <span className="text-[10px] uppercase tracking-wider text-gray-500 mr-1">
@@ -161,7 +228,10 @@ export function MobileLayout() {
               </span>
             )}
             <span className="text-sm font-semibold text-gray-100 truncate">
-              {currentProject === "all" ? "All Projects" : currentProject}
+              {(() => {
+                const ch = channels.find((c) => c.id === useChannelStore.getState().activeChannelId)
+                return ch ? ch.name.replace(/^#/, "") : (currentProject === "all" ? "All" : currentProject)
+              })()}
             </span>
             <span className="text-gray-500 text-xs ml-0.5">▼</span>
           </button>
@@ -201,30 +271,7 @@ export function MobileLayout() {
           />
         )}
 
-        {/* Quick actions */}
-        <div className="flex gap-2">
-          <button
-            className="flex-1 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white"
-            onClick={() => setCreateTaskOpen(true)}
-          >
-            + Task
-          </button>
-          <button
-            className="flex-1 py-2 text-sm font-medium rounded-lg border border-gray-600 text-gray-300"
-            onClick={() => {
-              if (currentProject === "all") { toast("Select a project first", "warning"); return }
-              setAgentPickerOpen(true)
-            }}
-          >
-            + Terminal
-          </button>
-          <button
-            className="flex-1 py-2 text-sm font-medium rounded-lg border border-gray-600 text-gray-300"
-            onClick={() => setBrowserUrlOpen(true)}
-          >
-            Browser
-          </button>
-        </div>
+        {/* Quick actions moved to bottom panel (MobileChannelPanel) */}
 
         {/* Cards */}
         <TerminalsCard onOpenTerminal={(id) => setTerminalOverlayId(id)} />
@@ -243,18 +290,23 @@ export function MobileLayout() {
           }}
           onPlayRecording={(id) => setPlayingRecording(id)}
         />
-        <TasksCard />
+        <SessionsCard onOpenTerminal={(tid) => setTerminalOverlayId(tid)} />
         <ContextsCard />
         <PhoneDictation />
       </div>
 
-      {/* Fixed bottom chat panel */}
-      <ChatCard
+      {/* Fixed bottom workspace panel */}
+      {/* Chat panel (no action buttons — action bar below handles them) */}
+      <MobileChannelPanel
+        hideActions
         onOpenTerminal={async (project) => {
           const proj = project && project !== "all" ? project : currentProject
           if (proj === "all") { toast("Select a project first", "warning"); return }
           try {
-            const session = await POST<{ id: string }>(`/terminals?project=${encodeURIComponent(proj)}`)
+            const activeChId = useChannelStore.getState().activeChannelId
+            let url = `/terminals?project=${encodeURIComponent(proj)}`
+            if (activeChId) url += `&channel_id=${encodeURIComponent(activeChId)}`
+            const session = await POST<{ id: string }>(url)
             if (session?.id) setTerminalOverlayId(session.id)
           } catch { toast("Failed to create terminal", "error") }
         }}
@@ -265,6 +317,51 @@ export function MobileLayout() {
         onEditProject={() => setProjectSettingsOpen(true)}
         onSystemSettings={() => setSystemSettingsOpen(true)}
       />
+
+      {/* Fixed bottom action bar */}
+      <div className="flex-shrink-0 border-t border-gray-800 bg-gray-900 px-3 py-2">
+        <div className="flex gap-2">
+          <button className="flex-1 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white" onClick={() => setCreateTaskOpen(true)}>
+            + Task
+          </button>
+          <button
+            className="flex-1 py-2 text-sm font-medium rounded-lg border border-gray-600 text-gray-300"
+            onClick={() => {
+              if (currentProject === "all") { toast("Select a project first", "warning"); return }
+              setAgentPickerOpen(true)
+            }}
+          >
+            + Terminal
+          </button>
+          <button className="flex-1 py-2 text-sm font-medium rounded-lg border border-gray-600 text-gray-300" onClick={() => setBrowserUrlOpen(true)}>
+            Browser
+          </button>
+          <button className="flex-1 py-2 text-sm font-medium rounded-lg border border-gray-600 text-gray-300" onClick={() => setHamburgerOpen(true)}>
+            ☰
+          </button>
+          <button
+            className={`w-10 py-2 rounded-lg flex items-center justify-center text-sm flex-shrink-0 ${
+              voice.listening
+                ? "bg-red-600 text-white animate-pulse"
+                : "bg-gray-700 text-gray-300"
+            }`}
+            onClick={voice.toggle}
+            title={voice.listening ? "Stop voice" : "Start voice"}
+          >
+            🎤
+          </button>
+        </div>
+      </div>
+
+      {/* Floating voice indicator */}
+      {voiceIndicator && (
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[90] max-w-sm px-4 py-2 rounded-full bg-gray-800/95 border border-gray-600 shadow-lg backdrop-blur-sm">
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${voice.listening ? "bg-red-500 animate-pulse" : "bg-blue-500"}`} />
+            <span className="text-sm text-gray-200 truncate">{voiceIndicator}</span>
+          </div>
+        </div>
+      )}
 
       {/* Floating resume-preview pill */}
       {browserActiveSession && !browserFullscreen && (
@@ -288,6 +385,18 @@ export function MobileLayout() {
 
       {/* Bottom sheets */}
       {projectSheetOpen && <ProjectSheet onClose={() => setProjectSheetOpen(false)} />}
+      {workspaceSelectorOpen && (
+        <WorkspaceSelectorSheet
+          onClose={() => setWorkspaceSelectorOpen(false)}
+          onSelect={(channelId) => {
+            selectChannel(channelId)
+            const ch = channels.find((c) => c.id === channelId)
+            if (ch?.project_names?.[0]) {
+              useProjectStore.getState().selectProject(ch.project_names[0])
+            }
+          }}
+        />
+      )}
       {hamburgerOpen && (
         <HamburgerSheet
           onClose={() => setHamburgerOpen(false)}
@@ -373,6 +482,15 @@ export function MobileLayout() {
           onPlayRecording={(id) => { setBrowserFullscreen(false); setPlayingRecording(id) }}
         />
       )}
+      {viewingSessionId && (
+        <div className="fixed inset-0 z-[140] bg-gray-900 flex flex-col h-app">
+          <SessionViewer
+            sessionId={viewingSessionId}
+            onClose={() => setViewingSessionId(null)}
+          />
+        </div>
+      )}
+
       <FloatingAgentPanel channel="mobile" />
       <GlobalTextInput />
     </div>

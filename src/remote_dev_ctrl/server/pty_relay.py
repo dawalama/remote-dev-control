@@ -294,9 +294,12 @@ class PtyRelay:
         buf = self.ring.read_all()
         if buf:
             try:
+                conn.setblocking(True)
                 conn.sendall(buf)
+                conn.setblocking(False)
             except BlockingIOError:
                 logger.debug(f"Initial buffer send would block for {self.name}, client gets live only")
+                conn.setblocking(False)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 self._disconnect_data_client()
                 return

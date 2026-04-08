@@ -71,14 +71,20 @@ def ollama_generate(prompt: str, model: str = None, format_json: bool = False) -
         output = result.stdout.strip()
         
         if format_json:
+            # Strip control characters that LLMs sometimes emit inside JSON strings
+            import re
+            cleaned = re.sub(r"[\x00-\x09\x0b\x0c\x0e-\x1f]", " ", output)
             try:
-                return json.loads(output)
+                return json.loads(cleaned)
             except json.JSONDecodeError:
                 # Try to extract JSON from the output
-                start = output.find("{")
-                end = output.rfind("}") + 1
+                start = cleaned.find("{")
+                end = cleaned.rfind("}") + 1
                 if start >= 0 and end > start:
-                    return json.loads(output[start:end])
+                    try:
+                        return json.loads(cleaned[start:end])
+                    except json.JSONDecodeError:
+                        pass
                 return None
         
         return output

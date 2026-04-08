@@ -61,8 +61,9 @@ export function GlobalTextInput() {
         | null
       if (!el) return
 
-      // Don't intercept our own input
+      // Don't intercept our own input or elements that opt out
       if (el.hasAttribute(SELF_ATTR)) return
+      if (el.hasAttribute("data-no-global-intercept")) return
 
       const tag = el.tagName
       if (tag !== "INPUT" && tag !== "TEXTAREA") return

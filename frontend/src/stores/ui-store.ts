@@ -20,6 +20,9 @@ interface UIState {
   toasts: Toast[]
   selectedTaskId: string | null
   agentPanelOpen: boolean
+  viewingSessionId: string | null
+  projectSettingsOpen: boolean
+  systemSettingsOpen: boolean
 
   // Global text input — any component can register as the target
   textInputOpen: boolean
@@ -47,6 +50,9 @@ interface UIState {
   selectTask: (id: string | null) => void
   toggleAgentPanel: () => void
   setAgentPanelOpen: (open: boolean) => void
+  setViewingSessionId: (id: string | null) => void
+  setProjectSettingsOpen: (open: boolean) => void
+  setSystemSettingsOpen: (open: boolean) => void
   openTextInput: (callback: (text: string) => void, label?: string, initialValue?: string, keepOpen?: boolean, targetEl?: HTMLElement | null) => void
   appendTextInput: (text: string) => void
   closeTextInput: () => void
@@ -59,7 +65,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   sidebarOpen: true,
   bottomPanelOpen: false,
   bottomPanelHeight: 300,
-  chatOpen: false,
+  chatOpen: localStorage.getItem("rdc_chat_open") !== "false",
   commandPaletteOpen: false,
   addProjectOpen: false,
   theme: localStorage.getItem("rdc_theme") || "default",
@@ -67,6 +73,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   toasts: [],
   selectedTaskId: null,
   agentPanelOpen: false,
+  viewingSessionId: null,
+  projectSettingsOpen: false,
+  systemSettingsOpen: false,
   textInputOpen: false,
   textInputLabel: "Terminal",
   textInputCallback: null,
@@ -88,7 +97,11 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   setBottomPanelHeight: (h) => set({ bottomPanelHeight: h }),
 
-  toggleChat: () => set((s) => ({ chatOpen: !s.chatOpen })),
+  toggleChat: () => set((s) => {
+    const next = !s.chatOpen
+    localStorage.setItem("rdc_chat_open", String(next))
+    return { chatOpen: next }
+  }),
 
   toggleCommandPalette: () =>
     set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
@@ -122,6 +135,9 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),
   setAgentPanelOpen: (open) => set({ agentPanelOpen: open }),
+  setViewingSessionId: (id) => set({ viewingSessionId: id }),
+  setProjectSettingsOpen: (open) => set({ projectSettingsOpen: open }),
+  setSystemSettingsOpen: (open) => set({ systemSettingsOpen: open }),
 
   openTextInput: (callback, label, initialValue, keepOpen, targetEl) =>
     set({ textInputOpen: true, textInputCallback: callback, textInputLabel: label || "Input", textInputInitialValue: initialValue || "", textInputKeepOpen: keepOpen || false, textInputTargetEl: targetEl || null }),

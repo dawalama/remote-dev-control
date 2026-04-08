@@ -64,6 +64,7 @@ export function TerminalView({
   const intentionalCloseRef = useRef(false)
   const isAtBottomRef = useRef(true)
   const pendingFitRef = useRef<number | null>(null)
+  const connectStartedRef = useRef(false)
   const onSendReadyRef = useRef(onSendReady)
   onSendReadyRef.current = onSendReady
   const [isAtBottom, setIsAtBottom] = useState(true)
@@ -95,22 +96,19 @@ export function TerminalView({
   const redraw = useCallback(() => {
     const term = termRef.current
     const fit = fitRef.current
+    const ws = wsRef.current
     if (!term || !fit) return
-    // Re-render xterm's existing buffer without sending SIGWINCH to the PTY.
-    // SIGWINCH causes programs like Claude Code to repaint and jump scroll
-    // position, which looks like "different output" on each redraw.
-    // Instead: clear and re-serialize the screen content, then re-fit.
-    const s = serializeRef.current
-    if (s) {
+    try { fit.fit() } catch {}
+    try { term.refresh(0, Math.max(term.rows - 1, 0)) } catch {}
+
+    if (ws?.readyState === WebSocket.OPEN && term.cols > 0 && term.rows > 0) {
       try {
-        const data = s.serialize({ scrollback: term.options.scrollback ?? 10000 })
-        term.reset()
-        term.write(data)
+        ws.send(JSON.stringify({ type: "redraw" }))
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }))
       } catch {
-        // Fallback: just re-fit without touching content
+        // Best-effort repaint trigger only.
       }
     }
-    try { fit.fit() } catch {}
   }, [])
 
   useEffect(() => {
@@ -118,7 +116,8 @@ export function TerminalView({
   }, [onRedrawReady, redraw])
 
   const connectWs = useCallback(() => {
-    if (!sessionId) return
+    if (!sessionId || connectStartedRef.current) return
+    connectStartedRef.current = true
 
     const token = localStorage.getItem("rdc_token")
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:"
@@ -132,33 +131,11 @@ export function TerminalView({
       reconnectRef.current.attempts = 0
 
       const term = termRef.current
+      term?.reset()
 
-      // Try to restore from a local snapshot (same dimensions = perfect restore).
-      let restoredFromSnapshot = false
-      if (term) {
-        try {
-          const saved = sessionStorage.getItem(`terminal_snapshot_${sessionId}`)
-          if (saved) {
-            const snap = JSON.parse(saved)
-            if (snap.cols === term.cols && snap.rows === term.rows && snap.data) {
-              term.reset()
-              term.write(snap.data)
-              restoredFromSnapshot = true
-            }
-            sessionStorage.removeItem(`terminal_snapshot_${sessionId}`)
-          }
-        } catch {}
-      }
-
-      if (!restoredFromSnapshot) {
-        term?.reset()
-      }
-
-      // Handshake: send skip_replay (if local snapshot restored) then resize.
-      // Server reads up to 2 messages in the handshake, stopping at resize.
-      if (restoredFromSnapshot) {
-        ws.send(JSON.stringify({ type: "skip_replay" }))
-      }
+      // Handshake: send resize after the terminal has been fully reset.
+      // Live reconnects now rely on a backend-driven repaint instead of
+      // replaying serialized snapshots into xterm.
       if (term) {
         ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }))
       }
@@ -230,25 +207,10 @@ export function TerminalView({
     }
 
     ws.onclose = (event) => {
+      connectStartedRef.current = false
       // Clear snapshot interval
       const si = (ws as WebSocket & { _snapshotInterval?: ReturnType<typeof setInterval> })._snapshotInterval
       if (si) clearInterval(si)
-
-      // Send a final snapshot before we lose the connection state
-      const t = termRef.current
-      const s = serializeRef.current
-      if (t && s) {
-        try {
-          const data = s.serialize({ scrollback: 100 })
-          if (data) {
-            // Store locally so next connectWs can use it even if server didn't get it
-            sessionStorage.setItem(
-              `terminal_snapshot_${sessionId}`,
-              JSON.stringify({ cols: t.cols, rows: t.rows, data })
-            )
-          }
-        } catch {}
-      }
 
       if (intentionalCloseRef.current) return
 
@@ -293,6 +255,7 @@ export function TerminalView({
 
     // Reset on re-run so reconnect logic works after effect cleanup/re-init
     intentionalCloseRef.current = false
+    connectStartedRef.current = false
 
     const term = new Terminal({
       fontSize,
@@ -322,11 +285,16 @@ export function TerminalView({
       // WebGL not available — canvas renderer remains active
     }
 
-    // Defer first fit to next frame so the browser has fully computed
-    // the container layout (critical on mobile where viewport can shift).
+    const connectWhenReady = () => {
+      if (connectStartedRef.current) return
+      if (term.cols <= 0 || term.rows <= 0) return
+      term.focus()
+      connectWs()
+    }
+
     requestAnimationFrame(() => {
       try { fitAddon.fit() } catch {}
-      term.focus()
+      connectWhenReady()
     })
 
     termRef.current = term
@@ -336,11 +304,40 @@ export function TerminalView({
     // Track scroll position
     term.onScroll(() => checkIfAtBottom(term))
 
-    // Keystroke forwarding
+    // Keystroke forwarding — chunk large pastes to avoid PTY buffer overflow
+    const CHUNK_SIZE = 256
+    const CHUNK_DELAY = 5 // ms between chunks
+    let chunkQueue: string[] = []
+    let chunking = false
+
+    const flushChunks = () => {
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) { chunkQueue = []; chunking = false; return }
+      const chunk = chunkQueue.shift()
+      if (chunk) {
+        ws.send(chunk)
+        setTimeout(flushChunks, CHUNK_DELAY)
+      } else {
+        chunking = false
+      }
+    }
+
     term.onData((data) => {
       const ws = wsRef.current
-      if (ws?.readyState === WebSocket.OPEN) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+      if (data.length <= CHUNK_SIZE) {
+        // Normal keystroke — send immediately
         ws.send(data)
+      } else {
+        // Large paste — chunk it
+        for (let i = 0; i < data.length; i += CHUNK_SIZE) {
+          chunkQueue.push(data.slice(i, i + CHUNK_SIZE))
+        }
+        if (!chunking) {
+          chunking = true
+          flushChunks()
+        }
       }
     })
 
@@ -352,6 +349,7 @@ export function TerminalView({
         pendingFitRef.current = null
         try {
           fitAddon.fit()
+          connectWhenReady()
           // Guard: don't send zero dimensions to the PTY
           if (term.cols > 0 && term.rows > 0) {
             const ws = wsRef.current
@@ -438,9 +436,6 @@ export function TerminalView({
       screenEl.addEventListener("touchstart", onTouchStart, { passive: true })
       screenEl.addEventListener("touchmove", onTouchMove, { passive: false })
     }
-
-    // Connect WS
-    connectWs()
 
     return () => {
       intentionalCloseRef.current = true
