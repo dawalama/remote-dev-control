@@ -67,6 +67,7 @@ caddy_manager = None
 vnc_manager = None
 telegram_bot = None
 phone_channel = None
+email_channel = None
 auth_manager = None
 connected_clients: set[WebSocket] = set()
 _shutdown_event: asyncio.Event = asyncio.Event()  # Set by /admin/restart so WS handlers exit promptly
@@ -75,7 +76,7 @@ _shutdown_event: asyncio.Event = asyncio.Event()  # Set by /admin/restart so WS 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
-    global config, agent_manager, task_repo, event_repo, event_bus, orchestrator, process_manager, caddy_manager, vnc_manager, telegram_bot, phone_channel, auth_manager
+    global config, agent_manager, task_repo, event_repo, event_bus, orchestrator, process_manager, caddy_manager, vnc_manager, telegram_bot, phone_channel, email_channel, auth_manager
     
     ensure_rdc_home()
     
@@ -285,6 +286,82 @@ async def lifespan(app: FastAPI):
             import logging as _logging
             _logging.getLogger(__name__).warning("Phone channel failed to start: %s", e)
 
+    # Start email channel if configured
+    if config.channels.email.enabled:
+        try:
+            from .channels.email import EmailChannel
+
+            email_user = get_secret("RDC_EMAIL_USER") or config.channels.email.username
+            email_pass = get_secret("RDC_EMAIL_PASSWORD") or config.channels.email.password
+
+            if email_user and email_pass:
+                email_cfg = config.channels.email.model_copy(
+                    update={"username": email_user, "password": email_pass}
+                )
+
+                async def _handle_email_message(ctx: dict) -> dict:
+                    """Route inbound email through orchestrator."""
+                    from .intent import get_intent_engine, get_action_executor, build_orchestrator_context
+
+                    project = ctx.get("thread_project_id")
+                    # Build orchestrator message from email context
+                    thread_context = ""
+                    if ctx.get("thread_condensed_context"):
+                        thread_context = f"\n\nThread context: {ctx['thread_condensed_context']}"
+
+                    attachments_info = ""
+                    if ctx.get("attachments"):
+                        files = ", ".join(a["filename"] for a in ctx["attachments"])
+                        attachments_info = f"\n\nAttachments: {files}"
+
+                    message = (
+                        f"[Email from {ctx['from']}] "
+                        f"Subject: {ctx['subject']}\n\n"
+                        f"{ctx.get('body', '')}"
+                        f"{thread_context}"
+                        f"{attachments_info}"
+                    )
+
+                    engine = get_intent_engine()
+                    orch_ctx = build_orchestrator_context(project, None, "email")
+
+                    result = await engine.process(message, orch_ctx)
+
+                    # Extract task_id and project from orchestrator result
+                    task_id = None
+                    resolved_project = project
+                    condensed = None
+                    for action in result.actions:
+                        if action.name == "create_task" and action.params.get("task_id"):
+                            task_id = action.params["task_id"]
+                        if action.params.get("project"):
+                            resolved_project = action.params["project"]
+
+                    # Generate condensed context from the response
+                    if result.response:
+                        condensed = result.response[:500]
+
+                    return {
+                        "task_id": task_id,
+                        "project_id": resolved_project,
+                        "condensed_context": condensed,
+                        "response": result.response,
+                    }
+
+                email_channel = EmailChannel(
+                    config=email_cfg,
+                    on_message=_handle_email_message,
+                )
+                await email_channel.start()
+                logger.info("Email channel started")
+            else:
+                logger.warning(
+                    "Email channel enabled but missing credentials. Need: RDC_EMAIL_USER, RDC_EMAIL_PASSWORD"
+                )
+        except Exception as e:
+            logger.warning("Email channel failed to start: %s", e)
+            email_channel = None
+
     # Start the orchestrator (auto-assigns tasks to agents)
     if config.agents.auto_spawn:
         await orchestrator.start()
@@ -348,6 +425,13 @@ async def lifespan(app: FastAPI):
                 raise
             except Exception:
                 logger.exception("Phone channel stop error")
+        if email_channel:
+            try:
+                await email_channel.stop()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Email channel stop error")
         if caddy_manager:
             try:
                 await caddy_manager.stop()
@@ -4263,6 +4347,157 @@ async def serve_twilio_audio(filename: str):
 
     media_type = "audio/wav" if filepath.suffix == ".wav" else "audio/mpeg"
     return FileResponse(filepath, media_type=media_type)
+
+
+# ── Email Channel Endpoints ──────────────────────────────────────────────────
+
+@app.get("/channels/email/config")
+async def get_email_config():
+    """Get email channel configuration (passwords masked)."""
+    cfg = config.channels.email
+    return {
+        "enabled": cfg.enabled,
+        "imap_host": cfg.imap_host,
+        "imap_port": cfg.imap_port,
+        "smtp_host": cfg.smtp_host,
+        "smtp_port": cfg.smtp_port,
+        "username": cfg.username or "",
+        "from_address": cfg.from_address or "",
+        "poll_interval": cfg.poll_interval,
+        "allowed_senders": cfg.allowed_senders,
+        "max_attachment_size_mb": cfg.max_attachment_size_mb,
+        "default_project": cfg.default_project or "",
+        "auto_close_hours": cfg.auto_close_hours,
+        "has_password": bool(cfg.password),
+    }
+
+
+@app.post("/channels/email/config")
+async def update_email_config(request: Request):
+    """Update email channel configuration. Requires server restart to take effect."""
+    data = await request.json()
+    import yaml
+    from pathlib import Path as _P
+
+    config_path = _P("~/.rdc/config.yml").expanduser()
+    existing = {}
+    if config_path.exists():
+        existing = yaml.safe_load(config_path.read_text()) or {}
+
+    email_cfg = existing.setdefault("channels", {}).setdefault("email", {})
+    # Update only provided fields
+    for key in ["enabled", "imap_host", "imap_port", "smtp_host", "smtp_port",
+                "username", "from_address", "poll_interval", "allowed_senders",
+                "max_attachment_size_mb", "default_project", "auto_close_hours"]:
+        if key in data:
+            email_cfg[key] = data[key]
+
+    # Store password in vault, not config
+    if "password" in data and data["password"]:
+        from .vault import set_secret
+        set_secret("RDC_EMAIL_PASSWORD", data["password"])
+    if "username" in data and data["username"]:
+        from .vault import set_secret
+        set_secret("RDC_EMAIL_USER", data["username"])
+
+    config_path.write_text(yaml.dump(existing, sort_keys=False))
+    return {"success": True, "message": "Email config saved. Restart server to apply."}
+
+
+@app.get("/channels/email/status")
+async def email_channel_status():
+    """Get email channel status."""
+    if not email_channel:
+        return {"enabled": False, "running": False}
+    return email_channel.get_status()
+
+
+@app.get("/channels/email/threads")
+async def email_list_threads(
+    status: str | None = None,
+    project_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List email threads with optional filters."""
+    from .db.repositories import get_email_thread_repo
+    repo = get_email_thread_repo()
+    threads = repo.list_threads(status=status, project_id=project_id, limit=limit, offset=offset)
+    return [t.model_dump(mode="json") for t in threads]
+
+
+@app.get("/channels/email/threads/{thread_id}")
+async def email_get_thread(thread_id: str):
+    """Get a single email thread with all messages."""
+    from .db.repositories import get_email_thread_repo
+    repo = get_email_thread_repo()
+    thread = repo.get_thread(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    messages = repo.get_thread_messages(thread_id)
+    return {
+        **thread.model_dump(mode="json"),
+        "messages": [m.model_dump(mode="json") for m in messages],
+    }
+
+
+@app.post("/channels/email/threads/{thread_id}/reply")
+async def email_reply_thread(thread_id: str, request: Request):
+    """Send a reply in an email thread."""
+    if not email_channel:
+        raise HTTPException(status_code=503, detail="Email channel not running")
+    body = await request.json()
+    message = body.get("message", "")
+    if not message:
+        raise HTTPException(status_code=400, detail="Message required")
+    ok = await email_channel.send_reply(thread_id, message)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to send reply")
+    return {"success": True}
+
+
+@app.post("/channels/email/threads/{thread_id}/close")
+async def email_close_thread(thread_id: str):
+    """Close an email thread."""
+    from .db.repositories import get_email_thread_repo
+    from .db.models import EmailThreadStatus
+    repo = get_email_thread_repo()
+    ok = repo.update_thread_status(thread_id, EmailThreadStatus.CLOSED)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return {"success": True}
+
+
+@app.post("/channels/email/threads/{thread_id}/reopen")
+async def email_reopen_thread(thread_id: str):
+    """Reopen a closed email thread."""
+    from .db.repositories import get_email_thread_repo
+    from .db.models import EmailThreadStatus
+    repo = get_email_thread_repo()
+    ok = repo.update_thread_status(thread_id, EmailThreadStatus.ONGOING)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return {"success": True}
+
+
+@app.post("/channels/email/test")
+async def email_send_test():
+    """Send a test email to verify SMTP configuration."""
+    if not email_channel:
+        raise HTTPException(status_code=503, detail="Email channel not running")
+    from_addr = email_channel.config.from_address or email_channel.config.username
+    # Send to self
+    from email.mime.text import MIMEText as _MIMEText
+    import asyncio as _asyncio
+    msg = _MIMEText("This is a test email from RDC Email Channel.", "plain")
+    msg["From"] = from_addr
+    msg["To"] = from_addr
+    msg["Subject"] = "RDC Email Channel Test"
+    try:
+        await _asyncio.to_thread(email_channel._send_smtp, msg)
+        return {"success": True, "sent_to": from_addr}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"SMTP test failed: {e}")
 
 
 @app.post("/orchestrator")

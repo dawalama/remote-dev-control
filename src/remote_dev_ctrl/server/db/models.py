@@ -419,3 +419,62 @@ class StructuredEvent(BaseModel):
     project_id: Optional[str] = None
     mission_id: Optional[str] = None
     data: Optional[dict[str, Any]] = None
+
+
+# =============================================================================
+# EMAIL THREADS
+# =============================================================================
+
+class EmailThreadStatus(str, Enum):
+    OPEN = "open"           # New thread, not yet acted on
+    ONGOING = "ongoing"     # Active back-and-forth
+    WAITING = "waiting"     # RDC replied, waiting for user response
+    CLOSED = "closed"       # Thread resolved
+
+
+class EmailDirection(str, Enum):
+    INBOUND = "inbound"     # User → RDC
+    OUTBOUND = "outbound"   # RDC → User
+
+
+class EmailAttachment(BaseModel):
+    filename: str
+    path: str
+    size_bytes: int
+    content_type: str
+
+
+class EmailThread(BaseModel):
+    """A bidirectional email conversation thread."""
+    id: str
+    subject: str = ""
+    from_address: str
+    project_id: Optional[str] = None
+    status: EmailThreadStatus = EmailThreadStatus.OPEN
+    condensed_context: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
+    message_count: int = 0
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+    closed_at: Optional[datetime] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class EmailMessage(BaseModel):
+    """A single email message within a thread."""
+    id: str
+    thread_id: str
+    message_id: str          # RFC 822 Message-ID
+    in_reply_to: Optional[str] = None
+    direction: EmailDirection = EmailDirection.INBOUND
+    from_address: str
+    to_address: str
+    subject: str = ""
+    body_text: Optional[str] = None
+    body_html: Optional[str] = None
+    attachments: list[EmailAttachment] = Field(default_factory=list)
+    processed_at: Optional[datetime] = None
+    task_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    metadata: Optional[dict[str, Any]] = None

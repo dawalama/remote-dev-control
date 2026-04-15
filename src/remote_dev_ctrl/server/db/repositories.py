@@ -9,6 +9,8 @@ import uuid as uuid_mod
 from datetime import datetime, timedelta
 from typing import Optional
 
+from ..utils import safe_json_loads
+
 from .connection import get_db
 from .models import (
     ActionKind,
@@ -31,6 +33,11 @@ from .models import (
     VNCSession,
     VNCStatus,
     RecipeModel,
+    EmailThread,
+    EmailThreadStatus,
+    EmailMessage,
+    EmailDirection,
+    EmailAttachment,
 )
 
 
@@ -1614,3 +1621,255 @@ def get_recipe_repo() -> RecipeRepository:
     if _recipe_repo is None:
         _recipe_repo = RecipeRepository()
     return _recipe_repo
+
+
+# =============================================================================
+# EMAIL THREAD REPOSITORY
+# =============================================================================
+
+class EmailThreadRepository:
+    """Repository for email threads and messages."""
+
+    def _db(self):
+        return get_db("rdc")
+
+    # ── Threads ──────────────────────────────────────────────────────────
+
+    def create_thread(
+        self,
+        from_address: str,
+        subject: str = "",
+        project_id: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict | None = None,
+    ) -> EmailThread:
+        thread_id = secrets.token_hex(8)
+        now = datetime.now()
+        db = self._db()
+        db.execute(
+            """INSERT INTO email_threads
+               (id, subject, from_address, project_id, status, tags, task_ids,
+                message_count, created_at, updated_at, metadata)
+               VALUES (?, ?, ?, ?, 'open', ?, '[]', 0, ?, ?, ?)""",
+            (thread_id, subject, from_address, project_id,
+             json.dumps(tags or []), now, now, json.dumps(metadata or {})),
+        )
+        db.commit()
+        return EmailThread(
+            id=thread_id, subject=subject, from_address=from_address,
+            project_id=project_id, tags=tags or [], created_at=now, updated_at=now,
+            metadata=metadata,
+        )
+
+    def get_thread(self, thread_id: str) -> EmailThread | None:
+        row = self._db().execute(
+            "SELECT * FROM email_threads WHERE id = ?", (thread_id,)
+        ).fetchone()
+        return self._row_to_thread(row) if row else None
+
+    def find_thread_by_message_id(self, message_id: str) -> EmailThread | None:
+        """Find the thread containing a message with the given RFC Message-ID."""
+        row = self._db().execute(
+            """SELECT t.* FROM email_threads t
+               JOIN email_messages m ON m.thread_id = t.id
+               WHERE m.message_id = ?
+               LIMIT 1""",
+            (message_id,),
+        ).fetchone()
+        return self._row_to_thread(row) if row else None
+
+    def list_threads(
+        self,
+        status: str | None = None,
+        project_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[EmailThread]:
+        query = "SELECT * FROM email_threads WHERE 1=1"
+        params: list = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if project_id:
+            query += " AND project_id = ?"
+            params.append(project_id)
+        query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = self._db().execute(query, params).fetchall()
+        return [self._row_to_thread(r) for r in rows]
+
+    def update_thread_status(self, thread_id: str, status: EmailThreadStatus) -> bool:
+        db = self._db()
+        now = datetime.now()
+        closed_at = now if status == EmailThreadStatus.CLOSED else None
+        rows = db.execute(
+            """UPDATE email_threads SET status = ?, updated_at = ?, closed_at = COALESCE(?, closed_at)
+               WHERE id = ?""",
+            (status.value, now, closed_at, thread_id),
+        ).rowcount
+        db.commit()
+        return rows > 0
+
+    def update_condensed_context(self, thread_id: str, context: str) -> bool:
+        db = self._db()
+        rows = db.execute(
+            "UPDATE email_threads SET condensed_context = ?, updated_at = ? WHERE id = ?",
+            (context, datetime.now(), thread_id),
+        ).rowcount
+        db.commit()
+        return rows > 0
+
+    def link_task(self, thread_id: str, task_id: str) -> bool:
+        db = self._db()
+        row = db.execute("SELECT task_ids FROM email_threads WHERE id = ?", (thread_id,)).fetchone()
+        if not row:
+            return False
+        task_ids = json.loads(row["task_ids"] or "[]")
+        if task_id not in task_ids:
+            task_ids.append(task_id)
+        db.execute(
+            "UPDATE email_threads SET task_ids = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(task_ids), datetime.now(), thread_id),
+        )
+        db.commit()
+        return True
+
+    def set_project(self, thread_id: str, project_id: str) -> bool:
+        db = self._db()
+        rows = db.execute(
+            "UPDATE email_threads SET project_id = ?, updated_at = ? WHERE id = ?",
+            (project_id, datetime.now(), thread_id),
+        ).rowcount
+        db.commit()
+        return rows > 0
+
+    def get_stale_threads(self, hours: int = 72) -> list[EmailThread]:
+        cutoff = datetime.now() - timedelta(hours=hours)
+        rows = self._db().execute(
+            """SELECT * FROM email_threads
+               WHERE status IN ('open', 'ongoing', 'waiting')
+               AND updated_at < ?""",
+            (cutoff,),
+        ).fetchall()
+        return [self._row_to_thread(r) for r in rows]
+
+    # ── Messages ─────────────────────────────────────────────────────────
+
+    def add_message(
+        self,
+        thread_id: str,
+        message_id: str,
+        direction: EmailDirection,
+        from_address: str,
+        to_address: str,
+        subject: str = "",
+        body_text: str | None = None,
+        body_html: str | None = None,
+        in_reply_to: str | None = None,
+        attachments: list[dict] | None = None,
+        metadata: dict | None = None,
+    ) -> EmailMessage | None:
+        msg_id = secrets.token_hex(8)
+        now = datetime.now()
+        db = self._db()
+        # INSERT OR IGNORE to avoid race condition on duplicate message_id
+        cursor = db.execute(
+            """INSERT OR IGNORE INTO email_messages
+               (id, thread_id, message_id, in_reply_to, direction, from_address,
+                to_address, subject, body_text, body_html, attachments, created_at, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (msg_id, thread_id, message_id, in_reply_to, direction.value,
+             from_address, to_address, subject, body_text, body_html,
+             json.dumps(attachments or []), now, json.dumps(metadata or {})),
+        )
+        if cursor.rowcount == 0:
+            # Duplicate message_id — already inserted by another poller
+            db.rollback()
+            return None
+        # Bump thread message count and updated_at
+        db.execute(
+            """UPDATE email_threads
+               SET message_count = message_count + 1, updated_at = ?
+               WHERE id = ?""",
+            (now, thread_id),
+        )
+        db.commit()
+        return EmailMessage(
+            id=msg_id, thread_id=thread_id, message_id=message_id,
+            in_reply_to=in_reply_to, direction=direction,
+            from_address=from_address, to_address=to_address,
+            subject=subject, body_text=body_text, body_html=body_html,
+            attachments=[EmailAttachment(**a) for a in (attachments or [])],
+            created_at=now, metadata=metadata,
+        )
+
+    def get_thread_messages(self, thread_id: str) -> list[EmailMessage]:
+        rows = self._db().execute(
+            "SELECT * FROM email_messages WHERE thread_id = ? ORDER BY created_at ASC",
+            (thread_id,),
+        ).fetchall()
+        return [self._row_to_message(r) for r in rows]
+
+    def mark_processed(self, message_id: str, task_id: str | None = None) -> bool:
+        db = self._db()
+        rows = db.execute(
+            "UPDATE email_messages SET processed_at = ?, task_id = ? WHERE id = ?",
+            (datetime.now(), task_id, message_id),
+        ).rowcount
+        db.commit()
+        return rows > 0
+
+    def message_exists(self, rfc_message_id: str) -> bool:
+        row = self._db().execute(
+            "SELECT 1 FROM email_messages WHERE message_id = ? LIMIT 1",
+            (rfc_message_id,),
+        ).fetchone()
+        return row is not None
+
+    # ── Helpers ──────────────────────────────────────────────────────────
+
+    def _row_to_thread(self, row) -> EmailThread:
+        return EmailThread(
+            id=row["id"],
+            subject=row["subject"],
+            from_address=row["from_address"],
+            project_id=row["project_id"],
+            status=EmailThreadStatus(row["status"]),
+            condensed_context=row["condensed_context"],
+            tags=safe_json_loads(row["tags"]) or [],
+            task_ids=safe_json_loads(row["task_ids"]) or [],
+            message_count=row["message_count"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            closed_at=row["closed_at"],
+            metadata=safe_json_loads(row["metadata"]),
+        )
+
+    def _row_to_message(self, row) -> EmailMessage:
+        return EmailMessage(
+            id=row["id"],
+            thread_id=row["thread_id"],
+            message_id=row["message_id"],
+            in_reply_to=row["in_reply_to"],
+            direction=EmailDirection(row["direction"]),
+            from_address=row["from_address"],
+            to_address=row["to_address"],
+            subject=row["subject"],
+            body_text=row["body_text"],
+            body_html=row["body_html"],
+            attachments=[EmailAttachment(**a) for a in (safe_json_loads(row["attachments"]) or [])],
+            processed_at=row["processed_at"],
+            task_id=row["task_id"],
+            created_at=row["created_at"],
+            metadata=safe_json_loads(row["metadata"]),
+        )
+
+
+_email_thread_repo: EmailThreadRepository | None = None
+
+
+def get_email_thread_repo() -> EmailThreadRepository:
+    global _email_thread_repo
+    if _email_thread_repo is None:
+        _email_thread_repo = EmailThreadRepository()
+    return _email_thread_repo

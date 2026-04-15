@@ -776,6 +776,21 @@ ORCHESTRATOR_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_url",
+            "description": "Fetch a URL and return its content. Use when the user shares a link and asks you to look at it, analyze a webpage, or reference external content. Returns the page text (HTML stripped to readable text).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to fetch"},
+                    "raw_html": {"type": "boolean", "description": "Return raw HTML instead of extracted text (default: false)"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "write_file",
             "description": "Write content to a file in the project directory. Creates the file if it doesn't exist, overwrites if it does. Use for creating new files or completely replacing file content.",
             "parameters": {
@@ -879,7 +894,7 @@ _LOCAL_TOOL_NAMES = {
     "spawn_agent", "present_options", "present_ui", "select_collection",
     "set_layout", "set_theme", "restart_server", "restart_action",
     "kill_terminal", "restart_terminal", "toggle_sidebar", "toggle_chat",
-    "run_command", "read_file", "write_file", "edit_file",
+    "run_command", "read_file", "fetch_url", "write_file", "edit_file",
     "list_workstreams", "switch_workstream", "create_workstream",
     "archive_workstream", "delete_workstream",
 }
@@ -887,7 +902,7 @@ ORCHESTRATOR_TOOLS_LOCAL = [t for t in ORCHESTRATOR_TOOLS if t["function"]["name
 
 # Tools whose results should be fed back to the LLM (triggers follow-up call)
 TOOLS_WITH_OUTPUT = {
-    "run_command", "read_file", "write_file", "edit_file",
+    "run_command", "read_file", "write_file", "edit_file", "fetch_url",
     "list_workstreams", "browser_snapshot", "browser_text",
     "browser_tabs", "browser_find", "server_status",
 }
@@ -1014,7 +1029,7 @@ def fuzzy_match_action(query: str, processes: list[dict]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 AVAILABLE_MODELS = [
-    {"id": "qwen/qwen3.6-plus:free", "name": "Qwen 3.6 Plus (Free)", "tier": "fast"},
+    {"id": "google/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "tier": "fast"},
     {"id": "google/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "tier": "fast"},
     {"id": "google/gemini-2.0-flash-001", "name": "Gemini 2.0 Flash", "tier": "fast"},
     {"id": "anthropic/claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5", "tier": "fast"},
@@ -1024,8 +1039,8 @@ AVAILABLE_MODELS = [
 ]
 
 DEFAULT_NANOBOT_CONFIG = {
-    "model_fast": "qwen/qwen3.6-plus:free",
-    "model_mid": "qwen/qwen3.6-plus:free",
+    "model_fast": "google/gemini-2.0-flash-001",
+    "model_mid": "minimax/minimax-m2.7",
     "word_threshold": 12,  # Messages with <= this many words use fast model
     "max_tokens": 1000,
     "compress_enabled": False,  # Enable LLMLingua-2 prompt compression
@@ -2195,6 +2210,8 @@ def _auto_confirm(actions: list[ToolCall]) -> str:
                 parts.append(f"Running: {a.params.get('command', '...')[:60]}")
             case "read_file":
                 parts.append(f"Reading {a.params.get('path', '...')}")
+            case "fetch_url":
+                parts.append(f"Fetching {a.params.get('url', '...')[:60]}")
             case "write_file":
                 parts.append(f"Writing {a.params.get('path', '...')}")
             case "edit_file":
@@ -2921,6 +2938,47 @@ class ActionExecutor:
                         return {"action": "read_file", "path": path, "content": content, "lines": len(lines), "success": True, "type": "server"}
                     except Exception as e:
                         return {"action": "read_file", "error": str(e), "success": False, "type": "server"}
+
+                case "fetch_url":
+                    url = params.get("url", "")
+                    if not url:
+                        return {"action": "fetch_url", "error": "No URL provided", "success": False, "type": "server"}
+                    raw_html = params.get("raw_html", False)
+                    import asyncio as _aio
+                    try:
+                        import httpx
+                        async def _fetch():
+                            async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+                                resp = await client.get(url, headers={"User-Agent": "RDC/0.2"})
+                                resp.raise_for_status()
+                                return resp.text
+                        html = await _fetch()
+                        if raw_html:
+                            return {"action": "fetch_url", "url": url, "content": html[:8000], "success": True, "type": "server"}
+                        # Extract readable text from HTML
+                        import re as _re
+                        text = _re.sub(r"<script[^>]*>.*?</script>", "", html, flags=_re.DOTALL | _re.IGNORECASE)
+                        text = _re.sub(r"<style[^>]*>.*?</style>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+                        text = _re.sub(r"<[^>]+>", " ", text)
+                        text = _re.sub(r"\s+", " ", text).strip()
+                        return {"action": "fetch_url", "url": url, "content": text[:6000], "success": True, "type": "server"}
+                    except ImportError:
+                        # httpx not installed — fall back to urllib
+                        import urllib.request
+                        try:
+                            req = urllib.request.Request(url, headers={"User-Agent": "RDC/0.2"})
+                            with urllib.request.urlopen(req, timeout=15) as resp:
+                                html = resp.read().decode("utf-8", errors="replace")
+                            import re as _re
+                            text = _re.sub(r"<script[^>]*>.*?</script>", "", html, flags=_re.DOTALL | _re.IGNORECASE)
+                            text = _re.sub(r"<style[^>]*>.*?</style>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+                            text = _re.sub(r"<[^>]+>", " ", text)
+                            text = _re.sub(r"\s+", " ", text).strip()
+                            return {"action": "fetch_url", "url": url, "content": text[:6000], "success": True, "type": "server"}
+                        except Exception as e:
+                            return {"action": "fetch_url", "error": str(e), "success": False, "type": "server"}
+                    except Exception as e:
+                        return {"action": "fetch_url", "error": str(e), "success": False, "type": "server"}
 
                 case "write_file":
                     path = params.get("path", "")

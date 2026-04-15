@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react"
+import { useMountEffect } from "@/hooks/use-mount-effect"
 import { GET, POST, PATCH, DELETE } from "@/lib/api"
 import { useUIStore } from "@/stores/ui-store"
 import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
@@ -59,7 +60,7 @@ interface PinchTabStatus {
   tabs: { id: string; title: string; url: string }[]
 }
 
-type Section = "voice" | "terminal" | "nanobot" | "recipes" | "pinchtab" | "phone" | "caddy" | "keys" | "sessions" | "info"
+type Section = "voice" | "terminal" | "nanobot" | "pinchtab" | "phone" | "email" | "caddy" | "keys" | "sessions" | "info"
 
 const LAYOUTS = [
   { id: "desktop", label: "Desktop" },
@@ -150,9 +151,9 @@ export function SystemSettingsModal({ onClose }: { onClose: () => void }) {
     { id: "voice", label: "Voice & TTS" },
     { id: "terminal", label: "Terminal" },
     { id: "nanobot", label: "Agent Config" },
-    { id: "recipes", label: "Recipes" },
     { id: "pinchtab", label: "PinchTab" },
     { id: "phone", label: "Phone" },
+    { id: "email", label: "Email" },
     { id: "caddy", label: "Caddy Proxy" },
     { id: "keys", label: "API Keys" },
     { id: "sessions", label: "Sessions" },
@@ -234,14 +235,14 @@ export function SystemSettingsModal({ onClose }: { onClose: () => void }) {
                 onReload={loadAll}
               />
             )}
-            {section === "recipes" && (
-              <RecipesSection toast={toast} />
-            )}
             {section === "pinchtab" && (
               <PinchTabSection toast={toast} />
             )}
             {section === "phone" && adminSettings && (
               <PhoneSection settings={adminSettings} toast={toast} />
+            )}
+            {section === "email" && (
+              <EmailSection toast={toast} />
             )}
             {section === "caddy" && (
               <CaddySection toast={toast} />
@@ -854,7 +855,7 @@ interface RecipeItem {
   builtin: boolean
 }
 
-function RecipesSection({
+export function RecipesSection({
   toast,
 }: {
   toast: (msg: string, type?: "info" | "success" | "error" | "warning") => void
@@ -1533,4 +1534,178 @@ function RefreshModelsButton({ toast }: { toast: (msg: string, type?: "info" | "
 
 function Label({ children }: { children: React.ReactNode }) {
   return <label className="block text-xs text-gray-400 mb-1">{children}</label>
+}
+
+// ── Email Channel Setup ──
+
+interface EmailCfg {
+  enabled: boolean
+  imap_host: string
+  imap_port: number
+  smtp_host: string
+  smtp_port: number
+  username: string
+  from_address: string
+  poll_interval: number
+  allowed_senders: string[]
+  max_attachment_size_mb: number
+  default_project: string
+  auto_close_hours: number
+  has_password: boolean
+}
+
+const EMAIL_PRESETS: Record<string, Partial<EmailCfg>> = {
+  protonmail: { imap_host: "127.0.0.1", imap_port: 1143, smtp_host: "127.0.0.1", smtp_port: 1025 },
+  gmail: { imap_host: "imap.gmail.com", imap_port: 993, smtp_host: "smtp.gmail.com", smtp_port: 587 },
+  outlook: { imap_host: "outlook.office365.com", imap_port: 993, smtp_host: "smtp.office365.com", smtp_port: 587 },
+  custom: {},
+}
+
+function EmailSection({ toast }: { toast: (msg: string, level: "info" | "success" | "warning" | "error") => void }) {
+  const [cfg, setCfg] = useState<EmailCfg | null>(null)
+  const [password, setPassword] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [preset, setPreset] = useState("custom")
+
+  useMountEffect(() => {
+    GET<EmailCfg>("/channels/email/config").then((data) => {
+      if (data) setCfg(data)
+    })
+  })
+
+  const update = (patch: Partial<EmailCfg>) => setCfg((prev) => prev ? { ...prev, ...patch } : prev)
+
+  const applyPreset = (key: string) => {
+    setPreset(key)
+    const p = EMAIL_PRESETS[key]
+    if (p) update(p)
+  }
+
+  const save = async () => {
+    if (!cfg) return
+    setSaving(true)
+    try {
+      await POST("/channels/email/config", {
+        ...cfg,
+        ...(password ? { password } : {}),
+      })
+      toast("Email config saved. Restart server to apply.", "success")
+      setPassword("")
+    } catch {
+      toast("Failed to save", "error")
+    }
+    setSaving(false)
+  }
+
+  if (!cfg) return <div className="text-xs text-gray-500">Loading...</div>
+
+  return (
+    <div className="space-y-4">
+      <p className="text-[11px] text-gray-400">
+        Configure email channel to send/receive messages from your orchestrator via email.
+        Passwords are stored in the encrypted vault, not in config files.
+      </p>
+
+      {/* Enable + Provider preset */}
+      <div className="flex items-center gap-4">
+        <label className="flex items-center gap-2 text-xs">
+          <input type="checkbox" checked={cfg.enabled} onChange={(e) => update({ enabled: e.target.checked })} />
+          Enable Email Channel
+        </label>
+        <select
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
+          value={preset}
+          onChange={(e) => applyPreset(e.target.value)}
+        >
+          <option value="custom">Custom</option>
+          <option value="protonmail">ProtonMail (Bridge)</option>
+          <option value="gmail">Gmail</option>
+          <option value="outlook">Outlook/365</option>
+        </select>
+      </div>
+
+      {preset === "protonmail" && (
+        <p className="text-[10px] text-yellow-400 bg-yellow-900/20 rounded px-2 py-1">
+          ProtonMail requires Proton Bridge running locally. Install from proton.me/mail/bridge.
+          Use the Bridge password (not your Proton password).
+        </p>
+      )}
+      {preset === "gmail" && (
+        <p className="text-[10px] text-yellow-400 bg-yellow-900/20 rounded px-2 py-1">
+          Gmail requires an App Password (2FA must be enabled). Generate at myaccount.google.com → Security → App passwords.
+        </p>
+      )}
+
+      {/* Credentials */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <Label>Email Address</Label>
+          <input className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200"
+            value={cfg.username} onChange={(e) => update({ username: e.target.value, from_address: e.target.value })}
+            placeholder="you@example.com" />
+        </div>
+        <div>
+          <Label>Password {cfg.has_password && <span className="text-green-400">(set)</span>}</Label>
+          <input className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200"
+            type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+            placeholder={cfg.has_password ? "••••••• (leave blank to keep)" : "App password or Bridge password"} />
+        </div>
+      </div>
+
+      {/* Server settings */}
+      <div className="grid grid-cols-4 gap-3">
+        <div>
+          <Label>IMAP Host</Label>
+          <input className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono"
+            value={cfg.imap_host} onChange={(e) => update({ imap_host: e.target.value })} />
+        </div>
+        <div>
+          <Label>IMAP Port</Label>
+          <input className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono"
+            type="number" value={cfg.imap_port} onChange={(e) => update({ imap_port: Number(e.target.value) })} />
+        </div>
+        <div>
+          <Label>SMTP Host</Label>
+          <input className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono"
+            value={cfg.smtp_host} onChange={(e) => update({ smtp_host: e.target.value })} />
+        </div>
+        <div>
+          <Label>SMTP Port</Label>
+          <input className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono"
+            type="number" value={cfg.smtp_port} onChange={(e) => update({ smtp_port: Number(e.target.value) })} />
+        </div>
+      </div>
+
+      {/* Security + behavior */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <Label>Allowed Senders (one per line, empty = all)</Label>
+          <textarea className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono h-16 resize-y"
+            value={cfg.allowed_senders.join("\n")}
+            onChange={(e) => update({ allowed_senders: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean) })}
+            placeholder="user@example.com" />
+        </div>
+        <div className="space-y-2">
+          <div>
+            <Label>Poll Interval (seconds)</Label>
+            <input className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200"
+              type="number" value={cfg.poll_interval} onChange={(e) => update({ poll_interval: Number(e.target.value) })} />
+          </div>
+          <div>
+            <Label>Default Project</Label>
+            <input className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200"
+              value={cfg.default_project} onChange={(e) => update({ default_project: e.target.value })}
+              placeholder="general" />
+          </div>
+        </div>
+      </div>
+
+      <button
+        className="px-3 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50"
+        onClick={save} disabled={saving}
+      >
+        {saving ? "Saving..." : "Save"}
+      </button>
+    </div>
+  )
 }

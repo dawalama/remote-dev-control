@@ -79,6 +79,23 @@ class VoiceConfig(BaseModel):
     webhook_base_url: str | None = None     # Public URL for Twilio webhooks
 
 
+class EmailConfig(BaseModel):
+    """Email channel configuration for sending context to the orchestrator."""
+    enabled: bool = False
+    imap_host: str = "imap.gmail.com"
+    imap_port: int = 993
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    username: str | None = None
+    password: str | None = None          # App password for Gmail
+    from_address: str | None = None      # Reply-from address (defaults to username)
+    poll_interval: int = 30              # seconds between IMAP polls
+    allowed_senders: list[str] = Field(default_factory=list)  # Only process from these
+    max_attachment_size_mb: int = 25
+    default_project: str | None = None   # Fallback project if not tagged
+    auto_close_hours: int = 72           # Auto-close idle threads after N hours
+
+
 class WebConfig(BaseModel):
     """Web dashboard configuration."""
     enabled: bool = True
@@ -89,6 +106,7 @@ class ChannelsConfig(BaseModel):
     """Communication channels configuration."""
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    email: EmailConfig = Field(default_factory=EmailConfig)
     web: WebConfig = Field(default_factory=WebConfig)
 
 
@@ -323,7 +341,22 @@ channels:
     # account_sid: ${TWILIO_SID}
     # auth_token: ${TWILIO_TOKEN}
     # phone_number: "+1234567890"
-  
+
+  email:
+    enabled: false
+    # imap_host: imap.gmail.com
+    # imap_port: 993
+    # smtp_host: smtp.gmail.com
+    # smtp_port: 587
+    # username: ${RDC_EMAIL_USER}
+    # password: ${RDC_EMAIL_PASSWORD}   # Gmail app password (requires 2FA)
+    # allowed_senders:
+    #   - you@example.com
+    # poll_interval: 30                 # seconds
+    # max_attachment_size_mb: 25
+    # default_project: my-project       # fallback if email isn't tagged
+    # auto_close_hours: 72              # auto-close idle threads
+
   web:
     enabled: true
     port: 8421

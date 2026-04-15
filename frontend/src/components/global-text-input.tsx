@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react"
+import { X } from "lucide-react"
 import { useUIStore } from "@/stores/ui-store"
 import { useVoice } from "@/hooks/use-voice"
 
@@ -320,8 +321,9 @@ export function GlobalTextInput() {
           <button
             className={`rounded bg-gray-700 text-gray-400 ${sz}`}
             onClick={fadeClose}
+            title="Close"
           >
-            ✕
+            <X className={isKiosk ? "w-5 h-5" : "w-4 h-4"} />
           </button>
         </div>
 
