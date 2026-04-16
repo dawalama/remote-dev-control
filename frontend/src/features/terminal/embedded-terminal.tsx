@@ -465,26 +465,28 @@ export function EmbeddedTerminal({
     </div>
   ) : null
 
-  // Fullscreen overlay
-  if (mode === "fullscreen" && !isLogTab) {
-    return (
-      <>
-        <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
+  // Keep TerminalView in a stable, keyed React position across embedded/
+  // fullscreen toggles so xterm + its WebSocket aren't remounted (which
+  // would otherwise wipe scrollback and reconnect the PTY).
+  const isFullscreen = mode === "fullscreen" && !isLogTab
+
+  return (
+    <>
+      {isFullscreen && (
+        <div key="fullscreen-placeholder" className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
           <p className="text-gray-500 text-sm">Terminal in fullscreen mode</p>
         </div>
-        <div className="fixed inset-0 h-app z-[100] bg-gray-900 flex flex-col">
-          {terminalContent}
-        </div>
-      </>
-    )
-  }
-
-  // Embedded (default)
-  return (
-    <div className="flex-1 flex flex-col min-h-0 rounded-lg overflow-hidden">
-      {tabBar}
-      {isLogTab ? logContent : terminalContent}
-    </div>
+      )}
+      <div
+        key="terminal-body"
+        className={isFullscreen
+          ? "fixed inset-0 h-app z-[100] bg-gray-900 flex flex-col"
+          : "flex-1 flex flex-col min-h-0 rounded-lg overflow-hidden"}
+      >
+        {isFullscreen ? null : tabBar}
+        {isLogTab ? logContent : terminalContent}
+      </div>
+    </>
   )
 }
 

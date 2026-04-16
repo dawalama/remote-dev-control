@@ -840,12 +840,24 @@ class TerminalManager:
             self._resize_pty(session_id, dims[0], dims[1])
 
     def redraw_for_client(self, session_id: str, client_id: str) -> bool:
-        """Force a repaint for a specific client without changing its dimensions."""
+        """Force a repaint for a specific client without changing its final dimensions.
+
+        The kernel (and the relay) only deliver SIGWINCH when TIOCSWINSZ
+        dimensions actually change, so an ioctl at the current size is a
+        no-op at the signal level — the foreground program (claude, codex,
+        vim, …) never gets nudged to repaint. We briefly shrink rows by 1
+        and restore; both resizes happen back-to-back and most TUIs handle
+        the final SIGWINCH at the restored size.
+        """
         clients = self._client_dims.get(session_id, {})
         dims = clients.get(client_id)
         if not dims:
             return False
-        return self._resize_pty(session_id, dims[0], dims[1], force=True)
+        cols, rows = dims
+        if rows <= 1:
+            return self._resize_pty(session_id, cols, rows, force=True)
+        self._resize_pty(session_id, cols, rows - 1, force=True)
+        return self._resize_pty(session_id, cols, rows, force=True)
 
     def resize(self, session_id: str, cols: int, rows: int, client_id: str | None = None) -> bool:
         """Resize terminal.

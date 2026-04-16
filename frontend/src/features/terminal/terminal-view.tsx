@@ -108,8 +108,10 @@ export function TerminalView({
 
     if (ws?.readyState === WebSocket.OPEN && term.cols > 0 && term.rows > 0) {
       try {
-        ws.send(JSON.stringify({ type: "redraw" }))
+        // First ensure the server knows our current dims, then ask it to
+        // force a SIGWINCH via the rows-bounce in redraw_for_client.
         ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }))
+        ws.send(JSON.stringify({ type: "redraw" }))
       } catch {
         // Best-effort repaint trigger only.
       }
@@ -136,11 +138,10 @@ export function TerminalView({
       reconnectRef.current.attempts = 0
 
       const term = termRef.current
-      term?.reset()
 
-      // Handshake: send resize after the terminal has been fully reset.
-      // Live reconnects now rely on a backend-driven repaint instead of
-      // replaying serialized snapshots into xterm.
+      // Handshake: send current dimensions. Do NOT call term.reset() here —
+      // the server prepends its own reset sequence on redraw, and reset()
+      // would wipe xterm's local scrollback on every reconnect.
       if (term) {
         ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }))
       }
@@ -499,7 +500,23 @@ export function TerminalView({
       fitRef.current = null
       wsRef.current = null
     }
-  }, [sessionId, connectWs, checkIfAtBottom, fontSize, layout])
+    // fontSize/layout intentionally excluded — they're consumed at init only,
+    // and reincluding them would dispose+recreate xterm (wiping scrollback and
+    // reconnecting the PTY) on every layout/fontSize change. Runtime fontSize
+    // updates are handled by the effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, connectWs, checkIfAtBottom])
+
+  // Live fontSize updates: mutate xterm in place and refit rather than
+  // recreating the terminal.
+  useEffect(() => {
+    const t = termRef.current
+    const f = fitRef.current
+    if (!t || !f) return
+    if (t.options.fontSize === fontSize) return
+    t.options.fontSize = fontSize
+    try { f.fit() } catch {}
+  }, [fontSize])
 
   return (
     <div className={`w-full h-full min-h-0 relative ${className}`}>
