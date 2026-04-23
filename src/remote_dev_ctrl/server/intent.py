@@ -1132,7 +1132,6 @@ def fuzzy_match_action(query: str, processes: list[dict]) -> Optional[str]:
 
 AVAILABLE_MODELS = [
     {"id": "google/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "tier": "fast"},
-    {"id": "google/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "tier": "fast"},
     {"id": "google/gemini-2.0-flash-001", "name": "Gemini 2.0 Flash", "tier": "fast"},
     {"id": "anthropic/claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5", "tier": "fast"},
     {"id": "anthropic/claude-sonnet-4", "name": "Claude Sonnet 4", "tier": "mid"},
@@ -1142,7 +1141,7 @@ AVAILABLE_MODELS = [
 
 DEFAULT_NANOBOT_CONFIG = {
     "model_fast": "google/gemini-2.0-flash-001",
-    "model_mid": "minimax/minimax-m2.7",
+    "model_mid": "anthropic/claude-sonnet-4",
     "word_threshold": 12,  # Messages with <= this many words use fast model
     "max_tokens": 1000,
     "compress_enabled": False,  # Enable LLMLingua-2 prompt compression
@@ -3123,14 +3122,53 @@ class ActionExecutor:
                     if not url:
                         return {"action": "fetch_url", "error": "No URL provided", "success": False, "type": "server"}
                     raw_html = params.get("raw_html", False)
-                    import asyncio as _aio
+
+                    # Security: only allow http(s) and reject internal/private addresses
+                    # to prevent SSRF (e.g. http://127.0.0.1:8420/admin/*, AWS IMDS) and
+                    # LFI via urllib's FileHandler (file:///etc/passwd).
+                    import ipaddress as _ip
+                    import socket as _sock
+                    from urllib.parse import urlparse as _urlparse
+
+                    def _check_url(u: str) -> str | None:
+                        parsed = _urlparse(u)
+                        if parsed.scheme not in ("http", "https"):
+                            return "Only http(s) URLs are supported"
+                        host = parsed.hostname or ""
+                        if not host:
+                            return "Missing hostname"
+                        try:
+                            addrs = _sock.getaddrinfo(host, None)
+                        except _sock.gaierror:
+                            return None  # let the actual fetch surface the DNS error
+                        for info in addrs:
+                            ip = _ip.ip_address(info[4][0])
+                            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                                return "Refusing to fetch private/loopback address"
+                        return None
+
+                    err = _check_url(url)
+                    if err:
+                        return {"action": "fetch_url", "error": err, "success": False, "type": "server"}
+
                     try:
                         import httpx
                         async def _fetch():
-                            async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
-                                resp = await client.get(url, headers={"User-Agent": "RDC/0.2"})
-                                resp.raise_for_status()
-                                return resp.text
+                            # follow_redirects=False so a 302 can't bypass the host check.
+                            async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
+                                current = url
+                                for _ in range(5):
+                                    resp = await client.get(current, headers={"User-Agent": "RDC/0.2"})
+                                    if resp.is_redirect and resp.headers.get("location"):
+                                        next_url = str(resp.next_request.url) if resp.next_request else resp.headers["location"]
+                                        redir_err = _check_url(next_url)
+                                        if redir_err:
+                                            raise ValueError(f"Redirect blocked: {redir_err}")
+                                        current = next_url
+                                        continue
+                                    resp.raise_for_status()
+                                    return resp.text
+                                raise ValueError("Too many redirects")
                         html = await _fetch()
                         if raw_html:
                             return {"action": "fetch_url", "url": url, "content": html[:8000], "success": True, "type": "server"}
@@ -3142,20 +3180,7 @@ class ActionExecutor:
                         text = _re.sub(r"\s+", " ", text).strip()
                         return {"action": "fetch_url", "url": url, "content": text[:6000], "success": True, "type": "server"}
                     except ImportError:
-                        # httpx not installed — fall back to urllib
-                        import urllib.request
-                        try:
-                            req = urllib.request.Request(url, headers={"User-Agent": "RDC/0.2"})
-                            with urllib.request.urlopen(req, timeout=15) as resp:
-                                html = resp.read().decode("utf-8", errors="replace")
-                            import re as _re
-                            text = _re.sub(r"<script[^>]*>.*?</script>", "", html, flags=_re.DOTALL | _re.IGNORECASE)
-                            text = _re.sub(r"<style[^>]*>.*?</style>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
-                            text = _re.sub(r"<[^>]+>", " ", text)
-                            text = _re.sub(r"\s+", " ", text).strip()
-                            return {"action": "fetch_url", "url": url, "content": text[:6000], "success": True, "type": "server"}
-                        except Exception as e:
-                            return {"action": "fetch_url", "error": str(e), "success": False, "type": "server"}
+                        return {"action": "fetch_url", "error": "httpx not available", "success": False, "type": "server"}
                     except Exception as e:
                         return {"action": "fetch_url", "error": str(e), "success": False, "type": "server"}
 

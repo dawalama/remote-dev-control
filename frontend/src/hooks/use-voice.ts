@@ -227,11 +227,17 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
     try {
       const project = useProjectStore.getState().currentProject
+      // external_id: stable per-client/channel so VoiceRuntime.begin_session
+      // auto-ends any prior session held by this client on WS reconnect.
+      // Without this, every reconnect leaks the previous session.
+      const channel = options.channel || "desktop"
+      const externalId = `browser-${channel}-${getClientId()}`
       const session = await POST<{ id: string }>("/voice/sessions", {
         transport: "browser",
-        channel: options.channel || "desktop",
+        channel,
         client_id: getClientId(),
         project: project ?? undefined,
+        external_id: externalId,
         state: "listening",
       })
       voiceSessionIdRef.current = session.id

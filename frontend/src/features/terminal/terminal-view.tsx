@@ -439,7 +439,6 @@ export function TerminalView({
     // Touch scroll — xterm-screen captures touch events, preventing native scroll
     // on the underlying xterm-viewport. Translate touch swipes to scrollLines().
     const touchState = { startY: 0, lastY: 0, accum: 0 }
-    const lineHeight = fontSize * 1.2 // approximate
 
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 1) return
@@ -455,7 +454,9 @@ export function TerminalView({
       touchState.lastY = y
       touchState.accum += delta
 
-      // Scroll in line increments
+      // Read the live fontSize so touch-scroll tracks runtime layout flips
+      // (desktop 13 ↔ kiosk 15) — this effect doesn't re-run on fontSize change.
+      const lineHeight = (termRef.current?.options.fontSize ?? fontSize) * 1.2
       const lines = Math.trunc(touchState.accum / lineHeight)
       if (lines !== 0) {
         term.scrollLines(lines)

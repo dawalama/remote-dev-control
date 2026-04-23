@@ -7,6 +7,7 @@ import { getClientId } from "@/lib/client-id"
 import { useVoice } from "@/hooks/use-voice"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
 import { useChannelStore } from "@/stores/channel-store"
+import { onOrchestratorComplete } from "@/stores/state-store"
 
 export function MobileCommandBar({
   onOpenTerminal,
@@ -179,23 +180,31 @@ export function MobileCommandBar({
 
 /**
  * Resolve with the first new orchestrator message posted to the active channel
- * after the call, or null after ~30s.  Used when the orchestrator runs in async
- * mode and the real reply is pushed to the channel via WebSocket.
+ * after the call, the orchestrator_complete event, or null after ~30s.  Used
+ * when the orchestrator runs in async mode — the reply may be posted to the
+ * channel via WebSocket, routed to #system, or suppressed entirely.
  */
 async function _waitForOrchestratorReply(): Promise<string | null> {
   const startChannelId = useChannelStore.getState().activeChannelId
   if (!startChannelId) return null
   const baselineIds = new Set(useChannelStore.getState().messages.map((m) => m.id))
   const deadline = Date.now() + 30_000
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 500))
-    // Bail if user navigated away — otherwise we could match a message in
-    // the new channel and return it as the reply for the original send.
-    if (useChannelStore.getState().activeChannelId !== startChannelId) return null
-    const fresh = useChannelStore.getState().messages.find(
-      (m) => !baselineIds.has(m.id) && m.role === "orchestrator" && m.content,
-    )
-    if (fresh) return fresh.content || null
+
+  let doneEarly = false
+  const unsubscribe = onOrchestratorComplete(() => { doneEarly = true })
+
+  try {
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 250))
+      if (useChannelStore.getState().activeChannelId !== startChannelId) return null
+      const fresh = useChannelStore.getState().messages.find(
+        (m) => !baselineIds.has(m.id) && m.role === "orchestrator" && m.content,
+      )
+      if (fresh) return fresh.content || null
+      if (doneEarly) return null
+    }
+    return null
+  } finally {
+    unsubscribe()
   }
-  return null
 }

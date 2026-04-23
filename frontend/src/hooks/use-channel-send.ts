@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react"
 import { useChannelStore } from "@/stores/channel-store"
+import { onOrchestratorComplete } from "@/stores/state-store"
 
 /**
  * Shared send/respond logic for channel panels.
@@ -70,20 +71,27 @@ async function processResult(
   const isAsync = result?.async === true
 
   if (isAsync) {
-    // Fallback poll in case the WS channel_message event is missed.
-    // The state-store's WS handler already refreshes the active channel on
-    // every push, so this loop is a safety net — not the primary path.
-    // We must bail as soon as:
-    //   - the user navigates away (don't keep loading a stale channel); or
-    //   - a new message actually lands (the orchestrator posted its reply).
-    // Nav-only responses (e.g. "switch workstream") post nothing, so without
-    // the channel-changed check this would spin for 30s on the old channel.
-    const msgCountBefore = useChannelStore.getState().messages.length
-    for (let i = 0; i < 15; i++) {
-      await new Promise((r) => setTimeout(r, 2000))
-      if (useChannelStore.getState().activeChannelId !== channelId) break
-      await useChannelStore.getState().loadMessages(channelId)
-      if (useChannelStore.getState().messages.length > msgCountBefore) break
+    // Primary terminal signal: server emits orchestrator_complete when the
+    // background task finishes, regardless of where (or whether) the reply
+    // was posted.  Fallback: poll in case the event is missed, and bail on
+    // any new message landing in the channel (WS handler also calls
+    // loadMessages on push).
+    const baselineIds = new Set(useChannelStore.getState().messages.map((m) => m.id))
+    let doneEarly = false
+    const unsubscribe = onOrchestratorComplete(() => { doneEarly = true })
+    try {
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 500))
+        if (useChannelStore.getState().activeChannelId !== channelId) break
+        if (doneEarly) break
+        // A new orchestrator message landing in this channel is also a clean exit.
+        const hasNew = useChannelStore.getState().messages.some(
+          (m) => !baselineIds.has(m.id) && m.role === "orchestrator",
+        )
+        if (hasNew) break
+      }
+    } finally {
+      unsubscribe()
     }
     return
   }

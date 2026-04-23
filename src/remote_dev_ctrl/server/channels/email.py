@@ -171,8 +171,12 @@ class EmailChannel:
         if not to_addr:
             to_addr = self.config.username or ""
 
-        # Sanitize message IDs — reject CRLF to prevent header injection
-        message_id = _sanitize_message_id(message_id)
+        # Sanitize message IDs — reject CRLF to prevent header injection.
+        # If the sanitizer rejects the value, synthesize a CRLF-safe fallback so
+        # downstream code (_extract_attachments, _repo.message_exists, etc.)
+        # always has a valid string; otherwise the email gets stuck unseen and
+        # re-fetched every poll cycle.
+        message_id = _sanitize_message_id(message_id) or f"<{secrets.token_hex(12)}@rdc>"
         in_reply_to = _sanitize_message_id(in_reply_to) if in_reply_to else None
         if references:
             references = " ".join(
@@ -406,10 +410,17 @@ class EmailChannel:
 
     def _send_smtp(self, msg: MIMEMultipart):
         """Send an email via SMTP (blocking — call from thread)."""
-        with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port) as server:
-            server.starttls()
-            server.login(self.config.username, self.config.password)
-            server.send_message(msg)
+        # Port 465 is SMTPS (implicit TLS); everything else (587, 1025, 2525)
+        # gets a plaintext connect + STARTTLS upgrade.
+        if self.config.smtp_port == 465:
+            with smtplib.SMTP_SSL(self.config.smtp_host, self.config.smtp_port, timeout=30) as server:
+                server.login(self.config.username, self.config.password)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=30) as server:
+                server.starttls()
+                server.login(self.config.username, self.config.password)
+                server.send_message(msg)
 
     # ── Attachment Handling ───────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react"
-import { useStateStore } from "@/stores/state-store"
+import { useStateStore, onOrchestratorComplete } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { POST, api } from "@/lib/api"
@@ -254,24 +254,31 @@ async function _awaitAsyncReply(onReply: (msg: ChatMessage) => void): Promise<vo
   if (!startChannelId) return
   const baselineIds = new Set(useChannelStore.getState().messages.map((m) => m.id))
   const deadline = Date.now() + 30_000
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 500))
-    // Bail if the user navigated away — the store now holds a different
-    // channel's messages, and a "fresh" match could be from the new channel.
-    if (useChannelStore.getState().activeChannelId !== startChannelId) return
-    const latest = useChannelStore.getState().messages
-    // State-store's WS handler calls loadMessages() on channel_message events,
-    // so we just scan for a new orchestrator message.
-    const fresh = latest.find(
-      (m) => !baselineIds.has(m.id) && m.role === "orchestrator" && (m.content || m.metadata),
-    )
-    if (fresh) {
-      onReply({
-        role: "assistant",
-        content: fresh.content || "",
-        timestamp: new Date(fresh.created_at).getTime() || Date.now(),
-      })
-      return
+
+  let doneEarly = false
+  const unsubscribe = onOrchestratorComplete(() => { doneEarly = true })
+
+  try {
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 250))
+      if (useChannelStore.getState().activeChannelId !== startChannelId) return
+      const latest = useChannelStore.getState().messages
+      const fresh = latest.find(
+        (m) => !baselineIds.has(m.id) && m.role === "orchestrator" && (m.content || m.metadata),
+      )
+      if (fresh) {
+        onReply({
+          role: "assistant",
+          content: fresh.content || "",
+          timestamp: new Date(fresh.created_at).getTime() || Date.now(),
+        })
+        return
+      }
+      // Reply was routed to #system or suppressed — server signaled completion
+      // and no new message is coming to this channel. Stop spinning.
+      if (doneEarly) return
     }
+  } finally {
+    unsubscribe()
   }
 }

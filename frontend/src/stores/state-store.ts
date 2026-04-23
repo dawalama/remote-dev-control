@@ -74,6 +74,17 @@ export function onPhoneAction(handler: PhoneActionHandler): () => void {
   return () => phoneActionHandlers.delete(handler)
 }
 
+// Orchestrator-complete subscriber — fires when the server's async _background
+// task finishes, regardless of where (or whether) the reply was posted.
+// Pollers in send flows use this as a terminal signal so they don't wait the
+// full 30s when the reply was routed to #system or suppressed entirely.
+type OrchestratorCompleteHandler = (data: { channel_id?: string; client_id?: string }) => void
+const orchestratorCompleteHandlers = new Set<OrchestratorCompleteHandler>()
+export function onOrchestratorComplete(handler: OrchestratorCompleteHandler): () => void {
+  orchestratorCompleteHandlers.add(handler)
+  return () => { orchestratorCompleteHandlers.delete(handler) }
+}
+
 function executePhoneAction(action: Record<string, unknown>) {
   const actionName = action.action as string
 
@@ -280,6 +291,22 @@ export const useStateStore = create<StateStoreData>((set) => ({
       const msg = raw as { type: "phone_action"; actions: Record<string, unknown>[] }
       for (const action of msg.actions || []) {
         executePhoneAction(action)
+      }
+    })
+
+    ws.on("orchestrator_complete", (raw) => {
+      const msg = raw as {
+        type: "orchestrator_complete"
+        data?: { channel_id?: string; client_id?: string }
+      }
+      const targetId = msg.data?.client_id
+      if (targetId && targetId !== clientId) return
+      for (const handler of orchestratorCompleteHandlers) {
+        try {
+          handler(msg.data || {})
+        } catch {
+          // ignore handler errors
+        }
       }
     })
 

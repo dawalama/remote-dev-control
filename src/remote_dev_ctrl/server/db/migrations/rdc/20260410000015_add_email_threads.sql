@@ -41,7 +41,6 @@ CREATE TABLE IF NOT EXISTS email_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_email_messages_thread ON email_messages(thread_id);
-CREATE INDEX IF NOT EXISTS idx_email_messages_message_id ON email_messages(message_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_email_messages_rfc_id ON email_messages(message_id);
 
 -- migrate:down

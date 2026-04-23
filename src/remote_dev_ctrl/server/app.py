@@ -310,7 +310,12 @@ async def lifespan(app: FastAPI):
 
                 async def _handle_email_message(ctx: dict) -> dict:
                     """Route inbound email through orchestrator."""
-                    from .intent import get_intent_engine, get_action_executor, build_orchestrator_context
+                    from .intent import (
+                        get_intent_engine,
+                        get_action_executor,
+                        build_orchestrator_context,
+                        TOOLS_WITH_OUTPUT,
+                    )
 
                     project = ctx.get("thread_project_id")
                     # Build orchestrator message from email context
@@ -332,23 +337,27 @@ async def lifespan(app: FastAPI):
                     )
 
                     engine = get_intent_engine()
+                    executor = get_action_executor()
                     orch_ctx = build_orchestrator_context(project, None, "email")
 
                     result = await engine.process(message, orch_ctx)
 
-                    # Extract task_id and project from orchestrator result
+                    # Execute actions the engine didn't already run (create_task,
+                    # create_project, spawn_agent, etc. are not in TOOLS_WITH_OUTPUT
+                    # and otherwise silently no-op).
                     task_id = None
                     resolved_project = project
-                    condensed = None
                     for action in result.actions:
-                        if action.name == "create_task" and action.params.get("task_id"):
-                            task_id = action.params["task_id"]
-                        if action.params.get("project"):
-                            resolved_project = action.params["project"]
+                        if action.name in TOOLS_WITH_OUTPUT:
+                            outcome = {"action": action.name, "success": True, "type": "server", **action.params}
+                        else:
+                            outcome = await executor.execute(action.name, action.params, orch_ctx)
+                        if outcome.get("action") == "create_task" and outcome.get("task_id"):
+                            task_id = outcome["task_id"]
+                        if outcome.get("project"):
+                            resolved_project = outcome["project"]
 
-                    # Generate condensed context from the response
-                    if result.response:
-                        condensed = result.response[:500]
+                    condensed = result.response[:500] if result.response else None
 
                     return {
                         "task_id": task_id,
@@ -4699,6 +4708,7 @@ async def orchestrator_endpoint(
     # Async mode: return immediately, post result to channel when done
     if mode == "async" and channel_id:
         async def _background():
+            from .state_machine import get_state_machine as _gsm
             try:
                 result = await _process_orchestrator()
                 from .intent import CLIENT_NAV_ACTIONS, CONTROL_INTENTS, SYSTEM_CHANNEL_ID
@@ -4709,6 +4719,7 @@ async def orchestrator_endpoint(
                 nav_actions = [a for a in executed if a.get("action") in CLIENT_NAV_ACTIONS]
                 other_actions = [a for a in executed if a.get("action") not in CLIENT_NAV_ACTIONS]
                 control_actions = [a for a in other_actions if a.get("action") in CONTROL_INTENTS]
+                non_control_actions = [a for a in other_actions if a.get("action") not in CONTROL_INTENTS]
 
                 # Route client-side nav actions to the originating client only.
                 # Broadcasting would cause every connected client to switch, and
@@ -4745,46 +4756,79 @@ async def orchestrator_endpoint(
                 # Control-plane intents (create_project, etc.) post to #system
                 # regardless of origin so workstream history stays focused on
                 # the work of that workstream. The originating client gets a
-                # toast pointing them at #system.
-                target_channel_id = channel_id
-                if control_actions and channel_id != SYSTEM_CHANNEL_ID:
-                    target_channel_id = SYSTEM_CHANNEL_ID
+                # toast pointing them at #system. When a turn mixes control
+                # and workstream-scope actions (e.g. "create project foo and
+                # add a task to fix login"), split into two posts so the
+                # workstream doesn't lose visibility of its own tasks.
+                cm = get_channel_manager()
+                sm = get_state_machine()
+
+                async def _post_and_broadcast(target: str, content: str, metadata: dict | None):
+                    if not (content or metadata):
+                        return
+                    msg = cm.post_message(
+                        target,
+                        role="orchestrator",
+                        content=content,
+                        metadata=metadata if metadata else None,
+                    )
+                    try:
+                        await sm._broadcast_event("channel_message", {
+                            "channel_id": target,
+                            "message_id": msg.id,
+                        })
+                    except Exception:
+                        logger.debug("Failed to broadcast channel_message", exc_info=True)
+
+                reroute_control = bool(control_actions) and channel_id != SYSTEM_CHANNEL_ID
+
+                if reroute_control:
+                    # Toast points the origin client at #system.
                     if client_id:
                         summary = _summarize_control_actions(control_actions)
                         try:
-                            await get_state_machine().send_to_client(client_id, {
+                            await sm.send_to_client(client_id, {
                                 "type": "toast",
                                 "data": {"text": summary, "level": "info", "channel_id": SYSTEM_CHANNEL_ID},
                             })
                         except Exception:
                             logger.debug("Failed to send control-intent toast", exc_info=True)
 
-                cm = get_channel_manager()
-                metadata: dict = {}
-                if has_ui:
-                    metadata["type"] = "a2ui"
-                    metadata["components"] = result["ui_components"]
-                elif other_actions:
-                    metadata["type"] = "action_results"
-                    metadata["actions"] = other_actions
-                    metadata["response"] = response_text
-                if result.get("usage"):
-                    metadata["usage"] = result["usage"]
-
-                if response_text or metadata:
-                    msg = cm.post_message(
-                        target_channel_id,
-                        role="orchestrator",
-                        content=response_text,
-                        metadata=metadata if metadata else None,
+                    # Control-plane post lands in #system with only the
+                    # control actions attached.
+                    system_metadata: dict = {"type": "action_results", "actions": control_actions}
+                    if result.get("usage"):
+                        system_metadata["usage"] = result["usage"]
+                    await _post_and_broadcast(
+                        SYSTEM_CHANNEL_ID,
+                        _summarize_control_actions(control_actions),
+                        system_metadata,
                     )
-                    try:
-                        await get_state_machine()._broadcast_event("channel_message", {
-                            "channel_id": target_channel_id,
-                            "message_id": msg.id,
-                        })
-                    except Exception:
-                        logger.debug("Failed to broadcast channel_message", exc_info=True)
+
+                    # Workstream-scope remainder (tasks, agents, commands, UI)
+                    # still posts to the origin channel.
+                    origin_metadata: dict = {}
+                    if has_ui:
+                        origin_metadata["type"] = "a2ui"
+                        origin_metadata["components"] = result["ui_components"]
+                    elif non_control_actions:
+                        origin_metadata["type"] = "action_results"
+                        origin_metadata["actions"] = non_control_actions
+                        origin_metadata["response"] = response_text
+                    if non_control_actions or has_ui or response_text:
+                        await _post_and_broadcast(channel_id, response_text, origin_metadata)
+                else:
+                    metadata: dict = {}
+                    if has_ui:
+                        metadata["type"] = "a2ui"
+                        metadata["components"] = result["ui_components"]
+                    elif other_actions:
+                        metadata["type"] = "action_results"
+                        metadata["actions"] = other_actions
+                        metadata["response"] = response_text
+                    if result.get("usage"):
+                        metadata["usage"] = result["usage"]
+                    await _post_and_broadcast(channel_id, response_text, metadata)
             except Exception:
                 logger.exception("Background orchestrator task failed")
                 try:
@@ -4793,6 +4837,18 @@ async def orchestrator_endpoint(
                     cm.post_message(channel_id, role="system", content="Orchestrator error — please try again.")
                 except Exception:
                     pass
+            finally:
+                # Terminal "this async send is done" signal to the origin client.
+                # Unblocks UI pollers regardless of whether the reply landed in
+                # the origin channel, was routed to #system, or suppressed.
+                if client_id:
+                    try:
+                        await _gsm().send_to_client(client_id, {
+                            "type": "orchestrator_complete",
+                            "data": {"channel_id": channel_id, "client_id": client_id},
+                        })
+                    except Exception:
+                        logger.debug("Failed to send orchestrator_complete", exc_info=True)
 
         asyncio.create_task(_background())
         return {"response": "Working on it...", "async": True, "executed": [], "actions": [], "usage": {}}
