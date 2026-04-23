@@ -65,7 +65,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "add_project",
-            "description": "Open the add project dialog (use only when user wants to browse for an existing project to connect)",
+            "description": "Open a dialog for the user to browse and register an EXISTING project directory in RDC. Use only when the user wants to import a project that already exists on disk ('add the project I already have', 'import a folder'). Do NOT use for creating new projects — use create_project for that.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -73,7 +73,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "create_project",
-            "description": "Create and scaffold a brand new project from a description. Use when the user wants to build something new.",
+            "description": "Create a brand new project from scratch: scaffolds a new directory, initializes code, registers it in RDC. Use ONLY when the user wants a NEW project to exist that doesn't exist yet ('build me a X', 'create a new project called Y', 'scaffold Z'). Do NOT use for adding a task to an existing project (use create_task), delegating work to an agent (use spawn_agent), or importing an existing directory (use add_project).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -144,11 +144,11 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "open_terminal",
-            "description": "Open a terminal for a project",
+            "description": "Open a terminal for a project. IMPORTANT: 'project' is a project name (e.g. 'theme-scanner'), NOT a workstream/channel name. Workstreams are where you chat; projects are where code lives. If the active workstream is a project channel, use the project name without the '#' prefix.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "description": "Project name"}
+                    "project": {"type": "string", "description": "Project name. Must match an existing project (not a channel/workstream name)."}
                 },
                 "required": ["project"],
             },
@@ -328,7 +328,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "create_task",
-            "description": "Create a new task for a project",
+            "description": "Add a tracked TODO/task to a project's task list. Use when the user says 'add a task', 'remind me to X', 'track this work', 'put this on the list'. Tasks are passive trackers — they do NOT execute or delegate. Use spawn_agent to delegate actual work to a CLI agent, or create_project to start a new project.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -421,7 +421,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "spawn_agent",
-            "description": "Spawn an AI coding agent for a project with a task",
+            "description": "Launch a CLI coding agent (Claude Code) in a terminal to DO actual work on an EXISTING project: implement a feature, refactor code, fix a multi-file bug, write tests. Prefer this when work would take >5 tool calls or touches >2-3 files. Do NOT use for simply recording a task (use create_task) or for creating a new project (use create_project).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -834,11 +834,11 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "switch_workstream",
-            "description": "Switch to a different workstream by name (fuzzy matched). Use when user says 'switch to X', 'open workstream X'.",
+            "description": "Switch to a different workstream by name (fuzzy matched). Use when user says 'switch to X', 'open workstream X', 'go to the X workstream'. Pass only the workstream's core name — do NOT include the word 'workstream' or 'channel' in the `name` param, and do NOT include the leading '#'. For example if the user says 'switch to help-my-site workstream', call this with name='help-my-site'.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "Workstream name (fuzzy matched)"},
+                    "name": {"type": "string", "description": "Workstream core name (no '#' prefix, no 'workstream' suffix). Fuzzy matched."},
                 },
                 "required": ["name"],
             },
@@ -848,7 +848,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "create_workstream",
-            "description": "Create a new workstream, optionally linked to a project.",
+            "description": "Create a new workstream (a chat/coordination channel), optionally linked to a project. Workstreams are for communication threads — NOT code. Use when the user says 'new workstream', 'new channel', 'new chat', 'start a conversation about X'. Do NOT use for creating code/projects (use create_project).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -906,6 +906,108 @@ TOOLS_WITH_OUTPUT = {
     "list_workstreams", "browser_snapshot", "browser_text",
     "browser_tabs", "browser_find", "server_status",
 }
+
+# ---------------------------------------------------------------------------
+# Tool routing scope — single source of truth for post-execution behaviour.
+#
+# Each orchestrator tool falls into exactly one scope:
+#
+#   client_nav  The action mutates only client-side UI state (zustand stores,
+#               routing). Routed directly to the originating client so other
+#               devices don't flip layout; short confirmations don't land in
+#               chat history (the UI change is the confirmation).
+#
+#   control     The action creates, destroys, renames, or otherwise mutates
+#               a shared RDC-level resource (project, workstream, server).
+#               The orchestrator response posts to the #system workstream
+#               regardless of where the user spoke from, and the originating
+#               client gets a toast so they know where it went.
+#
+#   workstream  Default. The orchestrator response posts to the originating
+#               channel — normal workstream chat behaviour.
+#
+# Adding a new tool: append to ORCHESTRATOR_TOOLS above, then classify it
+# here. Tools not listed default to "workstream".
+# ---------------------------------------------------------------------------
+
+SYSTEM_CHANNEL_ID = "ch-system"
+
+_TOOL_SCOPES: dict[str, str] = {
+    # Client-side UI navigation — applied instantly on originating client only.
+    "navigate": "client_nav",
+    "select_project": "client_nav",
+    "select_collection": "client_nav",
+    "show_tab": "client_nav",
+    "set_layout": "client_nav",
+    "set_theme": "client_nav",
+    "toggle_sidebar": "client_nav",
+    "toggle_chat": "client_nav",
+    "switch_workstream": "client_nav",
+    # Control-plane — response routed to #system, origin client gets a toast.
+    "create_project": "control",
+    "add_project": "control",
+    "create_workstream": "control",
+    "archive_workstream": "control",
+    "delete_workstream": "control",
+    "restart_server": "control",
+    # Everything else defaults to "workstream".
+}
+
+_SCOPE_HINTS: dict[str, str] = {
+    "client_nav": "UI-only: applies instantly on the originating client; no chat message is produced.",
+    "control": "Control-plane: the confirmation is posted to the #system workstream regardless of origin.",
+    "workstream": "",
+}
+
+
+def _augment_tools_with_scope(tools: list[dict]) -> None:
+    """Append the scope hint to each tool's LLM-facing description, in place.
+
+    Gives the model a clearer semantic boundary between workstream-level tools
+    (create_task, spawn_agent) and control-plane tools (create_project,
+    create_workstream) at zero extra prompt-engineering cost — a new tool
+    added to _TOOL_SCOPES automatically gets the hint surfaced to the LLM.
+    """
+    for t in tools:
+        fn = t.get("function") or {}
+        name = fn.get("name", "")
+        scope = _TOOL_SCOPES.get(name, "workstream")
+        hint = _SCOPE_HINTS.get(scope, "")
+        if not hint:
+            continue
+        desc = (fn.get("description") or "").rstrip()
+        if hint in desc:
+            continue
+        sep = "" if not desc or desc.endswith(".") else "."
+        fn["description"] = f"{desc}{sep} {hint}".strip()
+
+
+_augment_tools_with_scope(ORCHESTRATOR_TOOLS)
+
+
+# Derived sets — kept for backward compatibility with existing imports.
+CLIENT_NAV_ACTIONS: set[str] = {n for n, s in _TOOL_SCOPES.items() if s == "client_nav"}
+CONTROL_INTENTS: set[str] = {n for n, s in _TOOL_SCOPES.items() if s == "control"}
+
+
+def _validate_tool_scopes() -> None:
+    """Fail loud if _TOOL_SCOPES drifts from ORCHESTRATOR_TOOLS.
+
+    Catches the common mistake of renaming a tool or removing it from the
+    registry while leaving a dangling scope entry (which would silently
+    never match at runtime). Raising at import time means the server won't
+    start with a broken config.
+    """
+    tool_names = {t["function"]["name"] for t in ORCHESTRATOR_TOOLS}
+    unknown = set(_TOOL_SCOPES) - tool_names
+    if unknown:
+        raise RuntimeError(
+            f"_TOOL_SCOPES has entries that don't match any ORCHESTRATOR_TOOLS "
+            f"name: {sorted(unknown)}. Remove them or restore the tool."
+        )
+
+
+_validate_tool_scopes()
 
 
 # ---------------------------------------------------------------------------
@@ -1642,6 +1744,27 @@ def build_system_prompt(
         "then use present_ui for the interactive part.",
         "",
         "IMPORTANT: Only use browser tools when the user explicitly asks to interact with a browser tab.",
+        "",
+        "ROUTING: Some tools are 'control-plane' (create_project, add_project, "
+        "create_workstream, archive_workstream, delete_workstream, restart_server). "
+        "Their confirmations are automatically posted to the #system workstream, and "
+        "the originating client gets a toast. Just execute the tool normally — do NOT "
+        "narrate this routing to the user and do NOT pick a workstream-scoped tool "
+        "(e.g. create_task) just because the user is currently in a project workstream.",
+        "",
+        "NAVIGATION ACTIONS ARE LOW-RISK AND REVERSIBLE. For switch_workstream, "
+        "select_project, select_collection, show_tab, set_layout, set_theme, "
+        "toggle_sidebar, toggle_chat, navigate, open_browser, focus_terminal: "
+        "execute IMMEDIATELY. NEVER ask 'is that correct?' or 'should I switch?' "
+        "before performing them — the user's request IS the confirmation, and "
+        "they can switch back in one tap if wrong.",
+        "",
+        "TRUTH RULE: If your reply contains 'switched', 'created', 'opened', "
+        "'started', 'done', or any past-tense claim about an action, you MUST "
+        "have called the corresponding tool in THIS turn. Do not claim success "
+        "based on a previous turn or a confirmation prompt — always call the "
+        "tool again in the turn where you announce success. If the user just "
+        "said 'yes' to something you proposed last turn, call the tool now.",
     ]
 
     if ctx.channel == "phone_paired":
@@ -1725,11 +1848,14 @@ def build_system_prompt(
             context_parts.append(f"  {commit}")
         context_parts.append("")
 
-    # Current state
-    if ctx.project:
-        context_parts.append(f"Active project: {ctx.project}")
-    if ctx.collection:
-        context_parts.append(f"Active collection: {ctx.collection}")
+    # Current state — AUTHORITATIVE. These are live facts; the LLM must not
+    # contradict them based on chat history, which can contain past
+    # hallucinations about switches that never actually happened.
+    truth_lines = ["## Current state (AUTHORITATIVE — do not contradict)"]
+    truth_lines.append(f"- Active workstream: {ctx.active_workstream or 'none'}")
+    truth_lines.append(f"- Active project: {ctx.project or 'none (no project selected)'}")
+    truth_lines.append(f"- Active collection: {ctx.collection or 'none'}")
+    context_parts.append("\n".join(truth_lines))
 
     # Projects
     if ctx.project_details:
@@ -1830,7 +1956,9 @@ def build_system_prompt(
         client_names = [c.get("client_name") or c.get("client_id", "?") for c in ctx.connected_clients]
         context_parts.append(f"Connected dashboard clients: {', '.join(client_names)}")
 
-    # Workstreams
+    # Workstreams (active one marked; the authoritative "Active workstream"
+    # line lives in the Current state block above to prevent the LLM from
+    # contradicting it based on history).
     if ctx.workstreams:
         ws_lines = []
         for ws in ctx.workstreams:
@@ -1838,8 +1966,6 @@ def build_system_prompt(
             active_marker = " (ACTIVE)" if ws.get("id") == ctx.active_workstream_id else ""
             ws_lines.append(f"  {ws['name']}: {projs} [{ws.get('type', '?')}]{active_marker}")
         context_parts.append(f"Workstreams ({len(ctx.workstreams)}):\n" + "\n".join(ws_lines))
-    if ctx.active_workstream:
-        context_parts.append(f"Active workstream: {ctx.active_workstream}")
 
     context_parts.append(f"Channel: {ctx.channel}")
 
@@ -2009,13 +2135,47 @@ class IntentEngine:
         # Fallback models when primary is rate-limited
         _FALLBACK_MODELS = ["google/gemini-2.0-flash-001", "openai/gpt-4o-mini"]
 
+        def _sanitize_messages(msgs: list[dict]) -> list[dict]:
+            """Ensure every outgoing message has at least one 'part'.
+
+            Gemini (via OpenRouter) rejects messages with neither text content
+            nor tool_calls/tool_call_id with:
+              400 "must include at least one parts field, which describes the
+              prompt input"
+            OpenAI is permissive here, so the bug only surfaces when routing
+            to Gemini. Normalize defensively:
+              - assistant turns with tool_calls but null content → content=""
+              - tool turns keep their content verbatim (callers already
+                provide non-empty ack strings like "Done.")
+              - user/assistant/system turns with empty content → dropped
+            """
+            out: list[dict] = []
+            for m in msgs:
+                role = m.get("role")
+                content = m.get("content")
+                tool_calls = m.get("tool_calls")
+                if role == "tool":
+                    # Tool turns are valid as long as content isn't None/empty.
+                    if content:
+                        out.append(m)
+                    continue
+                if role == "assistant" and tool_calls:
+                    # Tool-only assistant turns: content can be "" but must exist.
+                    m = {**m, "content": content if isinstance(content, str) else ""}
+                    out.append(m)
+                    continue
+                # user / assistant / system turns: require non-empty string content.
+                if isinstance(content, str) and content.strip():
+                    out.append(m)
+            return out
+
         # Multi-turn tool loop: LLM calls tools → execute → feed results back → LLM responds
         max_iterations = 5
         for _iteration in range(max_iterations):
             def _call(msgs=messages, mdl=model):
                 return client.chat.completions.create(
                     model=mdl,
-                    messages=msgs,
+                    messages=_sanitize_messages(msgs),
                     tools=tools,
                     max_tokens=max_tokens,
                 )
@@ -2031,7 +2191,7 @@ class IntentEngine:
                         try:
                             logger.info("Rate limited on %s, falling back to %s", model, fb_model)
                             model = fb_model
-                            fallback_response = await asyncio.to_thread(lambda m=messages, mdl=fb_model: client.chat.completions.create(model=mdl, messages=m, tools=tools, max_tokens=max_tokens))
+                            fallback_response = await asyncio.to_thread(lambda m=messages, mdl=fb_model: client.chat.completions.create(model=mdl, messages=_sanitize_messages(m), tools=tools, max_tokens=max_tokens))
                             break
                         except Exception:
                             continue
@@ -2053,8 +2213,15 @@ class IntentEngine:
 
             # Process tool calls
             has_output_tools = False
-            # Add assistant message with tool calls to conversation
-            messages.append(msg.model_dump())
+            # Add assistant message with tool calls to conversation.
+            # Gemini (via OpenRouter) rejects assistant messages that have
+            # tool_calls but null content with "must include at least one
+            # parts field" — normalize to an empty string so every provider
+            # accepts the replay.
+            assistant_msg = msg.model_dump()
+            if assistant_msg.get("content") is None:
+                assistant_msg["content"] = ""
+            messages.append(assistant_msg)
 
             for tc in msg.tool_calls:
                 try:
@@ -2104,7 +2271,7 @@ class IntentEngine:
                 def _synth(msgs=messages, mdl=model):
                     return client.chat.completions.create(
                         model=mdl,
-                        messages=msgs + [{"role": "user", "content": "Now summarize what you found. Be concise."}],
+                        messages=_sanitize_messages(msgs + [{"role": "user", "content": "Now summarize what you found. Be concise."}]),
                         max_tokens=max_tokens,
                     )
                 synth_resp = await asyncio.to_thread(_synth)
@@ -2384,11 +2551,23 @@ class ActionExecutor:
                     return {"action": "show_screenshots", "type": "client"}
 
                 case "open_terminal":
-                    project = fuzzy_match(params.get("project", ""), ctx.projects) or params.get("project", "") or ctx.project
+                    raw = params.get("project", "")
+                    # Only accept a real project name. Silent fallback to the raw
+                    # param let the LLM create a terminal under a channel name
+                    # like "#truesteps-site workstream" (ghost project).
+                    project = fuzzy_match(raw, ctx.projects) or (raw if raw in ctx.projects else None) or ctx.project
+                    if not project:
+                        return {
+                            "action": "open_terminal",
+                            "error": f"No project matches '{raw}'. Projects are not the same as workstreams; pass a project name (e.g. 'theme-scanner'), not a channel name.",
+                            "success": False,
+                            "type": "server",
+                        }
                     return {"action": "open_terminal", "project": project, "type": "client"}
 
                 case "focus_terminal":
-                    project = fuzzy_match(params.get("project", ""), ctx.projects) or params.get("project", "") or ctx.project
+                    raw = params.get("project", "")
+                    project = fuzzy_match(raw, ctx.projects) or (raw if raw in ctx.projects else None) or ctx.project
                     terminal_id = params.get("terminal_id", "")
                     if not terminal_id and project:
                         for t in ctx.terminals:
@@ -3033,11 +3212,22 @@ class ActionExecutor:
                     return {"action": "list_workstreams", "workstreams": ws_list, "count": len(ws_list), "success": True, "type": "server"}
 
                 case "switch_workstream":
-                    name = params.get("name", "")
+                    raw_name = params.get("name", "")
+                    # Normalize common LLM noise: stray '#' prefix, trailing
+                    # 'workstream'/'channel' noun, surrounding quotes. Users
+                    # say "switch to X workstream" and the LLM often echoes
+                    # the whole phrase as the name, which fuzzy_match can't
+                    # resolve against stored names like "#X".
+                    name = raw_name.strip().strip('"\'').lstrip("#").strip()
+                    for suffix in (" workstream", " channel"):
+                        if name.lower().endswith(suffix):
+                            name = name[: -len(suffix)].strip()
                     ws_names = [ws["name"] for ws in ctx.workstreams]
-                    matched = fuzzy_match(name, ws_names)
+                    # Try direct match first, then with '#' prefix since stored
+                    # workstream names include it.
+                    matched = fuzzy_match(name, ws_names) or fuzzy_match(f"#{name}", ws_names)
                     if not matched:
-                        return {"action": "switch_workstream", "error": f"No workstream matching '{name}'", "success": False, "type": "client"}
+                        return {"action": "switch_workstream", "error": f"No workstream matching '{raw_name}'", "success": False, "type": "client"}
                     # Find the channel id
                     ws_id = None
                     for ws in ctx.workstreams:
@@ -3155,7 +3345,7 @@ def build_orchestrator_context(
 
     # Load project profile from config
     project_profile: Optional[dict] = None
-    if project and project != "all":
+    if project:
         try:
             from .db.repositories import get_project_repo as _get_proj_repo
             _proj = _get_proj_repo().get(project)
@@ -3231,7 +3421,7 @@ def build_orchestrator_context(
         from .browser import get_browser_manager
         bm = get_browser_manager()
         if bm:
-            proj_filter = project if project and project != "all" else ""
+            proj_filter = project if project else ""
             for c in bm.list_contexts(project_id=proj_filter, limit=10):
                 contexts.append({
                     "id": c.id,
@@ -3318,13 +3508,13 @@ def build_orchestrator_context(
             except Exception:
                 pass
             workstreams.append(ws)
-            # If the active project matches, mark this workstream as active
-            if project and project != "all":
-                if project in ws["project_names"] or ch.name == f"#{project}":
-                    active_workstream = ch.name
-                    active_workstream_id = ch.id
     except Exception:
         pass
+    # NOTE: active_workstream / active_workstream_id are set by the caller
+    # (orchestrator_endpoint) from the channel_id in the request — the user's
+    # actual viewport, not a heuristic derived from `project`. Deriving from
+    # `project` here caused the LLM to be told the wrong workstream whenever
+    # the frontend's currentProject lagged behind the channel switch.
 
     return OrchestratorContext(
         project=project,

@@ -29,26 +29,34 @@ export function getActiveProjectNames(): string[] {
 interface ProjectState {
   projects: Project[]
   collections: Collection[]
-  currentProject: string
-  currentCollection: string
+  currentProject: string | null
+  currentCollection: string | null
   activeOnly: boolean
   loading: boolean
 
   loadProjects: () => Promise<void>
   loadCollections: () => Promise<void>
-  selectProject: (name: string) => void
-  selectCollection: (id: string) => void
+  selectProject: (name: string | null) => void
+  selectCollection: (id: string | null) => void
   deleteProject: (name: string) => Promise<void>
   scaffoldProject: (name: string, description: string, collectionId?: string) => Promise<void>
   toggleActiveFilter: () => void
   cycleActiveProject: (direction: 1 | -1) => void
 }
 
+// Migrate legacy "all" sentinel (from pre-refactor localStorage) to null.
+const _rawProject = localStorage.getItem("rdc_current_project")
+const _rawCollection = localStorage.getItem("rdc_current_collection")
+const _storedProject = _rawProject && _rawProject !== "all" ? _rawProject : null
+const _storedCollection = _rawCollection && _rawCollection !== "all" ? _rawCollection : null
+if (!_storedProject) localStorage.removeItem("rdc_current_project")
+if (!_storedCollection) localStorage.removeItem("rdc_current_collection")
+
 export const useProjectStore = create<ProjectState>((set, get) => ({
   projects: [],
   collections: [],
-  currentProject: localStorage.getItem("rdc_current_project") || "all",
-  currentCollection: localStorage.getItem("rdc_current_collection") || "all",
+  currentProject: _storedProject,
+  currentCollection: _storedCollection,
   activeOnly: localStorage.getItem("rdc_active_filter") === "true",
   loading: false,
 
@@ -71,7 +79,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
-  selectProject: (name: string) => {
+  selectProject: (name) => {
+    if (name === null) {
+      localStorage.removeItem("rdc_current_project")
+      set({ currentProject: null })
+      useStateStore.getState().sendEvent("select_project", { project: null })
+      return
+    }
     localStorage.setItem("rdc_current_project", name)
     // Auto-switch collection to match project's collection
     const { projects, currentCollection } = get()
@@ -86,25 +100,32 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     useStateStore.getState().sendEvent("select_project", { project: name })
   },
 
-  selectCollection: (id: string) => {
-    localStorage.setItem("rdc_current_collection", id)
-    // Auto-select first project in collection, or "all"
-    const { projects } = get()
-    if (id === "all") {
-      set({ currentCollection: id, currentProject: "all" })
-    } else {
-      const filtered = projects.filter((p) => p.collection_id === id)
-      const firstProject = filtered.length > 0 ? filtered[0].name : "all"
-      localStorage.setItem("rdc_current_project", firstProject)
-      set({ currentCollection: id, currentProject: firstProject })
+  selectCollection: (id) => {
+    if (id === null) {
+      localStorage.removeItem("rdc_current_collection")
+      set({ currentCollection: null, currentProject: null })
+      localStorage.removeItem("rdc_current_project")
+      return
     }
+    localStorage.setItem("rdc_current_collection", id)
+    // Auto-select first project in collection; if empty, leave project unselected
+    const { projects } = get()
+    const filtered = projects.filter((p) => p.collection_id === id)
+    const firstProject = filtered.length > 0 ? filtered[0].name : null
+    if (firstProject) {
+      localStorage.setItem("rdc_current_project", firstProject)
+    } else {
+      localStorage.removeItem("rdc_current_project")
+    }
+    set({ currentCollection: id, currentProject: firstProject })
   },
 
   deleteProject: async (name: string) => {
     await DEL(`/projects/${encodeURIComponent(name)}`)
     const { currentProject } = get()
     if (currentProject === name) {
-      set({ currentProject: "all" })
+      localStorage.removeItem("rdc_current_project")
+      set({ currentProject: null })
     }
     await get().loadProjects()
   },
@@ -127,13 +148,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const active = getActiveProjectNames()
     if (active.length === 0) return
     const current = get().currentProject
-    const idx = active.indexOf(current)
-    let next: string
-    if (idx === -1) {
-      next = active[0]
-    } else {
-      next = active[(idx + direction + active.length) % active.length]
-    }
+    const idx = current ? active.indexOf(current) : -1
+    const next = idx === -1
+      ? active[0]
+      : active[(idx + direction + active.length) % active.length]
     get().selectProject(next)
   },
 }))

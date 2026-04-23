@@ -28,7 +28,7 @@ export function PinchTabOverlay({
   const [fitMode, setFitMode] = useState<"contain" | "cover">("contain")
 
   const urlSuggestions = processes
-    .filter((p) => p.port && p.status === "running" && (currentProject === "all" || p.project === currentProject))
+    .filter((p) => p.port && p.status === "running" && (!currentProject || p.project === currentProject))
     .map((p) => ({
       label: p.name || p.id,
       url: p.preview_url || `http://localhost:${p.port}`,

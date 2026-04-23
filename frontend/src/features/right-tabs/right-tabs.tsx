@@ -97,7 +97,7 @@ function ActivityTab() {
     const ch = s.channels.find((c) => c.id === s.activeChannelId)
     return ch ?? null
   })
-  const filterProject = activeChannel?.project_names?.[0] || (currentProject !== "all" ? currentProject : null)
+  const filterProject = activeChannel?.project_names?.[0] || (currentProject ? currentProject : null)
 
   const loadActivity = useCallback(
     (before?: string) => {
@@ -155,7 +155,7 @@ function ActivityTab() {
     setLoadingMore(false)
   }
 
-  const filtered = currentProject === "all"
+  const filtered = !currentProject
     ? events
     : events.filter((e) => !e.project || e.project === currentProject)
 
@@ -201,7 +201,10 @@ function ProcessesTab() {
   const [settingUp, setSettingUp] = useState(false)
   const [showPorts, setShowPorts] = useState(false)
 
-  const filtered = (currentProject === "all" ? actions : actions.filter((p) => p.project === currentProject))
+  // Actions are per-project. With no project selected (e.g. in #system or
+  // any channel without a linked project), show an empty state rather than
+  // leaking every project's actions into the panel.
+  const filtered = (currentProject ? actions.filter((p) => p.project === currentProject) : [])
     .slice()
     .sort((a, b) => {
       // Services first, then commands
@@ -236,7 +239,7 @@ function ProcessesTab() {
   }
 
   const handleSync = async () => {
-    if (currentProject === "all") { toast("Select a project first", "warning"); return }
+    if (!currentProject) { toast("Select a project first", "warning"); return }
     setDetecting(true)
     try {
       await POST(`/projects/${encodeURIComponent(currentProject)}/detect-actions?force_rediscover=true`)
@@ -353,14 +356,14 @@ function ProcessesTab() {
         <button
           className="px-2 py-1 text-xs rounded bg-gray-600 hover:bg-gray-500 text-gray-200 disabled:opacity-50"
           onClick={handleSync}
-          disabled={detecting || currentProject === "all"}
+          disabled={detecting || !currentProject}
         >
           {detecting ? "Syncing..." : "Sync"}
         </button>
         <button
           className="px-2 py-1 text-xs rounded bg-gray-600 hover:bg-gray-500 text-gray-200 disabled:opacity-50"
           onClick={async () => {
-            if (currentProject === "all") { toast("Select a project first", "warning"); return }
+            if (!currentProject) { toast("Select a project first", "warning"); return }
             setSettingUp(true)
             try {
               await POST(`/projects/${encodeURIComponent(currentProject)}/setup`)
@@ -368,7 +371,7 @@ function ProcessesTab() {
             } catch { toast("Setup failed", "error") }
             setSettingUp(false)
           }}
-          disabled={settingUp || currentProject === "all"}
+          disabled={settingUp || !currentProject}
         >
           {settingUp ? "Setting up..." : "Setup"}
         </button>
@@ -390,7 +393,11 @@ function ProcessesTab() {
         </div>
       )}
 
-      {filtered.length === 0 && <p className="text-gray-500 text-xs">No actions</p>}
+      {filtered.length === 0 && (
+        <p className="text-gray-500 text-xs">
+          {currentProject ? "No actions" : "Switch to a project workstream to see actions."}
+        </p>
+      )}
       {showPorts && <PortAssignmentsModal onClose={() => setShowPorts(false)} />}
     </div>
   )
@@ -488,7 +495,7 @@ function SystemTab() {
       <div className="flex gap-1 flex-wrap">
         <Btn color="blue" onClick={handleRestart}>Restart Server</Btn>
         <Btn color="gray" onClick={openSystemLog}>Server Logs</Btn>
-        {currentProject !== "all" && (
+        {currentProject && (
           <Btn color="gray" onClick={() => setShowSettings(true)}>Project Settings</Btn>
         )}
 
@@ -502,7 +509,7 @@ function SystemTab() {
         <div>⌘/ — Toggle chat</div>
       </div>
 
-      {showSettings && currentProject !== "all" && (
+      {showSettings && currentProject && (
         <ProjectSettingsModal projectName={currentProject} onClose={() => setShowSettings(false)} fullPage />
       )}
       {showSystemSettings && (
@@ -522,7 +529,7 @@ export function TasksTab() {
   const [retryModal, setRetryModal] = useState<Task | null>(null)
   const [continueModal, setContinueModal] = useState<Task | null>(null)
 
-  const filtered = currentProject === "all"
+  const filtered = !currentProject
     ? tasks
     : tasks.filter((t) => t.project === currentProject || t.project_id === currentProject)
 
@@ -567,7 +574,7 @@ export function TasksTab() {
     blocked: { label: "blocked", color: "orange" },
   }
 
-  const showProject = currentProject === "all"
+  const showProject = !currentProject
 
   const renderTask = (task: Task) => {
     const pill = statusPill[task.status]
@@ -791,7 +798,7 @@ function ContextsTab() {
 
   const load = () => {
     const params = new URLSearchParams({ limit: "50" })
-    if (currentProject !== "all") params.set("project", currentProject)
+    if (currentProject) params.set("project", currentProject)
     GET<ContextSnapshot[]>(`/context?${params}`)
       .then(setContexts)
       .catch(() => {})
@@ -805,7 +812,7 @@ function ContextsTab() {
     e.target.value = ""
     const form = new FormData()
     form.append("file", file)
-    if (currentProject && currentProject !== "all") form.append("project", currentProject)
+    if (currentProject) form.append("project", currentProject)
     try {
       const res = await api<{ id: string; path: string }>("/context/upload", {
         method: "POST",

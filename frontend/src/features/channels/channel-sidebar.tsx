@@ -70,7 +70,7 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
     }
 
     // Collection filter — only when not in active mode
-    if (currentCollection !== "all") {
+    if (currentCollection) {
       result = result.filter((ch) => {
         if (ch.type === "system") return true // system shows everywhere
         if (ch.collection_ids.length === 0 && ch.project_ids.length === 0) return false // orphaned ephemeral
@@ -85,7 +85,7 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
     if (!newName.trim()) return
     const projectIds = newProjectId ? [newProjectId] : []
     const type = projectIds.length > 0 ? "project" : "ephemeral"
-    await createChannel(newName.trim(), type, projectIds, currentCollection !== "all" ? currentCollection : "general")
+    await createChannel(newName.trim(), type, projectIds, currentCollection ? currentCollection : "general")
     setNewName("")
     setNewProjectId("")
     setCreating(false)
@@ -100,11 +100,11 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
         {/* Collection selector + create */}
         <div className="px-2 pt-2 pb-1 flex gap-1">
           <select
-            value={currentCollection}
-            onChange={(e) => selectCollection(e.target.value)}
+            value={currentCollection ?? ""}
+            onChange={(e) => selectCollection(e.target.value || null)}
             className="flex-1 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none min-w-0"
           >
-            <option value="all">All Collections</option>
+            <option value="">All Collections</option>
             {collections.map((c) => (
               <option key={c.id} value={c.id}>{c.name} ({
                 projects.filter((p) => p.collection_id === c.id).length

@@ -16,10 +16,10 @@ export function ProcessList() {
     return () => clearInterval(interval)
   }, [loadProcesses])
 
-  const filtered =
-    currentProject === "all"
-      ? processes
-      : processes.filter((p) => p.project === currentProject)
+  // Actions are per-project; empty state when no project is selected.
+  const filtered = currentProject
+    ? processes.filter((p) => p.project === currentProject)
+    : []
 
   const sorted = [...filtered].sort((a, b) => {
     if (a.status === "running" && b.status !== "running") return -1

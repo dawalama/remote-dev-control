@@ -643,7 +643,7 @@ export function TerminalToolbar({
   // Load attachment count
   useEffect(() => {
     const params = new URLSearchParams({ limit: "100" })
-    if (currentProject !== "all") params.set("project", currentProject)
+    if (currentProject) params.set("project", currentProject)
     GET<{ id: string }[]>(`/context?${params}`)
       .then((list) => setCtxCount(list.length))
       .catch(() => {})
@@ -655,7 +655,7 @@ export function TerminalToolbar({
     e.target.value = ""
     const form = new FormData()
     form.append("file", file)
-    if (currentProject && currentProject !== "all") form.append("project", currentProject)
+    if (currentProject) form.append("project", currentProject)
     try {
       const res = await api<{ id: string; path: string }>("/context/upload", {
         method: "POST",

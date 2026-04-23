@@ -21,7 +21,7 @@ export function AddActionForm({ onAdded }: { onAdded?: () => void }) {
 
   const projectPath = projects.find((p) => p.name === currentProject)?.path || ""
 
-  if (currentProject === "all") return null
+  if (!currentProject) return null
 
   if (!open) {
     return (

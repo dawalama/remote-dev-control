@@ -32,7 +32,7 @@ export function TaskPanel() {
   const openTaskLog = useLogsStore((s) => s.openTaskLog)
 
   const filtered =
-    currentProject === "all"
+    !currentProject
       ? tasks
       : tasks.filter((t) => t.project === currentProject || t.project_id === currentProject)
 
@@ -208,7 +208,7 @@ export function TaskPanel() {
               key={task.id}
               task={task}
               selected={selectedTaskId === task.id}
-              showProject={currentProject === "all"}
+              showProject={!currentProject}
               onSelect={() => selectTask(task.id === selectedTaskId ? null : task.id)}
               onRun={() => handleRun(task.id)}
               onCancel={() => handleCancel(task.id)}

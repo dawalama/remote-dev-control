@@ -51,7 +51,7 @@ export function WorkspaceSelectorSheet({
       result = result.filter((c) =>
         c.project_names?.some((n) => activeProjectNames.has(n))
       )
-    } else if (currentCollection !== "all") {
+    } else if (currentCollection) {
       // Collection filter — only when not in active mode
       result = result.filter((c) => c.collection_ids?.includes(currentCollection))
     }
@@ -85,9 +85,9 @@ export function WorkspaceSelectorSheet({
           {layout === "kiosk" ? (
             <div className="flex gap-2 overflow-x-auto pb-1">
               <button
-                onClick={() => selectCollection("all")}
+                onClick={() => selectCollection(null)}
                 className={`px-3 py-1.5 text-xs rounded-full whitespace-nowrap border ${
-                  currentCollection === "all"
+                  !currentCollection
                     ? "bg-blue-600 text-white border-blue-500"
                     : "bg-gray-800 text-gray-300 border-gray-700"
                 }`}
@@ -110,11 +110,11 @@ export function WorkspaceSelectorSheet({
             </div>
           ) : (
             <select
-              value={currentCollection}
-              onChange={(e) => selectCollection(e.target.value)}
+              value={currentCollection ?? ""}
+              onChange={(e) => selectCollection(e.target.value || null)}
               className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
             >
-              <option value="all">All</option>
+              <option value="">All</option>
               {collections.map((c) => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}

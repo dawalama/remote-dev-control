@@ -29,7 +29,7 @@ export function ProjectCard({ onEdit }: { onEdit: () => void }) {
   const currentProject = useProjectStore((s) => s.currentProject)
   const projects = useProjectStore((s) => s.projects)
 
-  if (currentProject === "all") return null
+  if (!currentProject) return null
 
   const project = projects.find((p) => p.name === currentProject)
   const profile: ProjectProfile | undefined = project?.config?.profile as ProjectProfile | undefined

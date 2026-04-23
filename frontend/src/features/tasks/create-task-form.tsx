@@ -86,7 +86,7 @@ export function CreateTaskForm({ onClose }: { onClose: () => void }) {
   const toast = useUIStore((s) => s.toast)
 
   const { models, refresh: refreshModels } = useModels()
-  const [project, setProject] = useState(currentProject === "all" ? (projects[0]?.name || "") : currentProject)
+  const [project, setProject] = useState(!currentProject ? (projects[0]?.name || "") : currentProject)
   const [description, setDescription] = useState("")
   const [model, setModel] = useState("")
   const [submitting, setSubmitting] = useState(false)

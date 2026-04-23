@@ -25,7 +25,7 @@ export function PinchTabPanel() {
   const [fullscreen, setFullscreen] = useState(false)
 
   const urlSuggestions = processes
-    .filter((p) => p.port && p.status === "running" && (currentProject === "all" || p.project === currentProject))
+    .filter((p) => p.port && p.status === "running" && (!currentProject || p.project === currentProject))
     .map((p) => ({
       label: p.name || p.id,
       url: p.preview_url || `http://localhost:${p.port}`,

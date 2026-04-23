@@ -86,6 +86,15 @@ async def lifespan(app: FastAPI):
     init_conversation_schema()
     task_repo = TaskRepository()
     event_repo = EventRepository()
+
+    # Ensure the #system workstream exists — control-plane intent routing
+    # depends on it. Migration seeds it on fresh DBs; this is a belt-and-
+    # braces check for older DBs or post-deletion recovery.
+    try:
+        from .channel_manager import get_channel_manager
+        get_channel_manager().ensure_system_channel()
+    except Exception:
+        logger.exception("Failed to ensure #system channel on startup")
     
     config = Config.load()
     agent_manager = AgentManager(config)
@@ -4227,6 +4236,55 @@ async def set_type_mode(request: Request):
     return {"type_mode": enabled, "target": target}
 
 
+@app.post("/voice/sessions")
+async def create_voice_session(request: Request):
+    """Create a provider-neutral voice session for browser/phone/live providers."""
+    from .voice_runtime import get_voice_runtime
+
+    data = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    session = get_voice_runtime().begin_session(
+        transport=data.get("transport", "browser"),
+        channel=data.get("channel", "desktop"),
+        client_id=data.get("client_id"),
+        project=data.get("project"),
+        external_id=data.get("external_id"),
+        state=data.get("state", "listening"),
+    )
+    return session.to_dict()
+
+
+@app.post("/voice/sessions/{session_id}/event")
+async def update_voice_session(session_id: str, request: Request):
+    """Update voice session state from a channel implementation."""
+    from .voice_runtime import get_voice_runtime
+
+    data = await request.json()
+    session = get_voice_runtime().update_session(
+        session_id,
+        state=data.get("state"),
+        project=data.get("project"),
+        transcript=data.get("transcript"),
+        response=data.get("response"),
+        error=data.get("error"),
+        increment_turn=bool(data.get("increment_turn")),
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Voice session not found")
+    return session.to_dict()
+
+
+@app.post("/voice/sessions/{session_id}/end")
+async def end_voice_session(session_id: str, request: Request):
+    """End a voice session."""
+    from .voice_runtime import get_voice_runtime
+
+    data = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    session = get_voice_runtime().end_session(session_id, error=data.get("error"))
+    if not session:
+        raise HTTPException(status_code=404, detail="Voice session not found")
+    return session.to_dict()
+
+
 # Twilio webhooks (public, validated by signature)
 
 @app.post("/voice/twilio/incoming")
@@ -4500,6 +4558,21 @@ async def email_send_test():
         raise HTTPException(status_code=500, detail=f"SMTP test failed: {e}")
 
 
+def _summarize_control_actions(actions: list[dict]) -> str:
+    """Short human-readable toast describing control-plane actions routed to #system."""
+    parts: list[str] = []
+    for a in actions:
+        name = a.get("action") or ""
+        ok = a.get("success", True)
+        if name == "create_project":
+            proj = a.get("project") or "project"
+            parts.append(f"Created project {proj}" if ok else f"Failed to create project {proj}")
+        else:
+            parts.append(name if ok else f"{name} failed")
+    body = "; ".join(parts) if parts else "Control action completed"
+    return f"{body} — see #system"
+
+
 @app.post("/orchestrator")
 async def orchestrator_endpoint(
     request: Request,
@@ -4556,14 +4629,17 @@ async def orchestrator_endpoint(
 
         # Build context from current state
         ctx = build_orchestrator_context(project, session_id, channel, client_id=client_id)
-        # Override active workstream if frontend sent the channel_id
+        # channel_id from the request is the single source of truth for the
+        # active workstream — it reflects what the user is actually viewing.
+        # Unconditionally override both id and name so the LLM can't be told
+        # a different workstream than the one the user is looking at.
         if channel_id:
             ctx.active_workstream_id = channel_id
-            if not ctx.active_workstream:
-                for ws in ctx.workstreams:
-                    if ws.get("id") == channel_id:
-                        ctx.active_workstream = ws.get("name")
-                        break
+            ctx.active_workstream = None
+            for ws in ctx.workstreams:
+                if ws.get("id") == channel_id:
+                    ctx.active_workstream = ws.get("name")
+                    break
 
         # Process intent via LLM, passing conversation history for multi-turn context
         result = await engine.process(message, ctx, conversation_history=conversation_history)
@@ -4625,38 +4701,90 @@ async def orchestrator_endpoint(
         async def _background():
             try:
                 result = await _process_orchestrator()
-                # Post the response as a channel message
+                from .intent import CLIENT_NAV_ACTIONS, CONTROL_INTENTS, SYSTEM_CHANNEL_ID
                 from .channel_manager import get_channel_manager
+                from .state_machine import get_state_machine
+
+                executed = result.get("executed") or []
+                nav_actions = [a for a in executed if a.get("action") in CLIENT_NAV_ACTIONS]
+                other_actions = [a for a in executed if a.get("action") not in CLIENT_NAV_ACTIONS]
+                control_actions = [a for a in other_actions if a.get("action") in CONTROL_INTENTS]
+
+                # Route client-side nav actions to the originating client only.
+                # Broadcasting would cause every connected client to switch, and
+                # embedding them in a channel message never triggers dispatch.
+                if nav_actions and client_id:
+                    try:
+                        await get_state_machine().send_to_client(client_id, {
+                            "type": "orchestrator_dispatch",
+                            "data": {"actions": nav_actions, "client_id": client_id},
+                        })
+                    except Exception:
+                        logger.debug("Failed to send orchestrator_dispatch", exc_info=True)
+
+                response_text = result.get("response") or ""
+                has_ui = bool(result.get("ui_components"))
+                # Navigation-only exchanges (e.g. "switch to workstream X") with a
+                # short confirmation don't need to land in chat history — the
+                # visible UI change IS the confirmation. But only suppress when
+                # every nav action actually succeeded; otherwise the user must
+                # see the failure (e.g. "No workstream matching 'foo'") or they
+                # get a ghost confirmation for something that never happened.
+                nav_all_succeeded = all(a.get("success", True) for a in nav_actions)
+                nav_only = bool(nav_actions) and not other_actions and not has_ui and nav_all_succeeded
+                if nav_only and len(response_text) < 160:
+                    return
+                # If nav actions failed, replace the over-optimistic auto-confirm
+                # response (_auto_confirm echoes the LLM's intent verbatim without
+                # knowing the executor failed) with the executor's error.
+                if nav_actions and not nav_all_succeeded:
+                    errors = [a.get("error") for a in nav_actions if not a.get("success", True) and a.get("error")]
+                    if errors:
+                        response_text = " ".join(errors)
+
+                # Control-plane intents (create_project, etc.) post to #system
+                # regardless of origin so workstream history stays focused on
+                # the work of that workstream. The originating client gets a
+                # toast pointing them at #system.
+                target_channel_id = channel_id
+                if control_actions and channel_id != SYSTEM_CHANNEL_ID:
+                    target_channel_id = SYSTEM_CHANNEL_ID
+                    if client_id:
+                        summary = _summarize_control_actions(control_actions)
+                        try:
+                            await get_state_machine().send_to_client(client_id, {
+                                "type": "toast",
+                                "data": {"text": summary, "level": "info", "channel_id": SYSTEM_CHANNEL_ID},
+                            })
+                        except Exception:
+                            logger.debug("Failed to send control-intent toast", exc_info=True)
+
                 cm = get_channel_manager()
-                metadata = {}
-                if result.get("ui_components"):
+                metadata: dict = {}
+                if has_ui:
                     metadata["type"] = "a2ui"
                     metadata["components"] = result["ui_components"]
-                elif result.get("executed"):
+                elif other_actions:
                     metadata["type"] = "action_results"
-                    metadata["actions"] = result["executed"]
-                    metadata["response"] = result.get("response", "")
+                    metadata["actions"] = other_actions
+                    metadata["response"] = response_text
                 if result.get("usage"):
                     metadata["usage"] = result["usage"]
-                content = result.get("response") or ""
-                # Don't post empty messages unless they have UI components
-                if content or metadata:
+
+                if response_text or metadata:
                     msg = cm.post_message(
-                        channel_id,
+                        target_channel_id,
                         role="orchestrator",
-                        content=content,
+                        content=response_text,
                         metadata=metadata if metadata else None,
                     )
-                    # Push to all WS clients so they pick up the new message instantly
                     try:
-                        from .state_machine import get_state_machine
-                        sm = get_state_machine()
-                        await sm._broadcast_event("channel_message", {
-                            "channel_id": channel_id,
+                        await get_state_machine()._broadcast_event("channel_message", {
+                            "channel_id": target_channel_id,
                             "message_id": msg.id,
                         })
                     except Exception:
-                        pass
+                        logger.debug("Failed to broadcast channel_message", exc_info=True)
             except Exception:
                 logger.exception("Background orchestrator task failed")
                 try:

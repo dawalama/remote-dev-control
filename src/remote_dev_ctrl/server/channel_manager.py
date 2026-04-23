@@ -80,6 +80,29 @@ class ChannelManager:
             return None
         return self._row_to_channel(row)
 
+    def ensure_system_channel(self) -> None:
+        """Make sure the #system workstream exists; seed it if missing.
+
+        The migration at 20260403000011 seeds this on a fresh DB, but a DB
+        that pre-dates the migration — or one where the row got deleted —
+        would leave control-plane intent routing with nowhere to land.
+        Calling this at boot is cheap and defensive.
+        """
+        row = self.db.execute(
+            "SELECT id FROM channels WHERE id = ? OR (type = 'system' AND archived_at IS NULL) LIMIT 1",
+            ("ch-system",),
+        ).fetchone()
+        if row:
+            return
+        now = datetime.now().isoformat()
+        self.db.execute(
+            """INSERT INTO channels (id, name, type, collection_id, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("ch-system", "#system", "system", "general", now),
+        )
+        self.db.commit()
+        logger.info("Seeded missing #system channel (ch-system)")
+
     def get_channel_by_name(self, name: str) -> Optional[Channel]:
         """Get a channel by name (e.g. '#chilly-snacks')."""
         row = self.db.execute(

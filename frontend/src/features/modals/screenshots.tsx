@@ -22,7 +22,7 @@ export function ScreenshotsModal({ onClose }: { onClose: () => void }) {
     setLoading(true)
     try {
       const params = new URLSearchParams()
-      if (currentProject !== "all") params.set("project", currentProject)
+      if (currentProject) params.set("project", currentProject)
       const data = await GET<Screenshot[]>(`/screenshots?${params}`)
       setScreenshots(data)
     } catch {
@@ -36,7 +36,7 @@ export function ScreenshotsModal({ onClose }: { onClose: () => void }) {
   const handleCapture = async (fullPage: boolean) => {
     try {
       const body: Record<string, unknown> = { full_page: fullPage }
-      if (currentProject !== "all") body.project = currentProject
+      if (currentProject) body.project = currentProject
       await POST("/screenshots", body)
       toast("Screenshot captured", "success")
       load()

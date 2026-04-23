@@ -27,7 +27,7 @@ export function ContextsCard({ defaultExpanded = false }: { defaultExpanded?: bo
 
   const load = () => {
     const params = new URLSearchParams({ limit: "20" })
-    if (currentProject !== "all") params.set("project", currentProject)
+    if (currentProject) params.set("project", currentProject)
     GET<ContextSnapshot[]>(`/context?${params}`)
       .then(setContexts)
       .catch(() => {})
@@ -41,7 +41,7 @@ export function ContextsCard({ defaultExpanded = false }: { defaultExpanded?: bo
     e.target.value = ""
     const form = new FormData()
     form.append("file", file)
-    if (currentProject && currentProject !== "all") form.append("project", currentProject)
+    if (currentProject) form.append("project", currentProject)
     try {
       const res = await api<{ id: string; path: string }>("/context/upload", {
         method: "POST",

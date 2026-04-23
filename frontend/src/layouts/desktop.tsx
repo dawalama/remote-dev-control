@@ -88,7 +88,7 @@ export function DesktopLayout() {
       // ⌘T — new terminal for current project (show preset picker)
       if (meta && e.key === "t") {
         e.preventDefault()
-        if (currentProject === "all") {
+        if (!currentProject) {
           toast("Select a project first", "warning")
         } else {
           setAgentPickerOpen(true)
@@ -296,7 +296,7 @@ export function DesktopLayout() {
       {/* Floating elements */}
       <FloatingChannelPanel
         onOpenTerminal={(project) => {
-          if (project && project !== "all") selectProject(project)
+          if (project) selectProject(project)
           setAgentPickerOpen(true)
         }}
         onCreateTask={() => { /* TODO */ }}
@@ -310,7 +310,7 @@ export function DesktopLayout() {
       {systemSettingsOpen && (
         <SystemSettingsModal onClose={() => setSystemSettingsOpen(false)} />
       )}
-      {projectSettingsOpen && currentProject !== "all" && (
+      {projectSettingsOpen && currentProject && (
         <ProjectSettingsModal projectName={currentProject} onClose={() => setProjectSettingsOpen(false)} fullPage />
       )}
       {addProjectOpen && (
@@ -338,6 +338,10 @@ export function DesktopLayout() {
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-left"
                   onClick={() => {
                     setAgentPickerOpen(false)
+                    if (!currentProject) {
+                      toast("Select a project first", "warning")
+                      return
+                    }
                     spawnTerminal(currentProject, preset.command, useChannelStore.getState().activeChannelId || undefined)
                     toast(`Terminal started: ${preset.label}`, "success")
                   }}

@@ -74,6 +74,7 @@ export function useWorkstreamVoice(opts: {
   }, [orchestrator, toast])
 
   const voice = useVoice({
+    channel: opts.channel,
     onFinal: (text) => {
       const isTerminalMode = useTerminalStore.getState().terminalFocused
 

@@ -20,7 +20,7 @@ export function useFileUpload() {
       return
     }
 
-    const project = currentProject !== "all" ? currentProject : "upload"
+    const project = currentProject ? currentProject : "upload"
 
     const form = new FormData()
     form.append("file", file)

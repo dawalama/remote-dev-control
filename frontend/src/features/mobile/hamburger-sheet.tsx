@@ -56,7 +56,7 @@ export function HamburgerSheet({
         <MenuItem onClick={onActivity}>Activity Log</MenuItem>
         <MenuItem onClick={onPairedDevices}>Paired Devices</MenuItem>
         <hr className="border-gray-700 my-2" />
-        {currentProject !== "all" && (
+        {currentProject && (
           <MenuItem onClick={onProjectSettings}>Project Settings</MenuItem>
         )}
         <MenuItem onClick={onSystemSettings}>System Settings</MenuItem>

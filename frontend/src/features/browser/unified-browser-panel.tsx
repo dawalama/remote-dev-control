@@ -65,7 +65,7 @@ export function UnifiedBrowserPanel() {
 
   const runningSessions = sessions.filter((s) => s.status === "running")
   const processesWithPorts = processes.filter(
-    (p) => p.port && p.status === "running" && (currentProject === "all" || p.project === currentProject),
+    (p) => p.port && p.status === "running" && (!currentProject || p.project === currentProject),
   )
 
   const handleShared = async (processId: string) => {
@@ -78,7 +78,7 @@ export function UnifiedBrowserPanel() {
     const url = urlInput.trim()
     if (!url) return
     const fullUrl = url.startsWith("http") ? url : `http://${url}`
-    const project = currentProject !== "all" ? currentProject : undefined
+    const project = currentProject ?? undefined
     const session = await startSession(fullUrl, project)
     if (session) setFullscreen(true)
     else toast("Failed to start browser", "error")
@@ -408,7 +408,7 @@ export function UnifiedBrowserFullscreen({
     if (!activeSession) return
     try {
       const params = new URLSearchParams({ session_id: activeSession.id })
-      if (currentProject && currentProject !== "all") params.set("project", currentProject)
+      if (currentProject) params.set("project", currentProject)
       await POST(`/context/capture?${params}`)
       toast("Context captured", "success")
     } catch { toast("Capture failed", "error") }

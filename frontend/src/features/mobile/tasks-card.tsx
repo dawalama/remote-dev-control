@@ -31,7 +31,7 @@ export function TasksCard() {
   const [viewOutputTask, setViewOutputTask] = useState<{ id: string; title: string } | null>(null)
 
   const filtered = (
-    currentProject === "all"
+    !currentProject
       ? tasks
       : tasks.filter((t) => t.project === currentProject || t.project_id === currentProject)
   ).sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9))

@@ -182,7 +182,7 @@ function ContextsTab() {
 
   const load = () => {
     const params = new URLSearchParams({ limit: "50" })
-    if (currentProject !== "all") params.set("project", currentProject)
+    if (currentProject) params.set("project", currentProject)
     GET<ContextSnapshot[]>(`/context?${params}`)
       .then(setContexts)
       .catch(() => {})
@@ -196,7 +196,7 @@ function ContextsTab() {
     e.target.value = ""
     const form = new FormData()
     form.append("file", file)
-    if (currentProject && currentProject !== "all") form.append("project", currentProject)
+    if (currentProject) form.append("project", currentProject)
     try {
       const res = await api<{ id: string; path: string }>("/context/upload", {
         method: "POST",

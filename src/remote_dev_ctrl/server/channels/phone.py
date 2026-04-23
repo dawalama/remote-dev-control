@@ -14,9 +14,24 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_voice(method_name: str, *args, **kwargs) -> Any:
+    """Run a voice_runtime method by name, swallowing failures.
+
+    Voice telemetry is best-effort observability — a failure here must never
+    interrupt the phone call flow (answering, gathering speech, hanging up).
+    """
+    try:
+        from ..voice_runtime import get_voice_runtime
+
+        return getattr(get_voice_runtime(), method_name)(*args, **kwargs)
+    except Exception:
+        logger.debug("Voice runtime %s failed", method_name, exc_info=True)
+        return None
 
 
 def _generate_chime_wav() -> bytes:
@@ -116,6 +131,7 @@ class CallState:
     type_mode: bool = False
     type_mode_target: str | None = None  # "terminal" or future input targets
     pending_result: GatherResult | None = None  # Async LLM result
+    voice_session_id: str | None = None
 
     def __post_init__(self):
         if not self.session_id:
@@ -210,6 +226,8 @@ class PhoneChannel:
         Clears any stale calls/pairings from previous sessions first.
         """
         # Clear stale calls and pairings from previous sessions
+        for stale in self._calls.values():
+            _safe_voice("end_session", stale.voice_session_id)
         self._calls.clear()
         self._pairings.clear()
 
@@ -228,6 +246,18 @@ class PhoneChannel:
         call = await asyncio.get_event_loop().run_in_executor(None, _create)
         state = CallState(call_sid=call.sid, project=project)
         self._calls[call.sid] = state
+
+        voice_session = _safe_voice(
+            "begin_session",
+            transport="phone",
+            channel="phone",
+            client_id=client_id,
+            project=project,
+            external_id=call.sid,
+            state="connecting",
+        )
+        if voice_session:
+            state.voice_session_id = voice_session.id
 
         # Auto-pair with the requesting client
         if client_id:
@@ -268,6 +298,7 @@ class PhoneChannel:
                 logger.debug("Failed to notify paired client on hangup", exc_info=True)
 
         # Cleanup
+        _safe_voice("end_session", call.voice_session_id if call else None)
         self._pairings.pop(call_sid, None)
         self._calls.pop(call_sid, None)
 
@@ -413,6 +444,8 @@ class PhoneChannel:
             # on subsequent silence-timeout reconnects.
             if call.turn_count == 0:
                 paired = call.paired_client_id
+                if call.voice_session_id:
+                    _safe_voice("update_session", call.voice_session_id, state="listening")
                 greeting = "Connected. How can I help?"
                 if paired:
                     # Notify paired client about the connection
@@ -431,12 +464,16 @@ class PhoneChannel:
 
         # Inbound call (not initiated from dashboard)
         # Clear stale calls/pairings from previous sessions
+        for stale in self._calls.values():
+            _safe_voice("end_session", stale.voice_session_id)
         self._calls.clear()
         self._pairings.clear()
 
-        self._calls[call_sid] = CallState(call_sid=call_sid)
+        call = CallState(call_sid=call_sid)
+        self._calls[call_sid] = call
 
         # Auto-pair with first connected client
+        paired_client_id = None
         try:
             from ..state_machine import get_state_machine
             sm = get_state_machine()
@@ -445,6 +482,7 @@ class PhoneChannel:
                 # Prefer desktop, then mobile
                 desktop = [c for c in clients if c["client_id"].startswith("desktop-")]
                 target = desktop[0] if desktop else clients[0]
+                paired_client_id = target["client_id"]
                 self.pair(call_sid, target["client_id"])
                 await sm.send_to_client(target["client_id"], {
                     "type": "phone_paired",
@@ -455,6 +493,16 @@ class PhoneChannel:
             pass  # Pairing is best-effort
 
         greeting = "Thanks for calling, how can I help?"
+        voice_session = _safe_voice(
+            "begin_session",
+            transport="phone",
+            channel="phone",
+            client_id=paired_client_id,
+            external_id=call_sid,
+            state="listening",
+        )
+        if voice_session:
+            call.voice_session_id = voice_session.id
         return self._twiml_gather(say_text=greeting)
 
     async def handle_gather(self, call_sid: str, speech_result: str) -> str:
@@ -473,6 +521,17 @@ class PhoneChannel:
 
         # Correct common STT misheard words before processing
         speech_result = _correct_speech(speech_result)
+
+        session = _safe_voice("get_by_external_id", call_sid)
+        if session:
+            call.voice_session_id = session.id
+            _safe_voice(
+                "update_session",
+                session.id,
+                state="processing",
+                transcript=speech_result,
+                increment_turn=True,
+            )
 
         print(f"[PHONE] Turn {call.turn_count}: speech={speech_result!r} project={call.project}")
 
@@ -546,6 +605,8 @@ class PhoneChannel:
         # Result is ready — clear it and return
         twiml = result.twiml or self._twiml_gather(say_text="Done.")
         call.pending_result = None
+        if call.voice_session_id:
+            _safe_voice("update_session", call.voice_session_id, state="listening")
         return twiml
 
     async def _process_gather_async(self, call: CallState, speech_result: str):
@@ -583,7 +644,7 @@ class PhoneChannel:
                     entry = sm._client_websockets.get(call.paired_client_id)
                     if entry and entry.get("session_id"):
                         sess = sm._sessions.get(entry["session_id"])
-                        if sess and sess.project and sess.project != "all":
+                        if sess and sess.project:
                             effective_project = sess.project
                             logger.info("[PHONE] Resolved project=%r from paired client session %s", effective_project, entry["session_id"])
                         else:
@@ -631,6 +692,14 @@ class PhoneChannel:
                     })
 
             response_text = result.response or "Done."
+            if call.voice_session_id:
+                _safe_voice(
+                    "update_session",
+                    call.voice_session_id,
+                    state="speaking",
+                    project=effective_project,
+                    response=response_text,
+                )
 
             # SMS fallback: if not paired and there are client-side actions, send mobile link
             if not call.paired_client_id:
@@ -681,6 +750,8 @@ class PhoneChannel:
 
         except Exception as exc:
             logger.error("Phone gather handler error: %s", exc, exc_info=True)
+            if call.voice_session_id:
+                _safe_voice("update_session", call.voice_session_id, error=str(exc))
             call.pending_result = GatherResult(
                 twiml=self._twiml_gather(say_text="Sorry, something went wrong. Please try again."),
                 ready=True,
@@ -711,6 +782,11 @@ class PhoneChannel:
                     logger.debug("Failed to notify paired client on call end", exc_info=True)
 
             self._pairings.pop(call_sid, None)
+            _safe_voice(
+                "end_session",
+                call.voice_session_id if call else None,
+                error=call_status if call_status != "completed" else None,
+            )
             self._calls.pop(call_sid, None)
 
     # ------------------------------------------------------------------

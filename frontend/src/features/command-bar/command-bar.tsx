@@ -20,14 +20,30 @@ export function CommandBar() {
     onOpenTerminal: () => toggleBottomPanel(),
   })
 
-  const handleVoiceFinal = useCallback((text: string) => {
+  const handleVoiceFinal = useCallback(async (text: string) => {
     toast(`Voice: "${text}"`, "info")
-    orchestrator.send(text).then((r) => {
-      if (r?.response) toast(r.response.slice(0, 120), "info")
-    })
+    // Post the spoken text to the active workstream so the user sees the full
+    // exchange in chat. In async mode the server will post the reply there too.
+    const { activeChannelId, postMessage, loadMessages } = useChannelStore.getState()
+    if (activeChannelId) {
+      await postMessage(activeChannelId, text, "user")
+    }
+    const result = await orchestrator.send(text)
+    const isAsync = (result as Record<string, unknown> | null)?.async === true
+    if (isAsync && activeChannelId) {
+      // Server will push the real response via WS; loadMessages is a best-effort pickup.
+      setTimeout(() => { void loadMessages(activeChannelId) }, 1500)
+      return
+    }
+    if (!activeChannelId && result?.response) {
+      // No workstream open — fall back to a toast preview.
+      toast(result.response.slice(0, 120), "info")
+    } else if (activeChannelId && result?.response) {
+      await postMessage(activeChannelId, result.response, "orchestrator")
+    }
   }, [toast, orchestrator])
 
-  const voice = useVoice({ onFinal: handleVoiceFinal })
+  const voice = useVoice({ channel: "desktop", onFinal: handleVoiceFinal })
 
   const handlePhone = async () => {
     if (phone?.active) {
@@ -147,7 +163,7 @@ function SettingsButton() {
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute bottom-10 right-0 z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 w-48">
-            {currentProject !== "all" && (
+            {currentProject && (
               <button
                 className="w-full px-3 py-2 text-xs text-gray-200 hover:bg-gray-700 text-left"
                 onClick={() => { setOpen(false); useUIStore.getState().setProjectSettingsOpen(true) }}

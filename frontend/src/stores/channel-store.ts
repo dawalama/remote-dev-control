@@ -80,6 +80,18 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
   selectChannel: (id) => {
     localStorage.setItem(ACTIVE_CHANNEL_KEY, id)
     set({ activeChannelId: id, messages: [] })
+    // Sync currentProject to this channel's project so the rest of the UI
+    // (actions panel, terminal filter, orchestrator context) matches.
+    // System/ephemeral channels with no linked project clear the selection.
+    // Lazy import to avoid a channel-store ↔ project-store ↔ state-store cycle.
+    void import("@/stores/project-store").then(({ useProjectStore }) => {
+      const ch = get().channels.find((c) => c.id === id)
+      const projectStore = useProjectStore.getState()
+      const firstProject = ch?.project_names?.[0] ?? null
+      if (firstProject !== projectStore.currentProject) {
+        projectStore.selectProject(firstProject)
+      }
+    })
     get().loadMessages(id)
   },
 

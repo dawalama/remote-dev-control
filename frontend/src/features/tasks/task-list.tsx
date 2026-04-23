@@ -42,7 +42,7 @@ export function TaskList() {
   }, [loadTasks])
 
   const filtered =
-    currentProject === "all"
+    !currentProject
       ? tasks
       : tasks.filter((t) => t.project === currentProject)
 

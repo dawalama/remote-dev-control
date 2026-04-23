@@ -8,6 +8,7 @@ import { useTerminalStore } from "@/stores/terminal-store"
 import { useLogsStore } from "@/stores/logs-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useChannelStore } from "@/stores/channel-store"
+import { dispatchNavAction, type NavAction } from "@/lib/orchestrator-dispatch"
 import type { Action, Task, Agent, TabId } from "@/types"
 
 interface QueueStats {
@@ -38,6 +39,7 @@ interface StateSnapshot {
   collections: { id: string; name: string; description?: string; sort_order?: number; project_count?: number }[]
   terminal_channels: Record<string, string[]>  // terminal_id -> [channel_ids]
   phone: Record<string, unknown>
+  voice: Record<string, unknown>
   queue_stats: QueueStats
   timestamp: string
 }
@@ -53,6 +55,7 @@ interface StateStoreData {
   terminalChannels: Record<string, string[]>  // terminal_id -> [channel_ids]
   queueStats: QueueStats
   phone: Record<string, unknown>
+  voice: Record<string, unknown>
   timestamp: string | null
 
   // Methods
@@ -102,7 +105,7 @@ function executePhoneAction(action: Record<string, unknown>) {
     }
     case "open_terminal": {
       const project = (action.project as string) || undefined
-      if (project && project !== "all") {
+      if (project) {
         useTerminalStore.getState().spawnTerminal(project)
       }
       break
@@ -198,6 +201,7 @@ export const useStateStore = create<StateStoreData>((set) => ({
   terminalChannels: {},
   queueStats: { total: 0, pending: 0, in_progress: 0, completed: 0, failed: 0, by_project: {} },
   phone: {},
+  voice: {},
   timestamp: null,
 
   connect: () => {
@@ -229,6 +233,7 @@ export const useStateStore = create<StateStoreData>((set) => ({
         terminalChannels: s.terminal_channels || {},
         queueStats: s.queue_stats,
         phone: s.phone,
+        voice: s.voice || {},
         timestamp: s.timestamp,
       })
     })
@@ -256,11 +261,40 @@ export const useStateStore = create<StateStoreData>((set) => ({
       }
     })
 
+    // Client-side nav actions from async orchestrator (voice, background runs).
+    // Server routes these to a specific client_id to avoid broadcasting UI
+    // changes to every connected device.
+    ws.on("orchestrator_dispatch", (raw) => {
+      const msg = raw as {
+        type: "orchestrator_dispatch"
+        data: { actions: NavAction[]; client_id?: string }
+      }
+      const targetId = msg.data?.client_id
+      if (targetId && targetId !== clientId) return
+      for (const action of msg.data?.actions || []) {
+        dispatchNavAction(action)
+      }
+    })
+
     ws.on("phone_action", (raw) => {
       const msg = raw as { type: "phone_action"; actions: Record<string, unknown>[] }
       for (const action of msg.actions || []) {
         executePhoneAction(action)
       }
+    })
+
+    // Server-pushed toast (e.g. "Created project foo — see #system").  Used
+    // when a control-plane intent is routed to the #system channel so the
+    // originating client still gets visible feedback.
+    ws.on("toast", (raw) => {
+      const msg = raw as {
+        type: "toast"
+        data?: { text?: string; level?: "info" | "success" | "warning" | "error" }
+      }
+      const text = msg.data?.text
+      if (!text) return
+      const level = msg.data?.level ?? "info"
+      useUIStore.getState().toast(text, level)
     })
 
     ws.connect()

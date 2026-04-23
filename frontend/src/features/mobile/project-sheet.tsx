@@ -24,7 +24,7 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
   // When activeFilter, show all active projects across collections; otherwise filter by collection
   const filtered = activeFilter
     ? projects.filter((p) => activeSet.has(p.name))
-    : projects.filter((p) => currentCollection === "all" || p.collection_id === currentCollection)
+    : projects.filter((p) => !currentCollection || p.collection_id === currentCollection)
 
   return (
     <Sheet onClose={onClose} title="Select Project">
@@ -40,7 +40,7 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
           </Pill>
           {collections.length > 0 && (
             <>
-              <Pill active={currentCollection === "all" && !activeFilter} onClick={() => { selectCollection("all"); setActiveFilter(false) }}>
+              <Pill active={!currentCollection && !activeFilter} onClick={() => { selectCollection(null); setActiveFilter(false) }}>
                 All
               </Pill>
               {collections.map((c) => (
@@ -57,9 +57,9 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
         {!activeFilter && (
           <button
             className={`w-full text-left px-3 py-2 rounded-lg text-sm ${
-              currentProject === "all" ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-700"
+              !currentProject ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-700"
             }`}
-            onClick={() => { selectProject("all"); onClose() }}
+            onClick={() => { selectProject(null); onClose() }}
           >
             All Projects
           </button>

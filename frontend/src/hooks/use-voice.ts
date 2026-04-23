@@ -1,4 +1,7 @@
-import { useState, useRef, useCallback, useEffect } from "react"
+import { useState, useRef, useCallback } from "react"
+import { POST } from "@/lib/api"
+import { getClientId } from "@/lib/client-id"
+import { useProjectStore } from "@/stores/project-store"
 
 interface VoiceState {
   listening: boolean
@@ -12,16 +15,16 @@ interface UseVoiceOptions {
   onFinal?: (text: string) => void
   /** Called with interim transcript text */
   onInterim?: (text: string) => void
+  /** Channel context to attach to the shared voice runtime */
+  channel?: "desktop" | "mobile"
 }
 
 export function useVoice(options: UseVoiceOptions = {}) {
   // Use refs for callbacks to avoid stale closures in the WebSocket handler
   const onFinalRef = useRef(options.onFinal)
   const onInterimRef = useRef(options.onInterim)
-  useEffect(() => {
-    onFinalRef.current = options.onFinal
-    onInterimRef.current = options.onInterim
-  }, [options.onFinal, options.onInterim])
+  onFinalRef.current = options.onFinal
+  onInterimRef.current = options.onInterim
   const [state, setState] = useState<VoiceState>({
     listening: false,
     transcript: "",
@@ -33,6 +36,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const audioCtxRef = useRef<AudioContext | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const voiceSessionIdRef = useRef<string | null>(null)
+  const listeningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Track whether the user intentionally wants to be listening (for auto-reconnect)
   const wantListeningRef = useRef(false)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -42,6 +47,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
+    }
+    if (listeningTimerRef.current) {
+      clearTimeout(listeningTimerRef.current)
+      listeningTimerRef.current = null
     }
 
     // Close WS
@@ -65,6 +74,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop())
       streamRef.current = null
+    }
+
+    if (voiceSessionIdRef.current) {
+      const sessionId = voiceSessionIdRef.current
+      voiceSessionIdRef.current = null
+      void POST(`/voice/sessions/${sessionId}/end`).catch(() => undefined)
     }
 
     setState((s) => ({ ...s, listening: false, interim: "" }))
@@ -101,12 +116,35 @@ export function useVoice(options: UseVoiceOptions = {}) {
         }
         if (data.transcript) {
           if (data.is_final) {
+            // New transcript supersedes any pending "listening" transition
+            if (listeningTimerRef.current) {
+              clearTimeout(listeningTimerRef.current)
+              listeningTimerRef.current = null
+            }
+            if (voiceSessionIdRef.current) {
+              void POST(`/voice/sessions/${voiceSessionIdRef.current}/event`, {
+                state: "processing",
+                transcript: data.transcript,
+                increment_turn: true,
+              }).catch(() => undefined)
+            }
             setState((s) => ({
               ...s,
               transcript: data.transcript,
               interim: "",
             }))
             onFinalRef.current?.(data.transcript)
+            const sessionId = voiceSessionIdRef.current
+            if (sessionId) {
+              listeningTimerRef.current = setTimeout(() => {
+                listeningTimerRef.current = null
+                if (voiceSessionIdRef.current === sessionId) {
+                  void POST(`/voice/sessions/${sessionId}/event`, {
+                    state: "listening",
+                  }).catch(() => undefined)
+                }
+              }, 1200)
+            }
           } else {
             setState((s) => ({ ...s, interim: data.transcript }))
             onInterimRef.current?.(data.transcript)
@@ -187,13 +225,27 @@ export function useVoice(options: UseVoiceOptions = {}) {
     source.connect(processor)
     processor.connect(audioCtx.destination)
 
+    try {
+      const project = useProjectStore.getState().currentProject
+      const session = await POST<{ id: string }>("/voice/sessions", {
+        transport: "browser",
+        channel: options.channel || "desktop",
+        client_id: getClientId(),
+        project: project ?? undefined,
+        state: "listening",
+      })
+      voiceSessionIdRef.current = session.id
+    } catch {
+      voiceSessionIdRef.current = null
+    }
+
     setState({
       listening: true,
       transcript: "",
       interim: "",
       error: null,
     })
-  }, [stop])
+  }, [stop, options.channel])
 
   const start = useCallback(async () => {
     try {

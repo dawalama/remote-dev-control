@@ -14,9 +14,10 @@ export function ProcessesCard({
   const currentProject = useProjectStore((s) => s.currentProject)
   const toast = useUIStore((s) => s.toast)
 
-  const filtered = currentProject === "all"
-    ? actions
-    : actions.filter((p) => p.project === currentProject)
+  // Actions are per-project; empty state when no project is selected.
+  const filtered = currentProject
+    ? actions.filter((p) => p.project === currentProject)
+    : []
 
   const services = filtered
     .filter((p) => (p.kind || "service") === "service")
@@ -49,7 +50,7 @@ export function ProcessesCard({
         <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
           Actions
         </h3>
-        {currentProject !== "all" && (
+        {currentProject && (
           <button
             className="text-[10px] text-blue-400"
             onClick={async () => {

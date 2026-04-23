@@ -14,7 +14,7 @@ export function ActivityFeed() {
     setLoading(true)
     try {
       const params = new URLSearchParams({ limit: "30" })
-      if (currentProject !== "all") params.set("project", currentProject)
+      if (currentProject) params.set("project", currentProject)
       if (before) params.set("before", before)
       const data = await GET<ActivityEvent[]>(`/activity?${params}`)
       if (before) {

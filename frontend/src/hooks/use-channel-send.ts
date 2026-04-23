@@ -70,10 +70,18 @@ async function processResult(
   const isAsync = result?.async === true
 
   if (isAsync) {
-    // Poll for the server-posted response (up to 30s)
+    // Fallback poll in case the WS channel_message event is missed.
+    // The state-store's WS handler already refreshes the active channel on
+    // every push, so this loop is a safety net — not the primary path.
+    // We must bail as soon as:
+    //   - the user navigates away (don't keep loading a stale channel); or
+    //   - a new message actually lands (the orchestrator posted its reply).
+    // Nav-only responses (e.g. "switch workstream") post nothing, so without
+    // the channel-changed check this would spin for 30s on the old channel.
     const msgCountBefore = useChannelStore.getState().messages.length
     for (let i = 0; i < 15; i++) {
       await new Promise((r) => setTimeout(r, 2000))
+      if (useChannelStore.getState().activeChannelId !== channelId) break
       await useChannelStore.getState().loadMessages(channelId)
       if (useChannelStore.getState().messages.length > msgCountBefore) break
     }

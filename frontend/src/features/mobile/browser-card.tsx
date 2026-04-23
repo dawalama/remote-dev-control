@@ -48,7 +48,7 @@ export function BrowserCard({
 
   const runningSessions = sessions.filter((s) => s.status === "running")
   const processesWithPorts = processes.filter(
-    (p) => p.port && p.status === "running" && (currentProject === "all" || p.project === currentProject),
+    (p) => p.port && p.status === "running" && (!currentProject || p.project === currentProject),
   )
   // Don't show processes that already have a running browser session
   const runningProcessIds = new Set(runningSessions.map((s) => s.process_id).filter(Boolean))

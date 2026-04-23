@@ -6,6 +6,7 @@ import { POST, api } from "@/lib/api"
 import { getClientId } from "@/lib/client-id"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
 import { useVoice } from "@/hooks/use-voice"
+import { useChannelStore } from "@/stores/channel-store"
 import { ChatRenderer } from "@/features/chat/chat-renderer"
 import type { ChatMessage } from "@/features/chat/chat-renderer"
 
@@ -65,7 +66,14 @@ export function ChatCard({
 
     try {
       const result = await orchestrator.send(msg)
-      if (result?.response) {
+      const isAsync = (result as Record<string, unknown> | null)?.async === true
+      if (isAsync) {
+        // Real reply is pushed to the active channel via WebSocket.  Pull the
+        // freshest orchestrator message from the channel store once it arrives.
+        await _awaitAsyncReply((reply) => {
+          setMessages((prev) => [...prev, reply])
+        })
+      } else if (result?.response) {
         setMessages((prev) => [
           ...prev,
           {
@@ -104,7 +112,7 @@ export function ChatCard({
     setInput(text)
   }, [])
 
-  const voice = useVoice({ onFinal: handleVoiceFinal, onInterim: handleVoiceInterim })
+  const voice = useVoice({ channel: "mobile", onFinal: handleVoiceFinal, onInterim: handleVoiceInterim })
 
   // Phone
   const handlePhone = async () => {
@@ -126,7 +134,7 @@ export function ChatCard({
     e.target.value = ""
     const form = new FormData()
     form.append("file", file)
-    if (currentProject && currentProject !== "all") form.append("project", currentProject)
+    if (currentProject) form.append("project", currentProject)
     try {
       const res = await api<{ id: string; path: string }>("/context/upload", {
         method: "POST",
@@ -233,4 +241,37 @@ export function ChatCard({
       </div>
     </div>
   )
+}
+
+/**
+ * Watch the active channel for a new orchestrator message and hand it to the
+ * caller.  Used when the orchestrator replies asynchronously (server returns
+ * `{async: true}` and posts the real message to the channel later, typically
+ * pushed via WebSocket).  Gives up silently after ~30s.
+ */
+async function _awaitAsyncReply(onReply: (msg: ChatMessage) => void): Promise<void> {
+  const startChannelId = useChannelStore.getState().activeChannelId
+  if (!startChannelId) return
+  const baselineIds = new Set(useChannelStore.getState().messages.map((m) => m.id))
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 500))
+    // Bail if the user navigated away — the store now holds a different
+    // channel's messages, and a "fresh" match could be from the new channel.
+    if (useChannelStore.getState().activeChannelId !== startChannelId) return
+    const latest = useChannelStore.getState().messages
+    // State-store's WS handler calls loadMessages() on channel_message events,
+    // so we just scan for a new orchestrator message.
+    const fresh = latest.find(
+      (m) => !baselineIds.has(m.id) && m.role === "orchestrator" && (m.content || m.metadata),
+    )
+    if (fresh) {
+      onReply({
+        role: "assistant",
+        content: fresh.content || "",
+        timestamp: new Date(fresh.created_at).getTime() || Date.now(),
+      })
+      return
+    }
+  }
 }

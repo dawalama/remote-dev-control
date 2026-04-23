@@ -79,8 +79,8 @@ export function KioskLayout() {
     channel: "mobile",
     terminalSendRef,
     onOpenTerminal: async (project) => {
-      const proj = project && project !== "all" ? project : currentProject
-      if (proj === "all") { toast("Select a project first", "warning"); return }
+      const proj = project || currentProject
+      if (!proj) { toast("Select a project first", "warning"); return }
       const session = await spawnTerminal(proj)
       if (session) { toast("Terminal started", "success") }
       else { toast("Failed to create terminal", "error") }
@@ -119,7 +119,7 @@ export function KioskLayout() {
 
   // Sync channel with project selection
   useEffect(() => {
-    if (currentProject && currentProject !== "all") {
+    if (currentProject) {
       const { channels, selectChannel } = useChannelStore.getState()
       const ch = channels.find((c: { name: string; project_names?: string[] }) =>
         c.name === `#${currentProject}` || c.project_names?.includes(currentProject)
@@ -135,7 +135,7 @@ export function KioskLayout() {
 
   const attentionTerminals = terminals.filter((t) => t.waiting_for_input)
   const processesWithPorts = processes.filter(
-    (p) => p.port && p.status === "running" && (currentProject === "all" || p.project === currentProject)
+    (p) => p.port && p.status === "running" && (!currentProject || p.project === currentProject)
   )
   const collectionName = collections.find((c) => c.id === currentCollection)?.name
   const presets = useTerminalPresetsStore((s) => s.presets)
@@ -146,7 +146,7 @@ export function KioskLayout() {
   }, [loadPresets])
 
   const handleSpawnTerminal = async (command?: string) => {
-    if (currentProject === "all") {
+    if (!currentProject) {
       toast("Select a project first", "warning")
       return
     }
@@ -195,7 +195,7 @@ export function KioskLayout() {
               const ch = useChannelStore.getState().channels.find(
                 (c: { id: string }) => c.id === useChannelStore.getState().activeChannelId
               )
-              return ch ? (ch as { name: string }).name.replace(/^#/, "") : (currentProject === "all" ? "All" : currentProject)
+              return ch ? (ch as { name: string }).name.replace(/^#/, "") : (!currentProject ? "All" : currentProject)
             })()}
           </span>
           <ChevronDown className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
@@ -283,7 +283,7 @@ export function KioskLayout() {
       <KioskActionBar
         onCreateTask={() => setCreateTaskOpen(true)}
         onSpawnTerminal={() => {
-          if (currentProject === "all") { toast("Select a project first", "warning"); return }
+          if (!currentProject) { toast("Select a project first", "warning"); return }
           setAgentPickerOpen(true)
         }}
         onOpenBrowser={() => setBrowserUrlOpen(true)}
@@ -369,7 +369,7 @@ export function KioskLayout() {
         </Sheet>
       )}
 
-      {projectSettingsOpen && currentProject !== "all" && (
+      {projectSettingsOpen && currentProject && (
         <ProjectSettingsModal
           projectName={currentProject}
           onClose={() => setProjectSettingsOpen(false)}
@@ -396,8 +396,8 @@ export function KioskLayout() {
           hideActions
           onClose={() => setChatFullscreen(false)}
           onOpenTerminal={async (project) => {
-            const proj = project && project !== "all" ? project : currentProject
-            if (proj === "all") return
+            const proj = project || currentProject
+            if (!proj) return
             await spawnTerminal(proj)
           }}
           onCreateTask={() => setCreateTaskOpen(true)}

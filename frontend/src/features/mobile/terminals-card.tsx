@@ -25,7 +25,7 @@ export function TerminalsCard({
   }, [loadPresets])
 
   const filtered =
-    currentProject === "all"
+    !currentProject
       ? terminals
       : terminals.filter((t) => t.project === currentProject)
 
@@ -39,7 +39,7 @@ export function TerminalsCard({
   }
 
   const handleSpawn = async (command: string) => {
-    if (currentProject === "all") {
+    if (!currentProject) {
       toast("Select a project first", "warning")
       return
     }
@@ -55,7 +55,7 @@ export function TerminalsCard({
   }
 
   const getLabel = (terminal: (typeof filtered)[0]) => {
-    if (currentProject === "all") return terminal.project
+    if (!currentProject) return terminal.project
     const baseLabel = labelFor(terminal.command)
     const pid = terminal.pid ? ` (${terminal.pid})` : ""
     const sameLabel = filtered.filter((t) => labelFor(t.command) === baseLabel)
@@ -80,11 +80,11 @@ export function TerminalsCard({
         // Empty state: show agent launcher buttons
         <div className="space-y-1.5">
           <p className="text-xs text-gray-500 mb-2">
-            {currentProject === "all"
+            {!currentProject
               ? "Select a project to open a terminal"
               : "Launch a terminal agent"}
           </p>
-          {currentProject !== "all" && (
+          {currentProject && (
             <div className="grid grid-cols-2 gap-1.5">
               {presets.map((preset) => (
                 <button
@@ -143,7 +143,7 @@ export function TerminalsCard({
           <button
             className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded border border-dashed border-gray-600 text-gray-500 hover:text-gray-300 hover:border-gray-500 text-xs"
             onClick={() => {
-              if (currentProject === "all") { toast("Select a project first", "warning"); return }
+              if (!currentProject) { toast("Select a project first", "warning"); return }
               // Quick: show inline preset picker
               setShowInlinePicker((v) => !v)
             }}

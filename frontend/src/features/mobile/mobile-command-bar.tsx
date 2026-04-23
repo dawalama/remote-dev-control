@@ -6,6 +6,7 @@ import { POST, api } from "@/lib/api"
 import { getClientId } from "@/lib/client-id"
 import { useVoice } from "@/hooks/use-voice"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
+import { useChannelStore } from "@/stores/channel-store"
 
 export function MobileCommandBar({
   onOpenTerminal,
@@ -43,8 +44,18 @@ export function MobileCommandBar({
     setInput("")
     setLoading(true)
     try {
+      // Post user message to active channel so it shows in chat history.
+      const { activeChannelId, postMessage } = useChannelStore.getState()
+      if (activeChannelId) {
+        await postMessage(activeChannelId, msg, "user")
+      }
       const result = await orchestrator.send(msg)
-      if (result?.response) {
+      const isAsync = (result as Record<string, unknown> | null)?.async === true
+      if (isAsync) {
+        // Real reply lands in the channel via WS push; toast it when it arrives.
+        const reply = await _waitForOrchestratorReply()
+        if (reply) toast(reply.slice(0, 100), "info")
+      } else if (result?.response) {
         toast(result.response.slice(0, 100), "info")
       }
     } finally {
@@ -65,7 +76,7 @@ export function MobileCommandBar({
     setInput(text)
   }, [])
 
-  const voice = useVoice({ onFinal: handleVoiceFinal, onInterim: handleVoiceInterim })
+  const voice = useVoice({ channel: "mobile", onFinal: handleVoiceFinal, onInterim: handleVoiceInterim })
 
   const handlePhone = async () => {
     if (phone?.active) {
@@ -89,7 +100,7 @@ export function MobileCommandBar({
     e.target.value = ""
     const form = new FormData()
     form.append("file", file)
-    if (currentProject && currentProject !== "all") form.append("project", currentProject)
+    if (currentProject) form.append("project", currentProject)
     try {
       const res = await api<{ id: string; path: string }>("/context/upload", {
         method: "POST",
@@ -164,4 +175,27 @@ export function MobileCommandBar({
       </button>
     </div>
   )
+}
+
+/**
+ * Resolve with the first new orchestrator message posted to the active channel
+ * after the call, or null after ~30s.  Used when the orchestrator runs in async
+ * mode and the real reply is pushed to the channel via WebSocket.
+ */
+async function _waitForOrchestratorReply(): Promise<string | null> {
+  const startChannelId = useChannelStore.getState().activeChannelId
+  if (!startChannelId) return null
+  const baselineIds = new Set(useChannelStore.getState().messages.map((m) => m.id))
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 500))
+    // Bail if user navigated away — otherwise we could match a message in
+    // the new channel and return it as the reply for the original send.
+    if (useChannelStore.getState().activeChannelId !== startChannelId) return null
+    const fresh = useChannelStore.getState().messages.find(
+      (m) => !baselineIds.has(m.id) && m.role === "orchestrator" && m.content,
+    )
+    if (fresh) return fresh.content || null
+  }
+  return null
 }

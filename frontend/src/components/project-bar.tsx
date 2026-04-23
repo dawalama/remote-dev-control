@@ -28,11 +28,15 @@ export function ProjectBar() {
   // When activeOnly, show all active projects across collections; otherwise filter by collection
   const filteredProjects = activeOnly
     ? projects.filter((p) => activeSet.has(p.name))
-    : currentCollection === "all"
+    : !currentCollection
       ? projects
       : projects.filter((p) => p.collection_id === currentCollection)
 
-  const names = ["all", ...filteredProjects.map((p) => p.name)]
+  // `null` represents the "All" option — no project selected.
+  const entries: { label: string; value: string | null }[] = [
+    { label: "All", value: null },
+    ...filteredProjects.map((p) => ({ label: p.name, value: p.name })),
+  ]
 
   const hasActiveProjects = activeSet.size > 0
 
@@ -43,11 +47,11 @@ export function ProjectBar() {
         {collections.length > 0 && (
           <>
             <select
-              value={currentCollection}
-              onChange={(e) => selectCollection(e.target.value)}
+              value={currentCollection ?? ""}
+              onChange={(e) => selectCollection(e.target.value || null)}
               className="bg-gray-700 rounded px-2 py-1 text-sm text-gray-200 outline-none cursor-pointer"
             >
-              <option value="all">All ({projects.length})</option>
+              <option value="">All ({projects.length})</option>
               {collections.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name} ({c.project_count || c.projects?.length || 0})
@@ -64,23 +68,23 @@ export function ProjectBar() {
             <span className="text-gray-500 text-sm">›</span>
           </>
         )}
-        {names.map((name) => (
+        {entries.map((entry) => (
           <button
-            key={name}
+            key={entry.label}
             className={`relative px-3 py-1 rounded text-sm transition-colors ${
-              currentProject === name
+              currentProject === entry.value
                 ? "bg-blue-600 text-white"
                 : "bg-gray-700 text-gray-300 hover:bg-gray-600"
             }`}
-            onClick={() => selectProject(name)}
+            onClick={() => selectProject(entry.value)}
           >
-            {name === "all" ? "All" : name}
-            {name !== "all" && activeSet.has(name) && (
+            {entry.label}
+            {entry.value && activeSet.has(entry.value) && (
               <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-green-400" />
             )}
           </button>
         ))}
-        {activeOnly && !hasActiveProjects && names.length <= 1 && (
+        {activeOnly && !hasActiveProjects && entries.length <= 1 && (
           <span className="text-xs text-gray-500 italic">No active projects</span>
         )}
         <button
@@ -152,21 +156,25 @@ export function CommandPalette() {
   const matchingCollections = q
     ? collections.filter((c) => c.name.toLowerCase().includes(q))
     : collections
-  const allNames = ["all", ...projects.map((p) => p.name)]
+  // `value: null` represents the "All Projects" entry.
+  const allEntries: { label: string; value: string | null }[] = [
+    { label: "All Projects", value: null },
+    ...projects.map((p) => ({ label: p.name, value: p.name })),
+  ]
   const filtered = q
-    ? allNames.filter((n) => n.toLowerCase().includes(q))
-    : allNames
-  // Sort active projects to top (keep "all" first)
+    ? allEntries.filter((e) => e.label.toLowerCase().includes(q))
+    : allEntries
+  // Sort active projects to top (keep "All Projects" first)
   const matchingProjects = filtered.sort((a, b) => {
-    if (a === "all") return -1
-    if (b === "all") return 1
-    const aActive = activeSet.has(a) ? 0 : 1
-    const bActive = activeSet.has(b) ? 0 : 1
+    if (a.value === null) return -1
+    if (b.value === null) return 1
+    const aActive = activeSet.has(a.value) ? 0 : 1
+    const bActive = activeSet.has(b.value) ? 0 : 1
     return aActive - bActive
   })
 
-  const pick = (name: string) => {
-    selectProject(name)
+  const pick = (value: string | null) => {
+    selectProject(value)
     setOpen(false)
   }
 
@@ -193,7 +201,7 @@ export function CommandPalette() {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape") setOpen(false)
-              if (e.key === "Enter" && matchingProjects.length > 0) pick(matchingProjects[0])
+              if (e.key === "Enter" && matchingProjects.length > 0) pick(matchingProjects[0].value)
             }}
             placeholder="Search projects & collections..."
             className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-500"
@@ -230,20 +238,20 @@ export function CommandPalette() {
               <div className="px-4 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/50">
                 Projects
               </div>
-              {matchingProjects.map((name) => {
-                const proj = projects.find((p) => p.name === name)
+              {matchingProjects.map((entry) => {
+                const proj = entry.value ? projects.find((p) => p.name === entry.value) : null
                 const col = proj?.collection_id
                   ? collections.find((c) => c.id === proj.collection_id)
                   : null
-                const isActive = name !== "all" && activeSet.has(name)
+                const isActive = entry.value !== null && activeSet.has(entry.value)
                 return (
                   <button
-                    key={name}
+                    key={entry.label}
                     className="w-full text-left px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2"
-                    onClick={() => pick(name)}
+                    onClick={() => pick(entry.value)}
                   >
                     <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isActive ? "bg-green-400" : "bg-blue-500"}`} />
-                    {name === "all" ? "All Projects" : name}
+                    {entry.label}
                     {col && (
                       <span className="text-[10px] text-gray-500 ml-auto">{col.name}</span>
                     )}
@@ -285,7 +293,7 @@ export function AddProjectModal({
   const [tab, setTab] = useState<"create" | "connect">("create")
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
-  const [collectionId, setCollectionId] = useState(currentCollection !== "all" ? currentCollection : DEFAULT_COLLECTION_ID)
+  const [collectionId, setCollectionId] = useState(currentCollection ? currentCollection : DEFAULT_COLLECTION_ID)
   const [gitUrl, setGitUrl] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")

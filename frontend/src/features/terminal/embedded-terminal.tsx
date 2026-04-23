@@ -86,7 +86,7 @@ export function EmbeddedTerminal({
   const activeChannel = useChannelStore((s) => s.channels.find((c) => c.id === s.activeChannelId))
   const scopeKey = activeChannelId
     ? `channel:${activeChannelId}`
-    : currentProject !== "all"
+    : currentProject
       ? `project:${currentProject}`
       : "global"
 
@@ -105,7 +105,7 @@ export function EmbeddedTerminal({
     }
 
     // Project channels: show project terminals + channel-linked
-    const projectFiltered = currentProject !== "all"
+    const projectFiltered = currentProject
       ? terminals.filter((t) => t.project === currentProject)
       : terminals
 
@@ -165,7 +165,7 @@ export function EmbeddedTerminal({
 
   const handleSpawn = useCallback(
     async (command?: string) => {
-      if (currentProject === "all") {
+      if (!currentProject) {
         toast("Select a project first", "warning")
         return
       }
@@ -207,7 +207,7 @@ export function EmbeddedTerminal({
   }, [showingTerminalId, terminalStore, toast, setMode, projectTerminals, setActiveTerminalId, rememberTerminalForScope, scopeKey])
 
   // No project selected and no terminals anywhere
-  if (currentProject === "all" && projectTerminals.length === 0 && logPanes.length === 0) {
+  if (!currentProject && projectTerminals.length === 0 && logPanes.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg min-h-0">
         <p className="text-gray-500 text-sm">Select a project to open a terminal</p>
@@ -250,7 +250,7 @@ export function EmbeddedTerminal({
   const terminalContent = showingTerminalId ? (
     <>
       <TerminalToolbar
-        project={showingTerminal?.project || currentProject}
+        project={showingTerminal?.project || currentProject || ""}
         sessionId={showingTerminalId}
         connected={connected}
         onRestart={handleRestart}
@@ -275,7 +275,7 @@ export function EmbeddedTerminal({
         <TerminalView
           key={showingTerminalId}
           sessionId={showingTerminalId}
-          project={showingTerminal?.project || currentProject}
+          project={showingTerminal?.project || currentProject || ""}
           fontSize={layout === "kiosk" ? 15 : 13}
           onDisconnect={() => setConnected(false)}
           onSendReady={handleSendReady}
@@ -382,7 +382,7 @@ export function EmbeddedTerminal({
   }
 
   const getTabLabel = (terminal: typeof projectTerminals[0]) => {
-    if (currentProject === "all") return terminal.project
+    if (!currentProject) return terminal.project
     const baseLabel = labelFor(terminal.command)
     const pid = terminal.pid ? ` (${terminal.pid})` : ""
     const sameLabel = projectTerminals.filter(

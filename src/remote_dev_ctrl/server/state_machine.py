@@ -114,6 +114,7 @@ class StateSnapshot(BaseModel):
     channels: list[dict] = []
     terminal_channels: dict[str, list[str]] = {}  # terminal_id -> [channel_ids]
     phone: dict = {}
+    voice: dict = {}
     conversation: dict = {}
     queue_stats: dict
     timestamp: str
@@ -909,6 +910,14 @@ class ServerStateMachine:
         except Exception:
             pass
 
+        # Shared voice runtime state
+        voice_info = {"active": False, "sessions": []}
+        try:
+            from .voice_runtime import get_voice_runtime
+            voice_info = get_voice_runtime().snapshot()
+        except Exception:
+            pass
+
         all_actions = self._enrich_processes(pm.list())
 
         # Channels + terminal↔channel mapping
@@ -943,6 +952,7 @@ class ServerStateMachine:
             channels=channels_data,
             terminal_channels=terminal_channels_map,
             phone=phone_info,
+            voice=voice_info,
             conversation=conversation_info,
             queue_stats=queue_stats,
             timestamp=datetime.now().isoformat(),

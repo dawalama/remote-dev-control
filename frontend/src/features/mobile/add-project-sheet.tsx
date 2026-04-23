@@ -27,7 +27,7 @@ export function AddProjectSheet({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<"create" | "connect">("create")
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
-  const [collectionId, setCollectionId] = useState(currentCollection !== "all" ? currentCollection : DEFAULT_COLLECTION_ID)
+  const [collectionId, setCollectionId] = useState(currentCollection ? currentCollection : DEFAULT_COLLECTION_ID)
   const [connectPath, setConnectPath] = useState("")
   const [loading, setLoading] = useState(false)
 

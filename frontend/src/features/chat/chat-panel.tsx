@@ -30,7 +30,7 @@ export function ChatPanel() {
         channel: "desktop",
         client_id: getClientId(),
       }
-      if (currentProject !== "all") body.project = currentProject
+      if (currentProject) body.project = currentProject
       const result = await POST<{ response: string; usage?: { model?: string; duration_ms?: number } }>("/orchestrator", body)
       if (result?.response) {
         setMessages((prev) => [...prev, {

@@ -86,8 +86,8 @@ export function MobileLayout() {
     channel: "mobile",
     terminalSendRef,
     onOpenTerminal: async (project) => {
-      const proj = project && project !== "all" ? project : currentProject
-      if (proj === "all") { toast("Select a project first", "warning"); return }
+      const proj = project || currentProject
+      if (!proj) { toast("Select a project first", "warning"); return }
       try {
         const activeChId = useChannelStore.getState().activeChannelId
         let url = `/terminals?project=${encodeURIComponent(proj)}`
@@ -133,7 +133,7 @@ export function MobileLayout() {
 
   // Processes with ports for the current project (for URL suggestions)
   const processesWithPorts = processes.filter(
-    (p) => p.port && p.status === "running" && (currentProject === "all" || p.project === currentProject)
+    (p) => p.port && p.status === "running" && (!currentProject || p.project === currentProject)
   )
 
   const collectionName = collections.find((c) => c.id === currentCollection)?.name
@@ -155,7 +155,7 @@ export function MobileLayout() {
   }, [loadChannels])
 
   useEffect(() => {
-    if (currentProject && currentProject !== "all") {
+    if (currentProject) {
       const ch = channels.find((c) =>
         c.name === `#${currentProject}` || c.project_names?.includes(currentProject)
       )
@@ -164,7 +164,7 @@ export function MobileLayout() {
   }, [currentProject, channels, selectChannel])
 
   const handleSpawnTerminal = async (command?: string) => {
-    if (currentProject === "all") {
+    if (!currentProject) {
       toast("Select a project first", "warning")
       return
     }
@@ -230,7 +230,7 @@ export function MobileLayout() {
             <span className="text-sm font-semibold text-gray-100 truncate">
               {(() => {
                 const ch = channels.find((c) => c.id === useChannelStore.getState().activeChannelId)
-                return ch ? ch.name.replace(/^#/, "") : (currentProject === "all" ? "All" : currentProject)
+                return ch ? ch.name.replace(/^#/, "") : (!currentProject ? "All" : currentProject)
               })()}
             </span>
             <span className="text-gray-500 text-xs ml-0.5">▼</span>
@@ -300,8 +300,8 @@ export function MobileLayout() {
       <MobileChannelPanel
         hideActions
         onOpenTerminal={async (project) => {
-          const proj = project && project !== "all" ? project : currentProject
-          if (proj === "all") { toast("Select a project first", "warning"); return }
+          const proj = project || currentProject
+          if (!proj) { toast("Select a project first", "warning"); return }
           try {
             const activeChId = useChannelStore.getState().activeChannelId
             let url = `/terminals?project=${encodeURIComponent(proj)}`
@@ -327,7 +327,7 @@ export function MobileLayout() {
           <button
             className="flex-1 py-2 text-sm font-medium rounded-lg border border-gray-600 text-gray-300"
             onClick={() => {
-              if (currentProject === "all") { toast("Select a project first", "warning"); return }
+              if (!currentProject) { toast("Select a project first", "warning"); return }
               setAgentPickerOpen(true)
             }}
           >
@@ -453,7 +453,7 @@ export function MobileLayout() {
       )}
 
       {/* Project settings (full page on mobile) */}
-      {projectSettingsOpen && currentProject !== "all" && (
+      {projectSettingsOpen && currentProject && (
         <ProjectSettingsModal
           projectName={currentProject}
           onClose={() => setProjectSettingsOpen(false)}

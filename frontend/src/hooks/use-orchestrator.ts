@@ -36,8 +36,8 @@ interface OrchestratorResult {
 // ---------------------------------------------------------------------------
 
 interface CommandContext {
-  currentProject: string
-  selectProject: (p: string) => void
+  currentProject: string | null
+  selectProject: (p: string | null) => void
   loadProjects: () => void
   setTab: (tab: string) => void
   setLayout: (layout: string) => void
@@ -91,6 +91,7 @@ const COMMANDS: Command[] = [
     hasSlot: true,
     execute: (rest, ctx) => {
       const project = rest || ctx.currentProject
+      if (!project) return { response: "Select a project first.", actions: [] }
       ctx.onOpenTerminal?.(project)
       return { response: `Opening terminal for ${project}`, actions: [] }
     },
@@ -103,8 +104,51 @@ const COMMANDS: Command[] = [
     },
   },
   {
+    id: "switch_workstream",
+    // Triggers come BEFORE the generic select_project so "switch to X" flips
+    // the workstream (which also syncs the linked project) rather than
+    // silently setting currentProject to a bogus value. Falls through to the
+    // LLM if no workstream matches — never mutates state on a miss.
+    // "go to" is intentionally excluded — it's owned by show_tab. The
+    // fallback parser below catches "go to <channel-name>" when the slot
+    // actually matches a known channel.
+    triggers: [
+      "switch to workstream", "change to workstream", "open workstream",
+      "switch to", "change to",
+    ],
+    hasSlot: true,
+    execute: (rest, _ctx) => {
+      if (!rest) return null
+      // Strip quotes, leading '#', trailing/leading 'workstream'/'channel'.
+      let name = rest.trim().replace(/^["']|["']$/g, "").replace(/^#/, "").trim()
+      name = name.replace(/\s+(workstream|channel)$/i, "")
+                 .replace(/^(workstream|channel)\s+/i, "")
+                 .trim()
+      if (!name) return null
+
+      const channels = useChannelStore.getState().channels
+      const lower = name.toLowerCase()
+      // Prefer exact match against stored name (with or without '#'), then
+      // substring match. Ignore archived channels.
+      const active = channels.filter((c) => !c.archived_at)
+      let match = active.find(
+        (c) => c.name.toLowerCase() === `#${lower}` || c.name.toLowerCase() === lower,
+      )
+      if (!match) {
+        const candidates = active.filter((c) => c.name.toLowerCase().includes(lower))
+        if (candidates.length === 1) match = candidates[0]
+      }
+      if (!match) return null // fall through to the LLM (no ghost mutation)
+
+      useChannelStore.getState().selectChannel(match.id)
+      return { response: `Switched to ${match.name}`, actions: [] }
+    },
+  },
+  {
     id: "select_project",
-    triggers: ["switch to", "change to", "change project to", "select project", "select", "project"],
+    // Kept for legacy phrasing ("select project X", "select X"). The broader
+    // "switch to" / "change to" triggers moved to switch_workstream above.
+    triggers: ["change project to", "select project", "project"],
     hasSlot: true,
     execute: (rest, ctx) => {
       if (!rest) return null
@@ -248,15 +292,29 @@ const COMMANDS: Command[] = [
   },
 ]
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
 function matchCommand(input: string): { command: Command; rest: string } | null {
-  const normalized = input.toLowerCase().trim().replace(/\s+/g, " ")
+  // Strip trailing sentence punctuation that voice transcription adds
+  // ("Switch to Documaker." → "switch to documaker"); commands match phrases,
+  // not sentences.
+  const normalized = input
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[.!?,;:]+$/, "")
+    .trim()
   for (const cmd of COMMANDS) {
     for (const trigger of cmd.triggers) {
       if (normalized === trigger) {
         return { command: cmd, rest: "" }
       }
       if (cmd.hasSlot && normalized.startsWith(trigger + " ")) {
-        const rest = normalized.slice(trigger.length + 1).trim()
+        // Slot value: also strip any internal trailing punctuation so
+        // "switch to documaker," resolves cleanly.
+        const rest = normalized.slice(trigger.length + 1).trim().replace(/[.!?,;:]+$/, "").trim()
         if (rest) return { command: cmd, rest }
       }
     }
@@ -312,10 +370,12 @@ export function useOrchestrator(opts: {
         if (action.collection) selectCollection(action.collection)
         break
 
-      case "open_terminal":
+      case "open_terminal": {
         if (action.project) selectProject(action.project)
-        opts.onOpenTerminal?.(action.project || currentProject)
+        const proj = action.project || currentProject
+        if (proj) opts.onOpenTerminal?.(proj)
         break
+      }
 
       case "show_tab":
         if (action.tab) setTab(action.tab as TabId)
@@ -370,14 +430,16 @@ export function useOrchestrator(opts: {
         opts.onSystemSettings?.()
         break
 
-      case "focus_terminal":
+      case "focus_terminal": {
         if (action.project) selectProject(action.project)
-        opts.onOpenTerminal?.(action.project || currentProject)
+        const proj = action.project || currentProject
+        if (proj) opts.onOpenTerminal?.(proj)
         break
+      }
 
       case "send_to_terminal":
         // Voice/command requested text be sent to terminal
-        if (action.text && typeof action.text === "string") {
+        if (action.text && typeof action.text === "string" && currentProject) {
           opts.onOpenTerminal?.(currentProject)
         }
         break
@@ -488,7 +550,7 @@ export function useOrchestrator(opts: {
     // Report executed action to server via WS
     sendEvent("client_action", {
       action: action.action,
-      project: currentProject !== "all" ? currentProject : undefined,
+      project: currentProject ?? undefined,
       status: action.success === false ? "error" : "ok",
     })
   }, [selectProject, selectCollection, loadProjects, currentProject, setTab, setLayout, setTheme, toggleSidebar, toggleChat, toast, opts, sendEvent])
@@ -496,28 +558,51 @@ export function useOrchestrator(opts: {
   // Try to handle a command locally via declarative command table (instant, no server call)
   const tryLocalCommand = useCallback((text: string): OrchestratorResult | null => {
     const match = matchCommand(text)
-    if (!match) return null
-
-    const ctx: CommandContext = {
-      currentProject,
-      selectProject,
-      loadProjects,
-      setTab: (tab) => setTab(tab as TabId),
-      setLayout,
-      setTheme,
-      toggleSidebar,
-      toggleChat,
-      toast,
-      onOpenTerminal: opts.onOpenTerminal,
-      onCreateTask: opts.onCreateTask,
-      onOpenBrowser: opts.onOpenBrowser,
-      onOpenActivity: opts.onOpenActivity,
-      onOpenMenu: opts.onOpenMenu,
-      onEditProject: opts.onEditProject,
-      onSystemSettings: opts.onSystemSettings,
+    if (match) {
+      const ctx: CommandContext = {
+        currentProject,
+        selectProject,
+        loadProjects,
+        setTab: (tab) => setTab(tab as TabId),
+        setLayout,
+        setTheme,
+        toggleSidebar,
+        toggleChat,
+        toast,
+        onOpenTerminal: opts.onOpenTerminal,
+        onCreateTask: opts.onCreateTask,
+        onOpenBrowser: opts.onOpenBrowser,
+        onOpenActivity: opts.onOpenActivity,
+        onOpenMenu: opts.onOpenMenu,
+        onEditProject: opts.onEditProject,
+        onSystemSettings: opts.onSystemSettings,
+      }
+      return match.command.execute(match.rest, ctx)
     }
 
-    return match.command.execute(match.rest, ctx)
+    // Fallback: voice phrasing the strict command table missed.  If the
+    // message contains a navigation verb AND exactly one known workstream
+    // name appears as a whole word, switch to it. Catches things like:
+    //   "use truesteps-site"
+    //   "let's go to documaker please"
+    //   "I want to switch over to the chilly-snacks workstream"
+    // Without this, voice falls through to the LLM which often asks for
+    // confirmation and then hallucinates success.
+    const lower = text.toLowerCase()
+    const hasNavVerb = /\b(switch|change|go|open|use|select|move|jump|take me|bring me)\b/.test(lower)
+    if (!hasNavVerb) return null
+    const channels = useChannelStore.getState().channels.filter((c) => !c.archived_at)
+    const matches: typeof channels = []
+    for (const ch of channels) {
+      const bare = ch.name.replace(/^#/, "").toLowerCase()
+      if (!bare) continue
+      // Whole-word/identifier match: avoid "general" matching inside "generally".
+      const re = new RegExp(`(?:^|[^a-z0-9-])${escapeRegExp(bare)}(?![a-z0-9-])`, "i")
+      if (re.test(lower)) matches.push(ch)
+    }
+    if (matches.length !== 1) return null // ambiguous or none — let the LLM decide
+    useChannelStore.getState().selectChannel(matches[0].id)
+    return { response: `Switched to ${matches[0].name}`, actions: [] }
   }, [currentProject, selectProject, setTab, setLayout, setTheme, toggleSidebar, toggleChat, loadProjects, toast, opts])
 
   const send = useCallback(async (message: string, project?: string): Promise<OrchestratorResult | null> => {
@@ -527,14 +612,14 @@ export function useOrchestrator(opts: {
       // Report local command execution
       sendEvent("client_action", {
         action: "command_local",
-        project: currentProject !== "all" ? currentProject : undefined,
+        project: currentProject ?? undefined,
         status: "ok",
       })
       return localResult
     }
 
     // Fall back to server orchestrator — server owns conversation history
-    const proj = project || (currentProject !== "all" ? currentProject : undefined)
+    const proj = project || (currentProject ?? undefined)
 
     try {
       const activeChannelId = useChannelStore.getState().activeChannelId
@@ -567,7 +652,7 @@ export function useOrchestrator(opts: {
   }, [opts.channel, currentProject, executeAction, toast, tryLocalCommand, sendEvent])
 
   const clearHistory = useCallback(async () => {
-    const proj = currentProject !== "all" ? currentProject : undefined
+    const proj = currentProject ?? undefined
     try {
       await POST("/conversation/clear", { project: proj })
     } catch {

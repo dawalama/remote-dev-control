@@ -128,7 +128,7 @@ def _build_identity_layer(project: Optional[str], budget: int) -> ContextLayer:
     """Project identity: name, stack, conventions."""
     parts: list[str] = []
 
-    if not project or project == "all":
+    if not project:
         return ContextLayer(name="Identity", content="No specific project selected.", priority=5, token_budget=budget)
 
     parts.append(f"Project: {project}")
@@ -221,7 +221,7 @@ def _build_state_layer(
         pass
 
     # Git state
-    if project and project != "all":
+    if project:
         try:
             repo = get_project_repo()
             p = repo.get(project)
@@ -363,7 +363,7 @@ def _build_summary_layer(
 
 def _build_git_layer(project: Optional[str], budget: int) -> ContextLayer:
     """Recent git activity."""
-    if not project or project == "all":
+    if not project:
         return ContextLayer(name="Git Activity", content="", priority=2, token_budget=budget)
 
     lines: list[str] = []
