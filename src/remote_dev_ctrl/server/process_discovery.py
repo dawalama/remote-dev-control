@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Optional
+
 from pydantic import BaseModel
 
+from ..project_detection import detect_node_framework, detect_script_port
 from ..llm import ollama_generate
 
 
@@ -257,6 +259,45 @@ def deduplicate_processes(processes: list[DiscoveredProcess]) -> list[Discovered
     return unique
 
 
+def _node_process_from_package(
+    *,
+    name: str,
+    scripts: dict,
+    dependencies: dict,
+    cwd: str | None = None,
+) -> DiscoveredProcess | None:
+    """Infer the primary Node dev process from package metadata."""
+    for script_name in ["dev", "start", "serve"]:
+        if script_name not in scripts:
+            continue
+
+        script_cmd = str(scripts[script_name])
+        framework = detect_node_framework(
+            project_path=None,
+            pkg={"dependencies": dependencies},
+            script=script_cmd,
+        )
+        default_port = detect_script_port(
+            script_cmd,
+            framework.default_port if framework else 3000,
+        )
+
+        description = (
+            f"{name.title()} server"
+            if name != "app"
+            else f"Main application ({script_name})"
+        )
+        return DiscoveredProcess(
+            name=name,
+            command=f"npm run {script_name}",
+            description=description,
+            default_port=default_port,
+            cwd=cwd,
+        )
+
+    return None
+
+
 def analyze_with_heuristics(project_path: str, files: dict[str, str]) -> list[DiscoveredProcess]:
     """Fallback heuristic-based discovery without LLM."""
     processes = []
@@ -267,16 +308,18 @@ def analyze_with_heuristics(project_path: str, files: dict[str, str]) -> list[Di
         try:
             pkg = json.loads(files["package.json"])
             scripts = pkg.get("scripts", {})
-            
-            for script_name in ["dev", "start", "serve"]:
-                if script_name in scripts:
-                    processes.append(DiscoveredProcess(
-                        name="app",
-                        command=f"npm run {script_name}",
-                        description=f"Main application ({script_name})",
-                        default_port=3000,
-                    ))
-                    break
+            dependencies = {
+                **pkg.get("dependencies", {}),
+                **pkg.get("devDependencies", {}),
+            }
+
+            node_process = _node_process_from_package(
+                name="app",
+                scripts=scripts,
+                dependencies=dependencies,
+            )
+            if node_process:
+                processes.append(node_process)
             
             # Look for worker scripts
             for script_name, script_cmd in scripts.items():
@@ -296,17 +339,19 @@ def analyze_with_heuristics(project_path: str, files: dict[str, str]) -> list[Di
             try:
                 pkg = json.loads(files[pkg_key])
                 scripts = pkg.get("scripts", {})
-                
-                if "dev" in scripts or "start" in scripts:
-                    script = "dev" if "dev" in scripts else "start"
-                    port = 3000 if subdir in ["frontend", "client"] else 8000
-                    processes.append(DiscoveredProcess(
-                        name=subdir,
-                        command=f"npm run {script}",
-                        description=f"{subdir.title()} server",
-                        default_port=port,
-                        cwd=subdir,
-                    ))
+                dependencies = {
+                    **pkg.get("dependencies", {}),
+                    **pkg.get("devDependencies", {}),
+                }
+
+                node_process = _node_process_from_package(
+                    name=subdir,
+                    scripts=scripts,
+                    dependencies=dependencies,
+                    cwd=subdir,
+                )
+                if node_process:
+                    processes.append(node_process)
                 
                 # Check for worker scripts in subdirs
                 for script_name in scripts:

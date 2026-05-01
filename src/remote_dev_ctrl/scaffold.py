@@ -132,6 +132,38 @@ def create_rdc_yaml(path: Path, name: str, config: dict) -> str:
     return "rdc.yaml"
 
 
+def create_imported_project_rdc_yaml(path: Path, name: str, config: dict) -> str:
+    """Create rdc.yaml for an existing project, including discovered actions."""
+    import yaml
+
+    from .server.process_discovery import discover_processes
+
+    processes = discover_processes(name, str(path), use_llm=False)
+    yaml_content = {
+        "name": name,
+        "description": config.get("description", ""),
+        "type": config.get("type", "backend"),
+        "stack": config.get("stack", {}),
+        "features": config.get("features", []),
+    }
+
+    if processes:
+        yaml_content["actions"] = [
+            {
+                "name": proc.name,
+                "kind": proc.kind,
+                "command": proc.command,
+                "description": proc.description,
+                **({"port": proc.default_port} if proc.default_port else {}),
+                **({"cwd": proc.cwd} if proc.cwd else {}),
+            }
+            for proc in processes
+        ]
+
+    (path / "rdc.yaml").write_text(yaml.safe_dump(yaml_content, sort_keys=False))
+    return "rdc.yaml"
+
+
 def _init_git(path: Path):
     """Initialize a git repo and make an initial commit."""
     try:

@@ -7717,7 +7717,7 @@ async def create_project(req: CreateProjectRequest):
 
     # Auto-infer details and generate rdc.yaml if not provided
     from ..llm import analyze_existing_project
-    import yaml
+    from ..scaffold import create_imported_project_rdc_yaml
 
     if not description or not project_name:
         inferred = analyze_existing_project(project_path)
@@ -7740,14 +7740,10 @@ async def create_project(req: CreateProjectRequest):
             if 'inferred' not in locals():
                 inferred = analyze_existing_project(project_path)
             
-            yaml_content = {
-                "name": project_name,
+            create_imported_project_rdc_yaml(project_path, project_name, {
+                **inferred,
                 "description": description,
-                "type": inferred.get("type", "backend"),
-                "stack": inferred.get("stack", {}),
-                "features": inferred.get("features", []),
-            }
-            rdc_yaml.write_text(yaml.dump(yaml_content, sort_keys=False))
+            })
         except Exception:
             pass
 

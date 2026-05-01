@@ -250,7 +250,7 @@ def add(
     
     # Auto-infer details and generate rdc.yaml if not provided
     from .llm import analyze_existing_project
-    import yaml
+    from .scaffold import create_imported_project_rdc_yaml
     
     if not name or not description:
         rprint("[bold]Analyzing existing project to infer details...[/bold]")
@@ -283,14 +283,10 @@ def add(
             if 'inferred' not in locals():
                 inferred = analyze_existing_project(path)
             
-            yaml_content = {
-                "name": project_name,
+            create_imported_project_rdc_yaml(path, project_name, {
+                **inferred,
                 "description": description,
-                "type": inferred.get("type", "backend"),
-                "stack": inferred.get("stack", {}),
-                "features": inferred.get("features", []),
-            }
-            rdc_yaml.write_text(yaml.dump(yaml_content, sort_keys=False))
+            })
             rprint(f"[green]✓[/green] Generated {rdc_yaml.name}")
         except Exception as e:
             rprint(f"[yellow]Could not generate rdc.yaml: {e}[/yellow]")

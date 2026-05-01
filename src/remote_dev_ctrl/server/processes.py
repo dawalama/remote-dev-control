@@ -11,6 +11,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Callable
 
+from ..project_detection import direct_node_dev_command
 from .db.models import ActionKind, ProcessConfig, ProcessStatus, ProcessType
 
 
@@ -64,18 +65,12 @@ def detect_dev_command(project_path: str, assigned_port: Optional[int] = None) -
                 deps = pkg.get("devDependencies", {})
                 deps.update(pkg.get("dependencies", {}))
 
-                if "vite" in dev_script or "vite" in deps:
-                    # --host allows access from Docker containers for VNC preview
-                    return ("npx vite --host", port if port != 3000 else 5173)
-                elif "next" in dev_script or "next" in deps:
-                    return ("npx next dev", 3000)
-                elif "react-scripts" in dev_script or "react-scripts" in deps:
-                    return ("npx react-scripts start", 3000)
-                elif "vue" in dev_script:
-                    return ("npx vue-cli-service serve", 8080)
-                else:
-                    # Fallback to npm run dev if we can't detect the tool
-                    return ("npm run dev", port)
+                direct_command = direct_node_dev_command(pkg, dev_script, port)
+                if direct_command:
+                    return direct_command
+
+                # Fallback to npm run dev if we can't detect the tool
+                return ("npm run dev", port)
             elif "start" in scripts:
                 return ("npm start", 3000)
         except json.JSONDecodeError:
@@ -884,9 +879,10 @@ class ProcessManager:
         # Fallback: heuristics for discovered commands
         # (kept simple - for imported projects without rdc.yml)
 
-        # npm/pnpm wrappers - convert to direct invocation
+        # npm/pnpm wrappers do not identify the underlying framework. Preserve
+        # the project script and pass the assigned port through the environment.
         if cmd in ("npm run dev", "pnpm dev"):
-            return f"npx vite --port {port} --host"
+            return f"PORT={port} {cmd}"
 
         if cmd in ("npm start", "pnpm start"):
             return f"PORT={port} {cmd}"

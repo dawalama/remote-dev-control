@@ -4,6 +4,8 @@ import json
 import subprocess
 from dataclasses import dataclass
 
+from .project_detection import infer_node_profile
+
 
 @dataclass
 class LLMConfig:
@@ -255,6 +257,15 @@ def validate_and_fix_config(config: dict, description: str) -> dict:
     if stack.get("frontend") not in VALID_FRONTENDS:
         stack["frontend"] = "react" if config["type"] in ("frontend", "fullstack") else "none"
     config["stack"] = stack
+
+    has_backend = stack.get("backend") != "none"
+    has_frontend = stack.get("frontend") != "none"
+    if has_backend and has_frontend:
+        config["type"] = "fullstack"
+    elif has_frontend:
+        config["type"] = "frontend"
+    elif has_backend:
+        config["type"] = "backend"
     
     # Validate database
     if config.get("database") not in VALID_DATABASES:
@@ -378,6 +389,61 @@ def is_ollama_available() -> bool:
         return False
 
 
+def _analyze_existing_project_with_heuristics(path_obj) -> dict:
+    """Infer existing project config without an LLM."""
+    from pathlib import Path
+
+    path_obj = Path(path_obj)
+    name = path_obj.name
+    description = f"Imported project from {path_obj.name}"
+    proj_type = "backend"
+    backend = "none"
+    frontend = "none"
+    database = "none"
+    deployment = "none"
+    features: list[str] = []
+
+    node_profile = infer_node_profile(path_obj)
+    if node_profile:
+        name = node_profile.get("name") or name
+        description = node_profile.get("description") or description
+        backend = node_profile.get("backend", backend)
+        frontend = node_profile.get("frontend", frontend)
+        database = node_profile.get("database", database)
+        deployment = node_profile.get("deployment", deployment)
+        features.extend(node_profile.get("features", []))
+        if backend != "none" and frontend != "none":
+            proj_type = "fullstack"
+        elif frontend != "none":
+            proj_type = "frontend"
+        elif backend != "none":
+            proj_type = "backend"
+
+    pyproject_path = path_obj / "pyproject.toml"
+    if pyproject_path.exists():
+        content = pyproject_path.read_text(errors="ignore").lower()
+        if "fastapi" in content:
+            backend = "fastapi"
+            proj_type = "fullstack" if frontend != "none" else "backend"
+        elif "django" in content:
+            backend = "django"
+            proj_type = "fullstack" if frontend != "none" else "backend"
+
+    if (path_obj / "docker-compose.yml").exists() or (path_obj / "docker-compose.yaml").exists():
+        deployment = "docker"
+
+    return {
+        "name": name,
+        "description": description,
+        "type": proj_type,
+        "stack": {"backend": backend, "frontend": frontend},
+        "database": database,
+        "deployment": deployment,
+        "features": sorted(set(features)),
+        "reasoning": "Inferred from project files (heuristic fallback)",
+    }
+
+
 def analyze_existing_project(path) -> dict:
     """Analyze an existing directory to infer project name, description and config."""
     from pathlib import Path
@@ -457,14 +523,4 @@ Rules:
         return result
         
     # Fallback heuristics
-    return {
-        "name": path_obj.name,
-        "description": f"Imported project from {path_obj.name}",
-        "type": "backend",
-        "stack": {"backend": "none", "frontend": "none"},
-        "database": "none",
-        "deployment": "none",
-        "features": [],
-        "reasoning": "Fallback (LLM failed)"
-    }
-
+    return _analyze_existing_project_with_heuristics(path_obj)
