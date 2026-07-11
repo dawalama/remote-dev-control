@@ -162,6 +162,19 @@ _SHELL_PROMPT_RE = re.compile(r"[$%>]\s*$")
 _EXIT_SIGNAL_RE = re.compile(r"__RDC_EXIT:(\d+)")
 
 
+def extract_agent_report(transcript: str, provider: str | None) -> str:
+    """Extract the provider's final human-readable answer from a terminal transcript."""
+    cleaned = strip_ansi(transcript).replace("\r\n", "\n")
+    if provider == "codex":
+        marker = "\ncodex\n"
+        marker_index = cleaned.rfind(marker)
+        if marker_index >= 0:
+            report = cleaned[marker_index + len(marker):]
+            report = re.split(r"\ntokens used\n|\n__RDC_EXIT:\d+", report, maxsplit=1)[0]
+            return report.strip()
+    return ""
+
+
 @dataclass
 class Session:
     id: str
@@ -587,13 +600,15 @@ class SessionManager:
             logger.debug("Failed to save terminal log", exc_info=True)
 
     async def _generate_summary(self, session: Session) -> str:
-        """Generate a summary by checking git changes. Also saves terminal log."""
+        """Generate an outcome from the agent report and any working-tree changes."""
         self._save_terminal_log(session)
         try:
+            log_file = get_rdc_home() / "sessions" / f"{session.id}.log"
+            report = extract_agent_report(log_file.read_text(errors="replace"), session.agent_provider) if log_file.exists() else ""
             repo = get_project_repo()
             p = repo.get(session.project)
             if not p or not p.path:
-                return ""
+                return report
 
             result = subprocess.run(
                 ["git", "diff", "--stat", "HEAD"],
@@ -601,19 +616,13 @@ class SessionManager:
             )
             diff_stat = result.stdout.strip() if result.returncode == 0 else ""
 
-            result2 = subprocess.run(
-                ["git", "log", "--oneline", "-5", "--no-decorate"],
-                capture_output=True, text=True, cwd=p.path, timeout=10,
-            )
-            recent_commits = result2.stdout.strip() if result2.returncode == 0 else ""
-
             parts = []
+            if report:
+                parts.append(report)
             if diff_stat:
                 parts.append(f"**Files changed:**\n```\n{diff_stat}\n```")
-            if recent_commits:
-                parts.append(f"**Recent commits:**\n```\n{recent_commits}\n```")
             if not parts:
-                parts.append("No file changes detected.")
+                parts.append("The agent finished without recording a final report or changing files.")
             return "\n\n".join(parts)
         except Exception:
             logger.debug("Failed to generate session summary", exc_info=True)

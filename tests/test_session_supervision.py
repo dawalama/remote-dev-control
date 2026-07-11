@@ -9,6 +9,7 @@ from remote_dev_ctrl.server.session_manager import (
     SessionStatus,
     agent_provider_blocker,
     build_agent_command,
+    extract_agent_report,
     get_session_manager,
 )
 
@@ -50,7 +51,7 @@ def test_supervised_success_enters_verification_instead_of_claiming_completion()
         channel_id="test-channel",
         project="test-project",
         description="Verify before completion",
-        metadata={"supervised": True},
+        metadata={"supervised": True, "review_mode": "implementation"},
     )
     assert manager.successful_execution_status(session) == SessionStatus.VERIFYING
 
@@ -61,7 +62,7 @@ def test_supervised_completion_is_evidence_gated():
         channel_id="test-channel",
         project="test-project",
         description="Do not complete on an agent claim",
-        metadata={"supervised": True},
+        metadata={"supervised": True, "review_mode": "implementation"},
         acceptance_criteria=["Independent checks pass"],
     )
     token, _ = get_auth_manager().create_token("session-gate-test", Role.ADMIN)
@@ -73,6 +74,11 @@ def test_supervised_completion_is_evidence_gated():
     assert "Git evidence" in response.json()["detail"]
     assert "passing verification evidence" in response.json()["detail"]
     assert "resolved acceptance criteria" in response.json()["detail"]
+
+
+def test_codex_final_report_is_extracted_without_cli_noise():
+    transcript = "reading files\nmore tool output\ncodex\n# Recommendation\n\nUse the dashboard data.\ntokens used\n1,234\n__RDC_EXIT:0\n"
+    assert extract_agent_report(transcript, "codex") == "# Recommendation\n\nUse the dashboard data."
 
 
 def test_terminal_approval_is_durable_and_decided_idempotently():

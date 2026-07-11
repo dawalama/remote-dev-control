@@ -8999,6 +8999,27 @@ async def get_channel_context(channel_id: str, project: str | None = None):
     }
 
 
+def _session_git_snapshot(project: str) -> dict[str, str]:
+    try:
+        path = _session_project_path(project)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=path, text=True, capture_output=True, timeout=10, check=False)
+        status = subprocess.run(["git", "status", "--short"], cwd=path, text=True, capture_output=True, timeout=10, check=False)
+        return {"head": head.stdout.strip() if head.returncode == 0 else "", "status": status.stdout.strip() if status.returncode == 0 else ""}
+    except Exception:
+        return {"head": "", "status": ""}
+
+
+def _session_review_mode(session) -> str:
+    metadata = session.metadata or {}
+    if metadata.get("review_mode") in {"advisory", "implementation"}:
+        return metadata["review_mode"]
+    baseline = metadata.get("git_baseline")
+    current = _session_git_snapshot(session.project)
+    if isinstance(baseline, dict):
+        return "implementation" if current != baseline else "advisory"
+    return "implementation" if current.get("status") else "advisory"
+
+
 def _session_response(session) -> dict:
     return {
         "id": session.id, "channel_id": session.channel_id, "project": session.project,
@@ -9014,6 +9035,7 @@ def _session_response(session) -> dict:
         "updated_at": session.updated_at.isoformat(),
         "completed_at": session.completed_at.isoformat() if session.completed_at else None,
         "output_summary": session.output_summary,
+        "review_mode": _session_review_mode(session),
     }
 
 
@@ -9083,7 +9105,7 @@ async def create_supervised_session(body: CreateSupervisedSessionRequest):
         project=body.project,
         description=body.goal,
         agent_provider=body.provider,
-        metadata={"supervised": True},
+        metadata={"supervised": True, "git_baseline": _session_git_snapshot(body.project)},
         acceptance_criteria=[item.strip() for item in body.acceptance_criteria if item.strip()],
         policy=body.policy,
         budget=body.budget,
@@ -9116,6 +9138,10 @@ async def get_session(session_id: str):
     s = sm.get(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
+    if s.status.value == "verifying" and s.output_summary and "**Recent commits:**" in s.output_summary:
+        summary = await sm._generate_summary(s)
+        sm.update_status(s.id, s.status, output_summary=summary)
+        s = sm.get(session_id) or s
     return _session_response(s)
 
 
@@ -9402,6 +9428,7 @@ async def complete_session(session_id: str):
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     if (s.metadata or {}).get("supervised"):
+        review_mode = _session_review_mode(s)
         evidence_rows = sm._db().execute(
             "SELECT evidence_type, data FROM session_evidence WHERE session_id = ?", (session_id,)
         ).fetchall()
@@ -9416,9 +9443,9 @@ async def complete_session(session_id: str):
         ).fetchall()
         unresolved = [row["status"] for row in criteria_rows if row["status"] not in {"passed", "waived"}]
         missing = []
-        if not has_git:
+        if review_mode == "implementation" and not has_git:
             missing.append("Git evidence")
-        if not has_passing_verification:
+        if review_mode == "implementation" and not has_passing_verification:
             missing.append("passing verification evidence")
         if unresolved:
             missing.append("resolved acceptance criteria")
