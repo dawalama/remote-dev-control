@@ -99,6 +99,13 @@ def test_continuation_inherits_parent_context_and_lineage():
     assert child is not None
     assert child.metadata["parent_session_id"] == parent.id
     assert child.metadata["inherited_context"]["parent_result"] == "Build a dashboard endpoint and summary cards."
+    repeated = TestClient(app).post(
+        f"/sessions/{parent.id}/continue",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"goal": "Accidentally create a sibling"},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["id"] == child.id
 
 
 def test_terminal_approval_is_durable_and_decided_idempotently():

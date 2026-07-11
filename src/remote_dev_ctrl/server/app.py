@@ -9059,6 +9059,14 @@ class ContinueSessionRequest(BaseModel):
     provider: str | None = "orchestrated"
 
 
+def _find_continuation(parent_session_id: str):
+    from .session_manager import get_session_manager
+    for candidate in get_session_manager().list_all():
+        if (candidate.metadata or {}).get("parent_session_id") == parent_session_id:
+            return candidate
+    return None
+
+
 class AgentProviderPolicyRequest(BaseModel):
     preferred_provider: str
     fallback_policy: str = "ask"
@@ -9131,6 +9139,11 @@ async def continue_supervised_session(session_id: str, body: ContinueSessionRequ
     parent = sm.get(session_id)
     if not parent:
         raise HTTPException(status_code=404, detail="Parent Session not found")
+    existing = _find_continuation(session_id)
+    if existing:
+        return _session_response(existing)
+    if parent.status.value not in {"completed", "done"}:
+        raise HTTPException(status_code=409, detail="Complete the parent Session before continuing its outcome")
     if not body.goal.strip():
         raise HTTPException(status_code=422, detail="A continuation goal is required")
     evidence_rows = sm._db().execute(
@@ -9162,6 +9175,15 @@ async def continue_supervised_session(session_id: str, body: ContinueSessionRequ
     )
     sm.log_event(child, "session.context_inherited", {"parent_session_id": parent.id, "evidence_ids": [item["id"] for item in inherited_context["evidence"]]})
     return _session_response(child)
+
+
+@app.get("/sessions/{session_id}/continuation")
+async def get_session_continuation(session_id: str):
+    from .session_manager import get_session_manager
+    if not get_session_manager().get(session_id):
+        raise HTTPException(status_code=404, detail="Parent Session not found")
+    child = _find_continuation(session_id)
+    return _session_response(child) if child else None
 
 
 @app.get("/sessions")

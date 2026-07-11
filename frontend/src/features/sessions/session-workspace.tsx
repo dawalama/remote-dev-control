@@ -12,7 +12,7 @@ export function SessionWorkspace() {
       <div className="mb-2 flex justify-end">
         <button onClick={() => setViewingSessionId(null)} className="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 hover:text-white">Open Control room</button>
       </div>
-      <SessionViewer sessionId={sessionId} onClose={closeSessionViewer} />
+      <SessionViewer key={sessionId} sessionId={sessionId} onClose={closeSessionViewer} />
     </main>
   )
 }
