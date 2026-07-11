@@ -198,3 +198,32 @@ def test_cancelled_outcome_can_restore_review():
     )
     assert response.status_code == 200
     assert response.json()["status"] == "verifying"
+
+
+def test_passing_verification_satisfies_matching_criterion(monkeypatch, tmp_path):
+    manager = get_session_manager()
+    session = manager.create_session(
+        "test-channel", "test-project", "Verify result",
+        metadata={"supervised": True}, acceptance_criteria=["Relevant verification passes", "Human accepts outcome"],
+    )
+
+    class Result:
+        returncode = 0
+        stdout = "2 passed"
+        stderr = ""
+
+    monkeypatch.setattr("remote_dev_ctrl.server.app._session_project_path", lambda project: tmp_path)
+    monkeypatch.setattr("remote_dev_ctrl.server.app.subprocess.run", lambda *args, **kwargs: Result())
+    token, _ = get_auth_manager().create_token("auto-criterion-test", Role.ADMIN)
+    response = TestClient(app).post(
+        f"/sessions/{session.id}/evidence/verification",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"command": "pytest"},
+    )
+    assert response.status_code == 200
+    rows = manager._db().execute(
+        "SELECT criterion, status FROM session_criteria WHERE session_id = ? ORDER BY criterion_index", (session.id,),
+    ).fetchall()
+    assert [(row["criterion"], row["status"]) for row in rows] == [
+        ("Relevant verification passes", "passed"), ("Human accepts outcome", "unevaluated"),
+    ]

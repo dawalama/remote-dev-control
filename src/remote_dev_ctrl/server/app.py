@@ -9390,6 +9390,16 @@ async def run_session_verification(session_id: str, body: VerificationRequest):
            VALUES (?, ?, 'verification', 'Verification command', ?, 'rdc')""",
         (evidence_id, session_id, json.dumps(data)),
     )
+    if result.returncode == 0:
+        now = datetime.now().isoformat()
+        db.execute(
+            """UPDATE session_criteria
+               SET status = 'passed', note = 'Automatically satisfied by passing RDC verification',
+                   evidence_ids = ?, evaluated_by = 'rdc', evaluated_at = ?
+               WHERE session_id = ? AND status = 'unevaluated'
+                 AND (lower(criterion) LIKE '%verif%' OR lower(criterion) LIKE '%test%pass%')""",
+            (json.dumps([evidence_id]), now, session_id),
+        )
     db.commit()
     return {"id": evidence_id, "evidence_type": "verification", "data": data}
 
