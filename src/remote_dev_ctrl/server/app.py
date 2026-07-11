@@ -9121,6 +9121,28 @@ async def get_evidence_provider_settings(project: str | None = None):
     return {"project": project, "providers": providers}
 
 
+class EnableEvidenceProviderRequest(BaseModel):
+    project: str
+
+
+@app.post("/settings/evidence-providers/entire/enable")
+async def enable_entire_evidence_provider(body: EnableEvidenceProviderRequest):
+    from .evidence_providers import enable_entire, list_evidence_provider_readiness
+    project_record = get_project_repo().get(body.project)
+    if not project_record or not project_record.path:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project_path = Path(project_record.path)
+    if not (project_path / ".git").exists():
+        raise HTTPException(status_code=409, detail="Entire requires an existing Git repository")
+    preferred = _load_agent_provider_policy()["preferred_provider"]
+    try:
+        result = await asyncio.to_thread(enable_entire, project_path, preferred)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    providers = await asyncio.to_thread(list_evidence_provider_readiness, project_path)
+    return {"project": body.project, "result": result, "providers": providers}
+
+
 @app.post("/sessions")
 async def create_supervised_session(body: CreateSupervisedSessionRequest):
     """Create a goal-centered session using the current session aggregate."""

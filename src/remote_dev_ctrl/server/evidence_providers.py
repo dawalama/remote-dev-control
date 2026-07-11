@@ -83,3 +83,23 @@ def active_evidence_provider_refs(project_path: Path | None = None) -> list[dict
         for item in list_evidence_provider_readiness(project_path)
         if item["ready"]
     ]
+
+
+def enable_entire(project_path: Path, agent: str) -> dict[str, Any]:
+    """Enable Entire explicitly and locally-first for one existing Git project."""
+    executable = shutil.which("entire")
+    if not executable:
+        raise RuntimeError("Entire CLI is not installed")
+    agent_names = {"claude": "claude-code", "gwd": "gemini"}
+    entire_agent = agent_names.get(agent, agent)
+    result = subprocess.run(
+        [
+            executable, "enable", "--agent", entire_agent, "--project",
+            "--no-init-repo", "--skip-push-sessions", "--telemetry=false",
+        ],
+        cwd=project_path, text=True, capture_output=True, timeout=120, check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "Entire setup failed").strip()
+        raise RuntimeError(detail[-2000:])
+    return {"enabled": True, "agent": entire_agent, "output": result.stdout.strip()[-4000:]}
