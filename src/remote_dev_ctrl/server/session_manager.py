@@ -165,13 +165,14 @@ _EXIT_SIGNAL_RE = re.compile(r"__RDC_EXIT:(\d+)")
 def extract_agent_report(transcript: str, provider: str | None) -> str:
     """Extract the provider's final human-readable answer from a terminal transcript."""
     cleaned = strip_ansi(transcript).replace("\r\n", "\n")
-    if provider == "codex":
-        marker = "\ncodex\n"
-        marker_index = cleaned.rfind(marker)
-        if marker_index >= 0:
-            report = cleaned[marker_index + len(marker):]
-            report = re.split(r"\ntokens used\n|\n__RDC_EXIT:\d+", report, maxsplit=1)[0]
-            return report.strip()
+    # Codex prints this stable role marker even when RDC recorded the provider
+    # as "orchestrated". Inspect the transcript instead of trusting that alias.
+    marker = "\ncodex\n"
+    marker_index = cleaned.rfind(marker)
+    if marker_index >= 0:
+        report = cleaned[marker_index + len(marker):]
+        report = re.split(r"\ntokens used\n|\n__RDC_EXIT:\d+", report, maxsplit=1)[0]
+        return report.strip()
     return ""
 
 

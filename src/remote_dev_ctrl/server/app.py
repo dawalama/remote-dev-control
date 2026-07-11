@@ -9017,7 +9017,9 @@ def _session_review_mode(session) -> str:
     current = _session_git_snapshot(session.project)
     if isinstance(baseline, dict):
         return "implementation" if current != baseline else "advisory"
-    return "implementation" if current.get("status") else "advisory"
+    # Legacy sessions have no ownership baseline. Treat them as advisory rather
+    # than attributing unrelated pre-existing working-tree changes to the agent.
+    return "advisory"
 
 
 def _session_response(session) -> dict:
@@ -9138,7 +9140,8 @@ async def get_session(session_id: str):
     s = sm.get(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    if s.status.value == "verifying" and s.output_summary and "**Recent commits:**" in s.output_summary:
+    stale_summaries = {"The agent finished without recording a final report or changing files."}
+    if s.status.value == "verifying" and s.output_summary and ("**Recent commits:**" in s.output_summary or s.output_summary in stale_summaries):
         summary = await sm._generate_summary(s)
         sm.update_status(s.id, s.status, output_summary=summary)
         s = sm.get(session_id) or s

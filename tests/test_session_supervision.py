@@ -79,6 +79,7 @@ def test_supervised_completion_is_evidence_gated():
 def test_codex_final_report_is_extracted_without_cli_noise():
     transcript = "reading files\nmore tool output\ncodex\n# Recommendation\n\nUse the dashboard data.\ntokens used\n1,234\n__RDC_EXIT:0\n"
     assert extract_agent_report(transcript, "codex") == "# Recommendation\n\nUse the dashboard data."
+    assert extract_agent_report(transcript, "orchestrated") == "# Recommendation\n\nUse the dashboard data."
 
 
 def test_terminal_approval_is_durable_and_decided_idempotently():
