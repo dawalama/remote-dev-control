@@ -1,16 +1,20 @@
 """Middleware for RDC Command Center (auth, rate limiting, etc.)."""
 
+import os
 import time
 import secrets
 from collections import defaultdict
 from datetime import datetime
 from typing import Callable, Optional
 
-from fastapi import Request, HTTPException, status
+from fastapi import Request, HTTPException, WebSocket, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .auth import get_auth_manager, Permission, TokenInfo, ROLE_PERMISSIONS
+from .auth import (
+    get_auth_manager, Permission, TokenInfo, ROLE_PERMISSIONS,
+    validate_websocket_ticket,
+)
 from .audit import audit, AuditAction
 
 
@@ -80,22 +84,14 @@ PUBLIC_PATHS = {
     "/health",     # Health check (minimal info, no secrets)
     "/status",     # Server status (used by CLI from localhost)
     "/favicon.ico", # Browser favicon request
-    "/docs",       # OpenAPI docs
-    "/openapi.json",
-    "/redoc",
+    "/browser/viewer",  # Static viewer shell; its CDP socket requires a ticket
 }
 
 # Path prefixes that don't require authentication
 PUBLIC_PATH_PREFIXES = [
     "/app/",         # React SPA nested routes (e.g. /app/pair-approve)
     "/kb/",          # Knowledge base SPA sub-routes
-    "/vnc/proxy/",  # VNC proxy (loaded in iframe, can't send auth headers)
-    "/vnc/sessions/",  # VNC screenshots (for sharing with agents)
     "/static/",  # Static assets (CSS, JS)
-    "/screenshots/",  # Screenshot images (loaded in img tags)
-    "/context",  # Context API + screenshots (loaded in img tags, shared with agents/MCP)
-    "/browser/viewer",     # Screencast viewer page (loaded in iframe, can't send auth headers)
-    "/browser/cdp-proxy",  # CDP WebSocket proxy (used by screencast viewer)
     "/voice/twilio/",  # Twilio webhooks (auth via signature validation)
     "/assets/",       # React SPA static assets
 ]
@@ -105,8 +101,18 @@ OPTIONAL_AUTH_PATHS = {
     "/ws",         # WebSocket (auth via message)
     "/ws/state",   # State machine WebSocket (auth via query param)
     "/ws/logs",    # Server log streaming WebSocket
-    "/state",      # State endpoint (used by AI/MCP — returns full server state)
 }
+
+
+def is_public_path(path: str) -> bool:
+    """Return whether an HTTP path is deliberately unauthenticated."""
+    if path in PUBLIC_PATHS:
+        return True
+    if os.environ.get("RDC_EXPOSE_API_DOCS") == "1" and (
+        path == "/openapi.json" or path.startswith("/docs") or path.startswith("/redoc")
+    ):
+        return True
+    return any(path.startswith(prefix) for prefix in PUBLIC_PATH_PREFIXES)
 
 # WebSocket path prefixes that skip auth (can't send headers, auth via query param)
 OPTIONAL_AUTH_WS_PREFIXES = [
@@ -118,6 +124,7 @@ OPTIONAL_AUTH_WS_PREFIXES = [
 
 # Endpoint to permission mapping
 ENDPOINT_PERMISSIONS: dict[tuple[str, str], Permission] = {
+    ("POST", "/auth/ws-ticket"): Permission.STATUS_READ,
     # Agents
     ("GET", "/agents"): Permission.AGENTS_READ,
     ("POST", "/agents/spawn"): Permission.AGENTS_SPAWN,
@@ -204,7 +211,73 @@ def get_required_permission(method: str, path: str) -> Optional[Permission]:
         if ep_method == method and match_path_pattern(path, ep_pattern):
             return permission
     
-    return None
+    segment = path.strip("/").split("/", 1)[0]
+    read = method in {"GET", "HEAD", "OPTIONS"}
+    domain_permissions = {
+        "terminals": (Permission.TERMINALS_READ, Permission.TERMINALS_CONTROL),
+        "processes": (Permission.PROCESSES_READ, Permission.PROCESSES_CONTROL),
+        "actions": (Permission.PROCESSES_READ, Permission.PROCESSES_CONTROL),
+        "browser": (Permission.BROWSER_READ, Permission.BROWSER_CONTROL),
+        "vnc": (Permission.BROWSER_READ, Permission.BROWSER_CONTROL),
+        "screenshots": (Permission.CONTEXT_READ, Permission.CONTEXT_WRITE),
+        "context": (Permission.CONTEXT_READ, Permission.CONTEXT_WRITE),
+        "recordings": (Permission.CONTEXT_READ, Permission.CONTEXT_WRITE),
+        "config": (Permission.SETTINGS_READ, Permission.CONFIG_WRITE),
+        "settings": (Permission.SETTINGS_READ, Permission.CONFIG_WRITE),
+        "sessions": (Permission.SESSIONS_READ, Permission.SESSIONS_CONTROL),
+        "channels": (Permission.SESSIONS_READ, Permission.SESSIONS_CONTROL),
+        "chat": (Permission.SESSIONS_READ, Permission.SESSIONS_CONTROL),
+        "conversation": (Permission.SESSIONS_READ, Permission.SESSIONS_CONTROL),
+        "orchestrator": (Permission.SESSIONS_READ, Permission.SESSIONS_CONTROL),
+        "projects": (Permission.PROJECTS_READ, Permission.PROJECTS_CONTROL),
+        "collections": (Permission.PROJECTS_READ, Permission.PROJECTS_CONTROL),
+        "recipes": (Permission.PROJECTS_READ, Permission.PROJECTS_CONTROL),
+        "browse": (Permission.PROJECTS_READ, Permission.PROJECTS_READ),
+        "activity": (Permission.LOGS_READ, Permission.LOGS_READ),
+        "events": (Permission.LOGS_READ, Permission.LOGS_READ),
+        "models": (Permission.SETTINGS_READ, Permission.CONFIG_WRITE),
+        "ports": (Permission.PROCESSES_READ, Permission.PROCESSES_CONTROL),
+        "pinchtab": (Permission.BROWSER_READ, Permission.BROWSER_CONTROL),
+        "tasks": (Permission.TASKS_READ, Permission.TASKS_CREATE),
+        "voice": (Permission.VOICE_CONTROL, Permission.VOICE_CONTROL),
+        "stt": (Permission.VOICE_CONTROL, Permission.VOICE_CONTROL),
+        "tts": (Permission.VOICE_CONTROL, Permission.VOICE_CONTROL),
+        "admin": (Permission.SYSTEM_CONTROL, Permission.SYSTEM_CONTROL),
+        "workers": (Permission.WORKERS_READ, Permission.SYSTEM_CONTROL),
+        "auth": (Permission.STATUS_READ, Permission.STATUS_READ),
+        "state": (Permission.STATUS_READ, Permission.STATE_CONTROL),
+        "debug": (Permission.STATUS_READ, Permission.STATE_CONTROL),
+    }
+    if segment in domain_permissions:
+        return domain_permissions[segment][0 if read else 1]
+    return Permission.SYSTEM_CONTROL
+
+
+async def authenticate_websocket(websocket: WebSocket, permission: Permission) -> TokenInfo | None:
+    """Authenticate and authorize a WebSocket before accepting it."""
+    origin = websocket.headers.get("origin")
+    configured = os.environ.get("RDC_ALLOWED_ORIGINS", "")
+    allowed_origins = {
+        "http://127.0.0.1:8420", "http://localhost:8420",
+        "http://127.0.0.1:5173", "http://localhost:5173",
+        *(item.strip() for item in configured.split(",") if item.strip()),
+    }
+    if origin and origin not in allowed_origins:
+        await websocket.close(code=4403, reason="Origin not allowed")
+        return None
+    ticket = websocket.query_params.get("ticket", "")
+    token_info = validate_websocket_ticket(ticket, websocket.url.path) if ticket else None
+    if not token_info:
+        auth_header = websocket.headers.get("authorization", "")
+        token = auth_header[7:] if auth_header.startswith("Bearer ") else auth_header
+        token_info = get_auth_manager().validate_token(token) if token else None
+    if not token_info:
+        await websocket.close(code=4401, reason="Authentication required")
+        return None
+    if not get_auth_manager().has_permission(token_info, permission):
+        await websocket.close(code=4403, reason="Permission denied")
+        return None
+    return token_info
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -252,13 +325,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
         
         # Skip auth for public paths
-        if path in PUBLIC_PATHS or path.startswith("/docs") or path.startswith("/redoc"):
+        if is_public_path(path):
             return await call_next(request)
-
-        # Skip auth for public path prefixes (like VNC proxy)
-        for prefix in PUBLIC_PATH_PREFIXES:
-            if path.startswith(prefix):
-                return await call_next(request)
 
         # Device pairing: POST /auth/pair and GET /auth/pair/{id} are public
         # but POST /auth/pair/{id}/approve requires auth

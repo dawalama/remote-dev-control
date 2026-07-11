@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from "react"
 import { POST } from "@/lib/api"
 import { getClientId } from "@/lib/client-id"
 import { useProjectStore } from "@/stores/project-store"
+import { createAuthenticatedWebSocket } from "@/lib/ws"
 
 interface VoiceState {
   listening: boolean
@@ -97,10 +98,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
 
     // Connect WS to backend STT relay
-    const token = localStorage.getItem("rdc_token")
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:"
-    const url = `${proto}//${window.location.host}/stt/stream${token ? `?token=${token}` : ""}`
-    const ws = new WebSocket(url)
+    const ws = await createAuthenticatedWebSocket("/stt/stream")
     wsRef.current = ws
 
     ws.onmessage = (event) => {

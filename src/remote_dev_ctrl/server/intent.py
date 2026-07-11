@@ -2650,7 +2650,7 @@ class ActionExecutor:
                         return {"action": "spawn_agent", "error": "No active workstream", "success": False, "type": "server"}
 
                     # Create session
-                    from .session_manager import get_session_manager
+                    from .session_manager import build_agent_command, get_session_manager
                     sm = get_session_manager()
                     session = sm.create_session(
                         channel_id=channel_id,
@@ -2665,13 +2665,7 @@ class ActionExecutor:
                         from .terminal import get_terminal_manager
                         tm = get_terminal_manager()
                         provider = params.get("provider", "claude")
-                        if provider == "shell":
-                            inner = task_desc
-                        else:
-                            escaped = task_desc[:500].replace('"', '\\"')
-                            inner = f'claude --dangerously-skip-permissions "{escaped}"'
-                        # Wrap with exit signal so session monitor detects completion instantly
-                        command = f"trap 'echo __RDC_EXIT:$?' EXIT; {inner}"
+                        command = build_agent_command(provider, task_desc)
                         term = tm.create(project=project, command=command)
                         terminal_id = term.id
                         sm.link_terminal(session.id, terminal_id)

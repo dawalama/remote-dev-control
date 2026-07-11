@@ -4,6 +4,10 @@ import asyncio
 import json
 import logging
 import os
+import re
+import shlex
+import subprocess
+import time
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -13,7 +17,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, UploadFile, File, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .debug_page import DEBUG_PAGE_HTML
 
@@ -23,9 +27,9 @@ from .events import EventBus, Event, get_event_bus
 from .events.bus import EventType
 from .state_machine import get_state_machine, init_state_machine, MachineEvent
 from .vault import get_secret
-from .auth import get_auth_manager, TokenInfo, Role
+from .auth import get_auth_manager, issue_websocket_ticket, Permission, TokenInfo, Role
 from .audit import audit, AuditAction, get_audit_logger
-from .middleware import AuthMiddleware
+from .middleware import AuthMiddleware, authenticate_websocket
 from .db import init_databases, close_databases, TaskRepository, EventRepository
 from .db.repositories import get_project_repo, get_event_repo, resolve_project_id
 from .orchestrator import Orchestrator, set_orchestrator
@@ -55,6 +59,10 @@ class AssignRequest(BaseModel):
     task: str
 
 
+class WebSocketTicketRequest(BaseModel):
+    path: str
+
+
 # Global state
 config: Config | None = None
 agent_manager: AgentManager | None = None
@@ -73,12 +81,37 @@ connected_clients: set[WebSocket] = set()
 _shutdown_event: asyncio.Event = asyncio.Event()  # Set by /admin/restart so WS handlers exit promptly
 
 
+class _RedactQueryCredentials(logging.Filter):
+    _pattern = re.compile(r"([?&](?:token|ticket)=)[^&\s\"]+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = self._pattern.sub(r"\1[REDACTED]", record.msg)
+        if record.args:
+            record.args = tuple(
+                self._pattern.sub(r"\1[REDACTED]", value) if isinstance(value, str) else value
+                for value in record.args
+            )
+        return True
+
+
+def _install_log_redaction() -> None:
+    redactor = _RedactQueryCredentials()
+    for logger_name in ("uvicorn.access", "uvicorn.error"):
+        target = logging.getLogger(logger_name)
+        target.addFilter(redactor)
+        for handler in target.handlers:
+            handler.addFilter(redactor)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
     global config, agent_manager, task_repo, event_repo, event_bus, orchestrator, process_manager, caddy_manager, vnc_manager, telegram_bot, phone_channel, email_channel, auth_manager
     
     ensure_rdc_home()
+    _shutdown_event.clear()
+    _install_log_redaction()
     
     # Initialize SQLite databases
     init_databases()
@@ -473,6 +506,25 @@ async def lifespan(app: FastAPI):
         get_terminal_manager().destroy_all()
         event_bus.emit(EventType.SERVER_STOPPED)
         close_databases()
+        from . import browser as browser_module
+        from . import channel_manager as channel_module
+        from . import processes as processes_module
+        from . import session_manager as session_module
+        from . import state_machine as state_machine_module
+        from . import streaming as streaming_module
+        from . import terminal as terminal_module
+        from . import vnc as vnc_module
+        from .events import bus as event_bus_module
+
+        browser_module._browser_manager = None
+        channel_module._channel_manager = None
+        processes_module._process_manager = None
+        session_module._manager = None
+        state_machine_module._machine = None
+        streaming_module._stream_manager = None
+        terminal_module._terminal_manager = None
+        vnc_module._vnc_manager = None
+        event_bus_module._bus = None
 
 
 async def handle_telegram_command(command: str, args: str, user_id: int) -> str:
@@ -846,7 +898,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception on {request.method} {request.url.path}:\n{tb}")
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc), "traceback": tb.split("\n")[-5:]},
+        content={"detail": "Internal server error", "request_id": getattr(request.state, "request_id", None)},
     )
 
 # Auth middleware (can be disabled via config)
@@ -855,10 +907,14 @@ app.add_middleware(AuthMiddleware, auth_enabled=True)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict this
+    allow_origins=[
+        "http://127.0.0.1:8420", "http://localhost:8420",
+        "http://127.0.0.1:5173", "http://localhost:5173",
+        *(item.strip() for item in os.environ.get("RDC_ALLOWED_ORIGINS", "").split(",") if item.strip()),
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
 @app.middleware("http")
@@ -1358,6 +1414,17 @@ async def get_auth_me(request: Request):
         "parent_token_id": token_info.parent_token_id,
         "is_parent": token_info.parent_token_id is None,
     }
+
+
+@app.post("/auth/ws-ticket")
+async def create_websocket_ticket(body: WebSocketTicketRequest, request: Request):
+    """Exchange bearer authentication for a short-lived path-bound ticket."""
+    token_info = getattr(request.state, "token_info", None)
+    if not token_info:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if not body.path.startswith("/") or "?" in body.path or "#" in body.path:
+        raise HTTPException(status_code=400, detail="Invalid WebSocket path")
+    return {"ticket": issue_websocket_ticket(token_info, body.path), "expires_in": 60}
 
 
 @app.get("/auth/sessions")
@@ -2790,6 +2857,9 @@ async def browser_cdp_proxy(ws: WebSocket):
     import websockets as ws_lib
     from .browser import get_browser_manager
 
+    if not await authenticate_websocket(ws, Permission.BROWSER_CONTROL):
+        return
+
     target = ws.query_params.get("target", "")
     if not target:
         await ws.close(code=1008, reason="Missing target parameter")
@@ -2992,6 +3062,7 @@ _BROWSER_VIEWER_HTML = """\
 
   var params = new URLSearchParams(location.search);
   var target = params.get('ws');
+  var ticket = params.get('ticket');
   if (!target) { statusEl.textContent = 'Missing ws parameter'; return; }
 
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -3005,7 +3076,8 @@ _BROWSER_VIEWER_HTML = """\
   var containerPort = portMatch ? parseInt(portMatch[1]) : 0;
 
   function buildWsUrl(t) {
-    return proto + '//' + location.host + '/browser/cdp-proxy?target=' + encodeURIComponent(t);
+    return proto + '//' + location.host + '/browser/cdp-proxy?target=' + encodeURIComponent(t)
+      + (ticket ? '&ticket=' + encodeURIComponent(ticket) : '');
   }
 
   async function resolveTarget() {
@@ -3299,8 +3371,18 @@ _BROWSER_VIEWER_HTML = """\
 """
 
 
+def _authenticated_viewer_url(request: Request, viewer_url: str) -> str:
+    token_info = getattr(request.state, "token_info", None)
+    if not viewer_url or not token_info:
+        return ""
+    ticket = issue_websocket_ticket(token_info, "/browser/cdp-proxy")
+    separator = "&" if "?" in viewer_url else "?"
+    from urllib.parse import quote
+    return f"{viewer_url}{separator}ticket={quote(ticket, safe='')}"
+
+
 @app.post("/browser/start/{process_id}")
-async def start_browser_session(process_id: str, target_url: str | None = None):
+async def start_browser_session(process_id: str, request: Request, target_url: str | None = None):
     """Start a browser session for a process."""
     from .browser import get_browser_manager
     from .processes import get_process_manager
@@ -3332,13 +3414,13 @@ async def start_browser_session(process_id: str, target_url: str | None = None):
         "target_url": session.target_url,
         "container_port": session.container_port,
         "status": session.status.value,
-        "viewer_url": bm.get_viewer_url(session.id),
+        "viewer_url": _authenticated_viewer_url(request, bm.get_viewer_url(session.id)),
         "pinchtab_attached": pinchtab_attached,
     }
 
 
 @app.get("/browser/sessions")
-async def list_browser_sessions():
+async def list_browser_sessions(request: Request):
     """List all browser sessions."""
     from .browser import get_browser_manager
     bm = get_browser_manager()
@@ -3351,7 +3433,7 @@ async def list_browser_sessions():
             "target_url": s.target_url,
             "container_port": s.container_port,
             "status": s.status.value,
-            "viewer_url": bm.get_viewer_url(s.id),
+            "viewer_url": _authenticated_viewer_url(request, bm.get_viewer_url(s.id)),
             "error": s.error,
         }
         for s in sessions
@@ -3359,7 +3441,7 @@ async def list_browser_sessions():
 
 
 @app.get("/browser/sessions/{session_id}")
-async def get_browser_session(session_id: str):
+async def get_browser_session(session_id: str, request: Request):
     """Get a browser session."""
     from .browser import get_browser_manager
     bm = get_browser_manager()
@@ -3371,7 +3453,7 @@ async def get_browser_session(session_id: str):
         "target_url": session.target_url,
         "container_port": session.container_port,
         "status": session.status.value,
-        "viewer_url": bm.get_viewer_url(session.id),
+        "viewer_url": _authenticated_viewer_url(request, bm.get_viewer_url(session.id)),
         "error": session.error,
     }
 
@@ -3389,7 +3471,7 @@ async def stop_browser_session(session_id: str):
 
 
 @app.post("/browser/start")
-async def start_standalone_browser(target_url: str, project: str | None = None):
+async def start_standalone_browser(request: Request, target_url: str, project: str | None = None):
     """Start a standalone browser session (not tied to a process)."""
     from .browser import get_browser_manager
 
@@ -3409,7 +3491,7 @@ async def start_standalone_browser(target_url: str, project: str | None = None):
         "target_url": session.target_url,
         "container_port": session.container_port,
         "status": session.status.value,
-        "viewer_url": bm.get_viewer_url(session.id),
+        "viewer_url": _authenticated_viewer_url(request, bm.get_viewer_url(session.id)),
     }
 
 
@@ -5916,6 +5998,9 @@ async def speech_to_text(request: Request):
 async def stt_stream(websocket: WebSocket):
     """Stream audio to Deepgram and return real-time transcripts."""
     import websockets
+
+    if not await authenticate_websocket(websocket, Permission.SYSTEM_CONTROL):
+        return
     
     await websocket.accept()
     
@@ -6137,6 +6222,9 @@ async def vnc_websocket_proxy(websocket: WebSocket, session_id: str):
     """
     from .vnc import get_vnc_manager
     import socket as _socket
+
+    if not await authenticate_websocket(websocket, Permission.BROWSER_CONTROL):
+        return
 
     vnc_manager = get_vnc_manager()
     session = vnc_manager.get_session(session_id)
@@ -6751,6 +6839,9 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
     """
     from .terminal import get_terminal_manager, TerminalStatus
 
+    if not await authenticate_websocket(websocket, Permission.TERMINALS_CONTROL):
+        return
+
     tm = get_terminal_manager()
     session = tm.get(session_id)
 
@@ -6954,6 +7045,9 @@ async def list_agent_sessions(project: str, limit: int = 20):
 async def logs_websocket(websocket: WebSocket):
     """WebSocket endpoint for real-time server log streaming."""
     import aiofiles
+
+    if not await authenticate_websocket(websocket, Permission.LOGS_READ):
+        return
     
     await websocket.accept()
     
@@ -7002,12 +7096,8 @@ async def process_logs_websocket(websocket: WebSocket, process_id: str):
     """WebSocket endpoint for streaming action logs in real-time."""
     import aiofiles
 
-    # Validate token from query params
-    token = websocket.query_params.get("token", "")
-    if auth_manager:
-        if not token or not auth_manager.validate_token(token):
-            await websocket.close(code=4001, reason="Token required")
-            return
+    if not await authenticate_websocket(websocket, Permission.LOGS_READ):
+        return
 
     await websocket.accept()
     
@@ -7083,12 +7173,8 @@ async def task_logs_websocket(websocket: WebSocket, task_id: str):
     """
     import aiofiles
 
-    # Validate token from query params
-    token = websocket.query_params.get("token", "")
-    if auth_manager:
-        if not token or not auth_manager.validate_token(token):
-            await websocket.close(code=4001, reason="Token required")
-            return
+    if not await authenticate_websocket(websocket, Permission.TASKS_READ):
+        return
 
     await websocket.accept()
 
@@ -7322,15 +7408,8 @@ async def state_websocket(websocket: WebSocket):
     1. Receive state snapshots
     2. Send events to the state machine
     """
-    # Validate token from query params
-    token = websocket.query_params.get("token", "")
-    if token:
-        token_info = auth_manager.validate_token(token) if auth_manager else None
-        if not token_info:
-            await websocket.close(code=4001, reason="Invalid token")
-            return
-    else:
-        await websocket.close(code=4001, reason="Token required")
+    state_token_info = await authenticate_websocket(websocket, Permission.STATUS_READ)
+    if not state_token_info:
         return
     
     await websocket.accept()
@@ -7397,6 +7476,13 @@ async def state_websocket(websocket: WebSocket):
                 # Lightweight registration message — don't forward to state machine
                 if message.get("type") == "register":
                     await websocket.send_json({"type": "registered", "client_id": client_id})
+                    continue
+
+                if not auth_manager.has_permission(state_token_info, Permission.STATE_CONTROL):
+                    await websocket.send_json({
+                        "type": "error",
+                        "data": {"message": "Permission denied: state.control"},
+                    })
                     continue
 
                 # Include client info in event data for tracking
@@ -7469,6 +7555,10 @@ async def state_websocket(websocket: WebSocket):
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates."""
     from .streaming import get_stream_manager
+
+    ws_token_info = await authenticate_websocket(websocket, Permission.AGENTS_READ)
+    if not ws_token_info:
+        return
     
     await websocket.accept()
     connected_clients.add(websocket)
@@ -7518,6 +7608,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                 
                 elif cmd == "spawn":
+                    if not auth_manager.has_permission(ws_token_info, Permission.AGENTS_SPAWN):
+                        await websocket.send_json({
+                            "type": "error",
+                            "data": {"message": "Permission denied: agents.spawn"},
+                        })
+                        continue
                     project = message.get("project")
                     task = message.get("task")
                     if project:
@@ -7577,6 +7673,9 @@ async def agent_ws_endpoint(websocket: WebSocket, task_id: str):
     Client → Server: approval_response, cancel, ping
     """
     from .streaming import get_stream_manager
+
+    if not await authenticate_websocket(websocket, Permission.TASKS_READ):
+        return
 
     await websocket.accept()
     stream_manager = get_stream_manager()
@@ -8869,25 +8968,68 @@ async def get_channel_context(channel_id: str, project: str | None = None):
     }
 
 
+def _session_response(session) -> dict:
+    return {
+        "id": session.id, "channel_id": session.channel_id, "project": session.project,
+        "terminal_ids": session.terminal_ids, "task_id": session.task_id,
+        "description": session.description, "goal": session.goal or session.description,
+        "acceptance_criteria": session.acceptance_criteria,
+        "status": session.status, "control_owner": session.control_owner,
+        "current_step": session.current_step, "blocker": session.blocker,
+        "policy": session.policy, "budget": session.budget,
+        "unresolved_risks": session.unresolved_risks,
+        "agent_provider": session.agent_provider,
+        "created_at": session.created_at.isoformat(),
+        "updated_at": session.updated_at.isoformat(),
+        "completed_at": session.completed_at.isoformat() if session.completed_at else None,
+        "output_summary": session.output_summary,
+    }
+
+
+class CreateSupervisedSessionRequest(BaseModel):
+    channel_id: str
+    project: str
+    goal: str
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    provider: str | None = None
+    policy: dict = Field(default_factory=dict)
+    budget: dict | None = None
+
+
+@app.post("/sessions")
+async def create_supervised_session(body: CreateSupervisedSessionRequest):
+    """Create a goal-centered session using the current session aggregate."""
+    if not resolve_project_id(body.project):
+        raise HTTPException(status_code=404, detail="Project not found")
+    from .session_manager import get_session_manager
+    session = get_session_manager().create_session(
+        channel_id=body.channel_id,
+        project=body.project,
+        description=body.goal,
+        agent_provider=body.provider,
+        metadata={"supervised": True},
+        acceptance_criteria=[item.strip() for item in body.acceptance_criteria if item.strip()],
+        policy=body.policy,
+        budget=body.budget,
+    )
+    return _session_response(session)
+
+
+@app.get("/sessions")
+async def list_supervised_sessions(channel_id: str | None = None):
+    from .session_manager import get_session_manager
+    manager = get_session_manager()
+    sessions = manager.list_for_channel(channel_id) if channel_id else manager.list_all()
+    return [_session_response(session) for session in sessions]
+
+
 @app.get("/channels/{channel_id}/sessions")
 async def list_channel_sessions(channel_id: str):
     """List sessions for a channel."""
     from .session_manager import get_session_manager
     sm = get_session_manager()
     sessions = sm.list_for_channel(channel_id)
-    return [
-        {
-            "id": s.id, "channel_id": s.channel_id, "project": s.project,
-            "terminal_ids": s.terminal_ids, "task_id": s.task_id,
-            "description": s.description, "status": s.status,
-            "agent_provider": s.agent_provider,
-            "created_at": s.created_at.isoformat(),
-            "updated_at": s.updated_at.isoformat(),
-            "completed_at": s.completed_at.isoformat() if s.completed_at else None,
-            "output_summary": s.output_summary,
-        }
-        for s in sessions
-    ]
+    return [_session_response(session) for session in sessions]
 
 
 @app.get("/sessions/{session_id}")
@@ -8898,16 +9040,7 @@ async def get_session(session_id: str):
     s = sm.get(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    return {
-        "id": s.id, "channel_id": s.channel_id, "project": s.project,
-        "terminal_ids": s.terminal_ids, "task_id": s.task_id,
-        "description": s.description, "status": s.status,
-        "agent_provider": s.agent_provider,
-        "created_at": s.created_at.isoformat(),
-        "updated_at": s.updated_at.isoformat(),
-        "completed_at": s.completed_at.isoformat() if s.completed_at else None,
-        "output_summary": s.output_summary,
-    }
+    return _session_response(s)
 
 
 @app.get("/sessions/{session_id}/log")
@@ -8945,6 +9078,240 @@ async def get_session_events(session_id: str, limit: int = 100):
     return events
 
 
+def _session_project_path(project: str) -> Path:
+    record = get_project_repo().get(project)
+    if not record:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return Path(record.path).resolve()
+
+
+def _decode_session_row(row) -> dict:
+    data = dict(row)
+    for key in ("data", "details", "evidence_ids"):
+        if key in data and data[key]:
+            data[key] = json.loads(data[key])
+    return data
+
+
+@app.get("/sessions/{session_id}/evidence")
+async def list_session_evidence(session_id: str):
+    from .session_manager import get_session_manager
+    if not get_session_manager().get(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    rows = get_session_manager()._db().execute(
+        "SELECT * FROM session_evidence WHERE session_id = ? ORDER BY observed_at", (session_id,)
+    ).fetchall()
+    return [_decode_session_row(row) for row in rows]
+
+
+@app.post("/sessions/{session_id}/evidence/git")
+async def capture_session_git_evidence(session_id: str):
+    from .session_manager import get_session_manager
+    session = get_session_manager().get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    path = _session_project_path(session.project)
+
+    def collect() -> dict:
+        def git(*args: str) -> str:
+            result = subprocess.run(
+                ["git", *args], cwd=path, text=True, capture_output=True, timeout=30, check=False,
+            )
+            return result.stdout.strip()
+        return {
+            "head": git("rev-parse", "HEAD"),
+            "status": git("status", "--short"),
+            "changed_files": [line for line in git("diff", "--name-only", "HEAD").splitlines() if line],
+            "diff_stat": git("diff", "--stat", "HEAD"),
+        }
+
+    data = await asyncio.to_thread(collect)
+    evidence_id = secrets.token_hex(16)
+    db = get_session_manager()._db()
+    db.execute(
+        """INSERT INTO session_evidence
+           (id, session_id, evidence_type, title, data, source)
+           VALUES (?, ?, 'git', 'Git working tree', ?, 'rdc')""",
+        (evidence_id, session_id, json.dumps(data)),
+    )
+    db.commit()
+    return {"id": evidence_id, "evidence_type": "git", "data": data}
+
+
+class VerificationRequest(BaseModel):
+    command: str | None = None
+
+
+@app.post("/sessions/{session_id}/evidence/verification")
+async def run_session_verification(session_id: str, body: VerificationRequest):
+    from .session_manager import get_session_manager
+    session = get_session_manager().get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    project = get_project_repo().get(session.project)
+    path = _session_project_path(session.project)
+    profile = (project.config or {}).get("profile", {}) if project else {}
+    command = (body.command or profile.get("test_command") or "").strip()
+    if not command:
+        raise HTTPException(status_code=422, detail="No verification command configured")
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid verification command: {exc}") from exc
+    if not argv or any(token in {"&&", "||", ";", "|", ">", "<"} for token in argv):
+        raise HTTPException(status_code=422, detail="Verification must be a single executable command")
+    started = time.monotonic()
+    result = await asyncio.to_thread(
+        subprocess.run, argv, cwd=path, text=True, capture_output=True, timeout=900, check=False,
+    )
+    data = {
+        "command": command, "exit_code": result.returncode,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "stdout": result.stdout[-30000:], "stderr": result.stderr[-15000:],
+    }
+    evidence_id = secrets.token_hex(16)
+    db = get_session_manager()._db()
+    db.execute(
+        """INSERT INTO session_evidence
+           (id, session_id, evidence_type, title, data, source)
+           VALUES (?, ?, 'verification', 'Verification command', ?, 'rdc')""",
+        (evidence_id, session_id, json.dumps(data)),
+    )
+    db.commit()
+    return {"id": evidence_id, "evidence_type": "verification", "data": data}
+
+
+@app.get("/sessions/{session_id}/criteria")
+async def list_session_criteria(session_id: str):
+    from .session_manager import get_session_manager
+    if not get_session_manager().get(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    rows = get_session_manager()._db().execute(
+        "SELECT * FROM session_criteria WHERE session_id = ? ORDER BY criterion_index", (session_id,)
+    ).fetchall()
+    return [_decode_session_row(row) for row in rows]
+
+
+@app.get("/sessions/{session_id}/approvals")
+async def list_session_approvals(session_id: str):
+    from .session_manager import get_session_manager
+    if not get_session_manager().get(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    rows = get_session_manager()._db().execute(
+        "SELECT * FROM session_approvals WHERE session_id = ? ORDER BY requested_at", (session_id,)
+    ).fetchall()
+    return [_decode_session_row(row) for row in rows]
+
+
+class ApprovalDecisionRequest(BaseModel):
+    decision: str
+    reason: str | None = None
+
+
+@app.post("/sessions/{session_id}/approvals/{approval_id}/decide")
+async def decide_session_approval(
+    session_id: str, approval_id: str, body: ApprovalDecisionRequest, request: Request,
+):
+    if body.decision not in {"approved", "rejected"}:
+        raise HTTPException(status_code=422, detail="Decision must be approved or rejected")
+    from .session_manager import SessionStatus, get_session_manager
+    manager = get_session_manager()
+    session = manager.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    row = manager._db().execute(
+        "SELECT * FROM session_approvals WHERE id = ? AND session_id = ?", (approval_id, session_id)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    if row["status"] != "pending":
+        return _decode_session_row(row)
+    token_info = getattr(request.state, "token_info", None)
+    manager._db().execute(
+        """UPDATE session_approvals SET status = ?, decided_by = ?, decision_reason = ?,
+           decided_at = ? WHERE id = ?""",
+        (body.decision, token_info.id if token_info else None, body.reason,
+         datetime.now().isoformat(), approval_id),
+    )
+    manager._db().commit()
+    details = json.loads(row["details"] or "{}")
+    terminal_id = details.get("terminal_id")
+    if terminal_id:
+        from .terminal import get_terminal_manager
+        get_terminal_manager().write(terminal_id, b"y\n" if body.decision == "approved" else b"n\n")
+    session.status = SessionStatus.RUNNING
+    session.control_owner = "agent"
+    manager._persist(session)
+    manager.log_event(session, "session.approval_decided", {"approval_id": approval_id, "decision": body.decision})
+    updated = manager._db().execute("SELECT * FROM session_approvals WHERE id = ?", (approval_id,)).fetchone()
+    return _decode_session_row(updated)
+
+
+class SessionGuidanceRequest(BaseModel):
+    guidance: str
+
+
+@app.post("/sessions/{session_id}/take-control")
+async def take_session_control(session_id: str):
+    from .session_manager import SessionStatus, get_session_manager
+    manager = get_session_manager()
+    session = manager.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status not in {SessionStatus.RUNNING, SessionStatus.WAITING}:
+        raise HTTPException(status_code=409, detail=f"Cannot take control while {session.status.value}")
+    session.control_owner = "human"
+    manager._persist(session)
+    manager.log_event(session, "session.control_taken", {})
+    return _session_response(session)
+
+
+@app.post("/sessions/{session_id}/return-control")
+async def return_session_control(session_id: str, body: SessionGuidanceRequest):
+    from .session_manager import SessionStatus, get_session_manager
+    manager = get_session_manager()
+    session = manager.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.control_owner != "human":
+        raise HTTPException(status_code=409, detail="Human does not own control")
+    if session.terminal_ids:
+        from .terminal import get_terminal_manager
+        get_terminal_manager().write(session.terminal_ids[0], f"{body.guidance}\n".encode())
+    session.control_owner = "agent"
+    session.status = SessionStatus.RUNNING
+    manager._persist(session)
+    manager.log_event(session, "session.control_returned", {"guidance": body.guidance})
+    return _session_response(session)
+
+
+class CriterionDecisionRequest(BaseModel):
+    status: str
+    note: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+@app.put("/sessions/{session_id}/criteria/{criterion_index}")
+async def decide_session_criterion(
+    session_id: str, criterion_index: int, body: CriterionDecisionRequest, request: Request,
+):
+    if body.status not in {"passed", "failed", "waived"}:
+        raise HTTPException(status_code=422, detail="Invalid criterion status")
+    token_info = getattr(request.state, "token_info", None)
+    from .session_manager import get_session_manager
+    db = get_session_manager()._db()
+    cursor = db.execute(
+        """UPDATE session_criteria SET status = ?, note = ?, evidence_ids = ?,
+           evaluated_by = ?, evaluated_at = ? WHERE session_id = ? AND criterion_index = ?""",
+        (body.status, body.note, json.dumps(body.evidence_ids), token_info.id if token_info else None,
+         datetime.now().isoformat(), session_id, criterion_index),
+    )
+    db.commit()
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Criterion not found")
+    return {"status": body.status}
+
+
 @app.post("/sessions/{session_id}/complete")
 async def complete_session(session_id: str):
     """Manually mark a session as done — kills terminals and generates summary."""
@@ -8955,6 +9322,29 @@ async def complete_session(session_id: str):
     s = sm.get(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
+    if (s.metadata or {}).get("supervised"):
+        evidence_rows = sm._db().execute(
+            "SELECT evidence_type, data FROM session_evidence WHERE session_id = ?", (session_id,)
+        ).fetchall()
+        has_git = any(row["evidence_type"] == "git" for row in evidence_rows)
+        has_passing_verification = any(
+            row["evidence_type"] == "verification"
+            and json.loads(row["data"] or "{}").get("exit_code") == 0
+            for row in evidence_rows
+        )
+        criteria_rows = sm._db().execute(
+            "SELECT status FROM session_criteria WHERE session_id = ?", (session_id,)
+        ).fetchall()
+        unresolved = [row["status"] for row in criteria_rows if row["status"] not in {"passed", "waived"}]
+        missing = []
+        if not has_git:
+            missing.append("Git evidence")
+        if not has_passing_verification:
+            missing.append("passing verification evidence")
+        if unresolved:
+            missing.append("resolved acceptance criteria")
+        if missing:
+            raise HTTPException(status_code=409, detail=f"Completion requires {', '.join(missing)}")
     # Save terminal log before killing
     sm._save_terminal_log(s)
     # Kill associated terminals
@@ -8964,7 +9354,7 @@ async def complete_session(session_id: str):
         except Exception:
             pass
     summary = await sm._generate_summary(s)
-    sm.update_status(session_id, SessionStatus.DONE, output_summary=summary)
+    sm.update_status(session_id, SessionStatus.COMPLETED, output_summary=summary)
     sm.stop_monitor(session_id)
     # Post completion to channel
     try:
@@ -8978,6 +9368,27 @@ async def complete_session(session_id: str):
     except Exception:
         pass
     return {"success": True, "session_id": session_id}
+
+
+@app.post("/sessions/{session_id}/cancel")
+async def cancel_session(session_id: str):
+    """Permanently stop active execution while retaining its audit record."""
+    from .session_manager import get_session_manager, SessionStatus
+    from .terminal import get_terminal_manager
+    manager = get_session_manager()
+    session = manager.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status in {SessionStatus.COMPLETED, SessionStatus.DONE, SessionStatus.FAILED, SessionStatus.CANCELLED}:
+        raise HTTPException(status_code=409, detail="Session is already terminal")
+    for terminal_id in session.terminal_ids:
+        try:
+            get_terminal_manager().kill(terminal_id)
+        except Exception:
+            logger.warning("Failed to stop terminal %s while cancelling %s", terminal_id, session_id)
+    manager.update_status(session_id, SessionStatus.CANCELLED)
+    manager.stop_monitor(session_id)
+    return _session_response(manager.get(session_id))
 
 
 @app.delete("/sessions/{session_id}")
@@ -9009,7 +9420,7 @@ async def delete_session(session_id: str):
 @app.post("/sessions/{session_id}/retry")
 async def retry_session(session_id: str):
     """Retry a failed/pending session — re-spawns the terminal."""
-    from .session_manager import get_session_manager
+    from .session_manager import build_agent_command, get_session_manager
     from .terminal import get_terminal_manager
     from .channel_manager import get_channel_manager
 
@@ -9021,13 +9432,8 @@ async def retry_session(session_id: str):
         raise HTTPException(status_code=400, detail=f"Cannot retry session in status: {s.status}")
 
     tm = get_terminal_manager()
-    provider = s.agent_provider or "claude"
-    if provider == "shell":
-        inner = s.description
-    else:
-        escaped = s.description[:500].replace('"', '\\"')
-        inner = f'claude --dangerously-skip-permissions "{escaped}"'
-    command = f"trap 'echo __RDC_EXIT:$?' EXIT; {inner}"
+    provider = s.agent_provider or (config.agents.default_provider if config else "cursor")
+    command = build_agent_command(provider, s.description)
 
     try:
         term = tm.create(project=s.project, command=command)

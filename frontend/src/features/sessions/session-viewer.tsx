@@ -1,15 +1,10 @@
 import { useState } from "react"
-import { GET, POST } from "@/lib/api"
+import { GET, POST, PUT } from "@/lib/api"
 import { useUIStore } from "@/stores/ui-store"
 import { TerminalView, TerminalToolbar } from "@/features/terminal/terminal-view"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 
-const SESSION_STATUS = {
-  PENDING: "pending", RUNNING: "running", WAITING: "waiting",
-  DONE: "done", FAILED: "failed", CANCELLED: "cancelled",
-} as const
-
-type SessionStatusValue = (typeof SESSION_STATUS)[keyof typeof SESSION_STATUS]
+type SessionStatusValue = "pending" | "running" | "waiting" | "verifying" | "done" | "completed" | "failed" | "cancelled"
 
 interface SessionData {
   id: string
@@ -23,7 +18,15 @@ interface SessionData {
   updated_at: string
   completed_at: string | null
   output_summary: string | null
+  goal: string
+  acceptance_criteria: string[]
+  control_owner: "agent" | "human" | "none"
+  blocker: string | null
 }
+
+interface SessionEvidence { id: string; evidence_type: string; title: string; data: Record<string, unknown> }
+interface SessionCriterion { criterion_index: number; criterion: string; status: "unevaluated" | "passed" | "failed" | "waived" }
+interface SessionApproval { id: string; summary: string; risk_level: string; status: "pending" | "approved" | "rejected" }
 
 interface SessionEvent {
   id: string
@@ -48,12 +51,32 @@ export function SessionViewer({
   const [events, setEvents] = useState<SessionEvent[] | null>(null)
   const [log, setLog] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
+  const [confirmCancel, setConfirmCancel] = useState(false)
+  const [evidence, setEvidence] = useState<SessionEvidence[]>([])
+  const [criteria, setCriteria] = useState<SessionCriterion[]>([])
+  const [verificationCommand, setVerificationCommand] = useState("")
+  const [approvals, setApprovals] = useState<SessionApproval[]>([])
+  const [guidance, setGuidance] = useState("")
   const toast = useUIStore((s) => s.toast)
   const layout = useUIStore((s) => s.layout)
 
   useMountEffect(() => {
     loadSession()
+    loadSupervision()
   })
+
+  const loadSupervision = async () => {
+    try {
+      const [evidenceItems, criterionItems, approvalItems] = await Promise.all([
+        GET<SessionEvidence[]>(`/sessions/${sessionId}/evidence`),
+        GET<SessionCriterion[]>(`/sessions/${sessionId}/criteria`),
+        GET<SessionApproval[]>(`/sessions/${sessionId}/approvals`),
+      ])
+      setEvidence(evidenceItems ?? [])
+      setCriteria(criterionItems ?? [])
+      setApprovals(approvalItems ?? [])
+    } catch { /* Legacy sessions may not have supervision records. */ }
+  }
 
   const loadSession = async () => {
     try {
@@ -92,6 +115,48 @@ export function SessionViewer({
     } catch { toast("Retry failed", "error") }
   }
 
+  const cancel = async () => {
+    try {
+      await POST(`/sessions/${sessionId}/cancel`)
+      setConfirmCancel(false)
+      toast("Session cancelled", "success")
+      loadSession()
+    } catch { toast("Cancellation failed", "error") }
+  }
+
+  const captureGit = async () => {
+    try { await POST(`/sessions/${sessionId}/evidence/git`); await loadSupervision(); toast("Git evidence captured", "success") }
+    catch { toast("Git evidence failed", "error") }
+  }
+
+  const verify = async () => {
+    try { await POST(`/sessions/${sessionId}/evidence/verification`, { command: verificationCommand.trim() || undefined }); await loadSupervision(); toast("Verification recorded", "success") }
+    catch { toast("Verification failed", "error") }
+  }
+
+  const decideCriterion = async (criterion: SessionCriterion, status: "passed" | "failed" | "waived") => {
+    try {
+      await PUT(`/sessions/${sessionId}/criteria/${criterion.criterion_index}`, { status, evidence_ids: evidence.map((item) => item.id) })
+      await loadSupervision()
+    } catch { toast("Criterion update failed", "error") }
+  }
+
+  const decideApproval = async (approval: SessionApproval, decision: "approved" | "rejected") => {
+    try { await POST(`/sessions/${sessionId}/approvals/${approval.id}/decide`, { decision }); await loadSupervision(); await loadSession() }
+    catch { toast("Approval decision failed", "error") }
+  }
+
+  const takeControl = async () => {
+    try { await POST(`/sessions/${sessionId}/take-control`); await loadSession() }
+    catch { toast("Could not take control", "error") }
+  }
+
+  const returnControl = async () => {
+    if (!guidance.trim()) return
+    try { await POST(`/sessions/${sessionId}/return-control`, { guidance: guidance.trim() }); setGuidance(""); await loadSession() }
+    catch { toast("Could not return control", "error") }
+  }
+
   if (!session) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -100,7 +165,8 @@ export function SessionViewer({
     )
   }
 
-  const isActive = ["pending", "running", "waiting"].includes(session.status)
+  const isExecuting = ["pending", "running", "waiting"].includes(session.status)
+  const isOpen = [...["pending", "running", "waiting"], "verifying"].includes(session.status)
   const terminalId = session.terminal_ids[0] || null
   const shortDesc = session.description.split(/[.\n]/)[0].slice(0, 120) || "Untitled"
 
@@ -124,17 +190,21 @@ export function SessionViewer({
         <span className="text-[10px] text-gray-500 flex-shrink-0">{session.project}</span>
         {session.agent_provider && <span className="text-[10px] text-gray-600 flex-shrink-0">{session.agent_provider}</span>}
         <span className="text-[10px] text-gray-600 flex-shrink-0">{duration}</span>
-        {isActive && (
+        {session.status === "verifying" && (
           <button onClick={markDone} className="text-[10px] px-2 py-0.5 rounded bg-green-600/20 text-green-400 hover:bg-green-600/30 flex-shrink-0">
-            Mark Done
+            Mark complete
           </button>
         )}
+        {isExecuting && session.status !== "pending" && (
+          <button onClick={() => setConfirmCancel(true)} className="text-[10px] px-2 py-0.5 rounded bg-red-600/20 text-red-400 hover:bg-red-600/30 flex-shrink-0">Cancel session</button>
+        )}
+        {["running", "waiting"].includes(session.status) && session.control_owner !== "human" && <button onClick={takeControl} className="rounded bg-yellow-600/20 px-2 py-0.5 text-[10px] text-yellow-300">Take control</button>}
         {(session.status === "failed" || session.status === "pending") && (
           <button onClick={retry} className="text-[10px] px-2 py-0.5 rounded bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/30 flex-shrink-0">
-            Retry
+            {session.status === "pending" ? "Start" : "Retry"}
           </button>
         )}
-        {!isActive && (
+        {!isOpen && (
           <button onClick={async () => {
             try {
               const { DELETE: DEL } = await import("@/lib/api")
@@ -147,9 +217,13 @@ export function SessionViewer({
           </button>
         )}
       </div>
+      {confirmCancel && <div className="flex items-center justify-end gap-2 border-b border-red-900 bg-red-950/40 px-3 py-2 text-xs"><span className="mr-auto text-red-200">Permanently stop this session? It cannot currently be resumed.</span><button onClick={() => setConfirmCancel(false)} className="rounded border border-gray-600 px-2 py-1">Go back</button><button onClick={cancel} className="rounded bg-red-700 px-2 py-1 text-white">Cancel session</button></div>}
+      {session.control_owner === "human" && <div className="flex items-center gap-2 border-b border-yellow-900 bg-yellow-950/30 px-3 py-2"><span className="text-[10px] text-yellow-200">You have control</span><input value={guidance} onChange={(event) => setGuidance(event.target.value)} placeholder="Guidance before returning control" className="min-w-52 flex-1 rounded border border-yellow-800 bg-gray-950 px-2 py-1 text-[10px]" /><button disabled={!guidance.trim()} onClick={returnControl} className="rounded bg-green-700 px-2 py-1 text-[10px] text-white disabled:opacity-50">Return control</button></div>}
+      {approvals.some((approval) => approval.status === "pending") && <div className="space-y-2 border-b border-yellow-900 bg-yellow-950/20 p-3"><div className="text-xs font-medium text-yellow-300">Needs your decision</div>{approvals.filter((approval) => approval.status === "pending").map((approval) => <div key={approval.id} className="flex items-center gap-2 rounded border border-yellow-800 p-2 text-xs"><span className="mr-auto text-gray-200">{approval.summary}</span><button onClick={() => decideApproval(approval, "approved")} className="rounded bg-green-700 px-2 py-1 text-[10px]">Approve</button><button onClick={() => decideApproval(approval, "rejected")} className="rounded bg-red-700 px-2 py-1 text-[10px]">Reject</button></div>)}</div>}
+      {(criteria.length > 0 || session.status === "verifying") && <div className="space-y-2 border-b border-gray-700 bg-gray-900 p-3"><div className="flex flex-wrap items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-300">Completion evidence</span><button onClick={captureGit} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Capture Git</button><input value={verificationCommand} onChange={(event) => setVerificationCommand(event.target.value)} placeholder="Verification command or project default" className="min-w-52 flex-1 rounded border border-gray-600 bg-gray-950 px-2 py-1 text-[10px]" /><button onClick={verify} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Run verification</button></div>{criteria.map((criterion) => <div key={criterion.criterion_index} className="flex flex-wrap items-center gap-2 rounded border border-gray-700 px-2 py-1.5 text-[10px]"><span className="mr-auto text-gray-300">{criterion.criterion}</span><span className="text-gray-500">{criterion.status}</span>{criterion.status === "unevaluated" && <><button onClick={() => decideCriterion(criterion, "passed")} className="text-green-400">Pass with evidence</button><button onClick={() => decideCriterion(criterion, "failed")} className="text-red-400">Fail</button><button onClick={() => decideCriterion(criterion, "waived")} className="text-gray-400">Waive</button></>}</div>)}</div>}
 
       {/* Main content: terminal (if active) or detail view */}
-      {isActive && terminalId ? (
+      {isExecuting && terminalId ? (
         <>
           {/* Terminal takes most of the space */}
           <div className="flex-1 min-h-0 flex flex-col">

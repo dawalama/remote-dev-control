@@ -26,6 +26,7 @@ import json
 import logging
 import re
 import secrets
+import shlex
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -38,16 +39,18 @@ class SessionStatus(str, enum.Enum):
     RUNNING = "running"
     WAITING = "waiting"
     DONE = "done"
+    VERIFYING = "verifying"
+    COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
     @classmethod
     def active_values(cls) -> tuple[str, ...]:
-        return (cls.PENDING.value, cls.RUNNING.value, cls.WAITING.value)
+        return (cls.PENDING.value, cls.RUNNING.value, cls.WAITING.value, cls.VERIFYING.value)
 
     @classmethod
     def terminal_values(cls) -> tuple[str, ...]:
-        return (cls.DONE.value, cls.FAILED.value, cls.CANCELLED.value)
+        return (cls.DONE.value, cls.COMPLETED.value, cls.FAILED.value, cls.CANCELLED.value)
 
 from .utils import (
     strip_ansi, safe_json_loads, json_field, enum_value,
@@ -56,6 +59,22 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def build_agent_command(provider: str, description: str) -> str:
+    """Build the terminal command for the provider the user actually selected."""
+    prompt = shlex.quote(description[:4000])
+    commands = {
+        "claude": f"claude {prompt}",
+        "cursor": f"cursor-agent {prompt}",
+        "gemini": f"gemini --prompt-interactive {prompt}",
+        "gwd": f"gemini --prompt-interactive {prompt}",
+        "diagnostic": "printf 'RDC diagnostic session completed without project writes\\n'",
+    }
+    inner = description if provider == "shell" else commands.get(provider)
+    if inner is None:
+        raise ValueError(f"Unsupported session provider: {provider}")
+    return f"trap 'echo __RDC_EXIT:$?' EXIT; {inner}"
 
 # Patterns that indicate the agent is waiting for user input
 _INPUT_PATTERNS = [
@@ -91,6 +110,14 @@ class Session:
     completed_at: Optional[datetime] = None
     output_summary: Optional[str] = None
     metadata: Optional[dict] = None
+    goal: str = ""
+    acceptance_criteria: list[str] = field(default_factory=list)
+    control_owner: str = "none"
+    current_step: Optional[str] = None
+    blocker: Optional[str] = None
+    policy: dict = field(default_factory=dict)
+    budget: Optional[dict] = None
+    unresolved_risks: list[str] = field(default_factory=list)
 
 
 class SessionManager:
@@ -103,6 +130,10 @@ class SessionManager:
 
     def _db(self):
         return get_rdc_db()
+
+    @staticmethod
+    def successful_execution_status(session: Session) -> SessionStatus:
+        return SessionStatus.VERIFYING if (session.metadata or {}).get("supervised") else SessionStatus.DONE
 
     # ── Event Logging ──
 
@@ -135,6 +166,26 @@ class SessionManager:
             for r in rows
         ]
 
+    def request_approval(self, session: Session, summary: str, terminal_id: str) -> str:
+        """Create one durable pending approval for a detected terminal prompt."""
+        db = self._db()
+        existing = db.execute(
+            "SELECT id FROM session_approvals WHERE session_id = ? AND status = 'pending' LIMIT 1",
+            (session.id,),
+        ).fetchone()
+        if existing:
+            return existing["id"]
+        approval_id = f"approval-{secrets.token_hex(8)}"
+        db.execute(
+            """INSERT INTO session_approvals
+               (id, session_id, action_type, risk_level, summary, details, requested_by)
+               VALUES (?, ?, 'terminal_input', 'medium', ?, ?, ?)""",
+            (approval_id, session.id, summary[-1000:], json.dumps({"terminal_id": terminal_id}), "agent"),
+        )
+        db.commit()
+        self.log_event(session, "session.approval_requested", {"approval_id": approval_id, "summary": summary[-200:]})
+        return approval_id
+
     # ── CRUD ──
 
     def create_session(
@@ -145,6 +196,9 @@ class SessionManager:
         agent_provider: Optional[str] = None,
         task_id: Optional[str] = None,
         metadata: Optional[dict] = None,
+        acceptance_criteria: Optional[list[str]] = None,
+        policy: Optional[dict] = None,
+        budget: Optional[dict] = None,
     ) -> Session:
         """Create a new session and persist to DB."""
         session = Session(
@@ -155,9 +209,21 @@ class SessionManager:
             agent_provider=agent_provider,
             task_id=task_id,
             metadata=metadata,
+            goal=description,
+            acceptance_criteria=acceptance_criteria or [],
+            policy=policy or {},
+            budget=budget,
         )
         self._sessions[session.id] = session
         self._persist(session)
+        if session.acceptance_criteria:
+            db = self._db()
+            db.executemany(
+                """INSERT INTO session_criteria
+                   (session_id, criterion_index, criterion) VALUES (?, ?, ?)""",
+                [(session.id, index, criterion) for index, criterion in enumerate(session.acceptance_criteria)],
+            )
+            db.commit()
         self.log_event(session, "session.created", {"description": description[:200], "project": project})
         return session
 
@@ -171,6 +237,12 @@ class SessionManager:
         rows = db.execute(
             "SELECT * FROM sessions WHERE channel_id = ? ORDER BY created_at DESC",
             (channel_id,),
+        ).fetchall()
+        return self._rows_to_sessions(rows)
+
+    def list_all(self, limit: int = 200) -> list[Session]:
+        rows = self._db().execute(
+            "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return self._rows_to_sessions(rows)
 
@@ -189,7 +261,7 @@ class SessionManager:
             return
         session.status = SessionStatus(status) if isinstance(status, str) else status
         session.updated_at = datetime.now()
-        if session.status in (SessionStatus.DONE, SessionStatus.FAILED, SessionStatus.CANCELLED):
+        if session.status in (SessionStatus.DONE, SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED):
             session.completed_at = datetime.now()
         if output_summary:
             session.output_summary = output_summary
@@ -207,6 +279,7 @@ class SessionManager:
             session.terminal_ids.append(terminal_id)
         if session.status == SessionStatus.PENDING:
             session.status = SessionStatus.RUNNING
+        session.control_owner = "agent"
         session.updated_at = datetime.now()
         self._persist(session)
 
@@ -300,9 +373,10 @@ class SessionManager:
                 active_terms = [tid for tid in session.terminal_ids if tm.get(tid)]
                 if not active_terms and session.status == SessionStatus.RUNNING:
                     summary = await self._generate_summary(session)
-                    self.update_status(session.id, SessionStatus.DONE, output_summary=summary)
+                    end_status = self.successful_execution_status(session)
+                    self.update_status(session.id, end_status, output_summary=summary)
                     components: list[dict] = [
-                        {"type": "task_card", "title": session.description[:80], "status": SessionStatus.DONE.value, "project": session.project},
+                        {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
                     ]
                     if summary:
                         components.append({"type": "text", "content": summary})
@@ -317,7 +391,7 @@ class SessionManager:
                 active_terms = [tid for tid in session.terminal_ids if tm.get(tid) and tid != terminal_id]
                 if not active_terms and session.status == SessionStatus.RUNNING:
                     summary = await self._generate_summary(session)
-                    end_status = SessionStatus.FAILED if term_status == "error" else SessionStatus.DONE
+                    end_status = SessionStatus.FAILED if term_status == "error" else self.successful_execution_status(session)
                     self.update_status(session.id, end_status, output_summary=summary)
                     cm.post_message(session.channel_id, role="system", content=f"Session ended — terminal {term_status}.",
                         metadata={"type": "a2ui", "components": [
@@ -341,9 +415,10 @@ class SessionManager:
                             active_terms = [tid for tid in session.terminal_ids if tid != terminal_id and tm.get(tid)]
                             if not active_terms:
                                 summary = await self._generate_summary(session)
-                                self.update_status(session.id, SessionStatus.DONE, output_summary=summary)
+                                end_status = self.successful_execution_status(session)
+                                self.update_status(session.id, end_status, output_summary=summary)
                                 components = [
-                                    {"type": "task_card", "title": session.description[:80], "status": SessionStatus.DONE.value, "project": session.project},
+                                    {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
                                 ]
                                 if summary:
                                     components.append({"type": "text", "content": summary})
@@ -359,6 +434,7 @@ class SessionManager:
                             last_event_type = "waiting"
                             tail = strip_ansi(buf[-512:].decode("utf-8", errors="replace"))
                             self.log_event(session, "session.waiting_for_input", {"terminal_id": terminal_id, "prompt": tail.strip()[-200:]})
+                            self.request_approval(session, tail.strip(), terminal_id)
                             cm.post_message(session.channel_id, role="system", content="Agent is waiting for input",
                                 metadata={"type": "a2ui", "components": [
                                     {"type": "text", "content": f"```\n{tail.strip()[-200:]}\n```"},
@@ -375,7 +451,7 @@ class SessionManager:
                 exit_match = _EXIT_SIGNAL_RE.search(text)
                 if exit_match:
                     exit_code = int(exit_match.group(1))
-                    end_status = SessionStatus.DONE if exit_code == 0 else SessionStatus.FAILED
+                    end_status = self.successful_execution_status(session) if exit_code == 0 else SessionStatus.FAILED
                     self.log_event(session, "session.agent_exited", {"terminal_id": terminal_id, "exit_code": exit_code})
                     # Save log + generate summary
                     self._save_terminal_log(session)
@@ -399,6 +475,7 @@ class SessionManager:
                             self._persist(session)
                             last_event_type = "waiting"
                             self.log_event(session, "session.waiting_for_input", {"terminal_id": terminal_id})
+                            self.request_approval(session, text[-500:].strip(), terminal_id)
                             cm.post_message(session.channel_id, role="system", content="Agent is waiting for input",
                                 metadata={"type": "a2ui", "components": [
                                     {"type": "text", "content": f"```\n{text[-300:].strip()}\n```"},
@@ -500,10 +577,32 @@ class SessionManager:
         # Keep terminal_id as first terminal for backward compat
         terminal_id = session.terminal_ids[0] if session.terminal_ids else None
         db.execute(
-            """INSERT OR REPLACE INTO sessions
+            """INSERT INTO sessions
                (id, channel_id, project, terminal_id, task_id, description, status,
-                agent_provider, created_at, updated_at, completed_at, output_summary, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                agent_provider, created_at, updated_at, completed_at, output_summary, metadata,
+                goal, acceptance_criteria, control_owner, current_step, blocker, policy,
+                budget, unresolved_risks)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 channel_id = excluded.channel_id,
+                 project = excluded.project,
+                 terminal_id = excluded.terminal_id,
+                 task_id = excluded.task_id,
+                 description = excluded.description,
+                 status = excluded.status,
+                 agent_provider = excluded.agent_provider,
+                 updated_at = excluded.updated_at,
+                 completed_at = excluded.completed_at,
+                 output_summary = excluded.output_summary,
+                 metadata = excluded.metadata,
+                 goal = excluded.goal,
+                 acceptance_criteria = excluded.acceptance_criteria,
+                 control_owner = excluded.control_owner,
+                 current_step = excluded.current_step,
+                 blocker = excluded.blocker,
+                 policy = excluded.policy,
+                 budget = excluded.budget,
+                 unresolved_risks = excluded.unresolved_risks""",
             (
                 session.id, session.channel_id, session.project,
                 terminal_id, session.task_id, session.description,
@@ -513,6 +612,14 @@ class SessionManager:
                 session.completed_at.isoformat() if session.completed_at else None,
                 session.output_summary,
                 json.dumps(session.metadata) if session.metadata else None,
+                session.goal or session.description,
+                json.dumps(session.acceptance_criteria),
+                session.control_owner,
+                session.current_step,
+                session.blocker,
+                json.dumps(session.policy),
+                json.dumps(session.budget) if session.budget else None,
+                json.dumps(session.unresolved_risks),
             ),
         )
         db.commit()
@@ -592,6 +699,14 @@ class SessionManager:
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
             output_summary=row["output_summary"],
             metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+            goal=row["goal"] or row["description"] or "",
+            acceptance_criteria=json.loads(row["acceptance_criteria"] or "[]"),
+            control_owner=row["control_owner"] or "none",
+            current_step=row["current_step"],
+            blocker=row["blocker"],
+            policy=json.loads(row["policy"] or "{}"),
+            budget=json.loads(row["budget"]) if row["budget"] else None,
+            unresolved_risks=json.loads(row["unresolved_risks"] or "[]"),
         )
 
 
