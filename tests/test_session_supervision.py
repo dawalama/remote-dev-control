@@ -185,3 +185,16 @@ def test_control_can_be_returned_without_guidance_and_terminal_states_clear_owne
         json={},
     )
     assert rejected.status_code == 409
+
+
+def test_cancelled_outcome_can_restore_review():
+    manager = get_session_manager()
+    session = manager.create_session("test-channel", "test-project", "Deliver result", metadata={"supervised": True})
+    manager.update_status(session.id, SessionStatus.CANCELLED, output_summary="A valid delivered outcome")
+    token, _ = get_auth_manager().create_token("restore-review-test", Role.ADMIN)
+    response = TestClient(app).post(
+        f"/sessions/{session.id}/restore-review",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "verifying"

@@ -9598,6 +9598,8 @@ async def cancel_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     if session.status in {SessionStatus.COMPLETED, SessionStatus.DONE, SessionStatus.FAILED, SessionStatus.CANCELLED}:
         raise HTTPException(status_code=409, detail="Session is already terminal")
+    if session.status == SessionStatus.VERIFYING:
+        raise HTTPException(status_code=409, detail="Execution has finished. Complete or discard the review outcome instead.")
     manager.stop_monitor(session_id)
     manager.update_status(session_id, SessionStatus.CANCELLED)
     for terminal_id in session.terminal_ids:
@@ -9605,6 +9607,23 @@ async def cancel_session(session_id: str):
             get_terminal_manager().destroy(terminal_id)
         except Exception:
             logger.warning("Failed to stop terminal %s while cancelling %s", terminal_id, session_id)
+    return _session_response(manager.get(session_id))
+
+
+@app.post("/sessions/{session_id}/restore-review")
+async def restore_session_review(session_id: str):
+    """Recover a cancelled Session whose agent had already delivered an outcome."""
+    from .session_manager import get_session_manager, SessionStatus
+    manager = get_session_manager()
+    session = manager.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status != SessionStatus.CANCELLED or not session.output_summary:
+        raise HTTPException(status_code=409, detail="Only a cancelled Session with a recorded outcome can restore review")
+    session.completed_at = None
+    session.blocker = None
+    manager.update_status(session.id, SessionStatus.VERIFYING, output_summary=session.output_summary)
+    manager.log_event(session, "session.review_restored", {})
     return _session_response(manager.get(session_id))
 
 

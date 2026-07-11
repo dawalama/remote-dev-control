@@ -14,7 +14,7 @@ export function SessionsHub() {
   const activeChannelId = useChannelStore((state) => state.activeChannelId)
   const scope = useUIStore((state) => state.sessionsHubScope)
   const setScope = useUIStore((state) => state.setSessionsHubScope)
-  const activeChannel = channels.find((channel) => channel.id === activeChannelId)
+  const workstreams = channels.filter((channel) => channel.type !== "system" && !channel.archived_at)
 
   if (!open) return null
 
@@ -24,9 +24,7 @@ export function SessionsHub() {
         <header className="flex flex-wrap items-center gap-3 border-b border-gray-800 px-4 py-3 sm:px-6">
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-semibold text-gray-100">Sessions</h2>
-            <p className="truncate text-xs text-gray-500">
-              {scope === "workstream" ? `Workstream · ${activeChannel?.name ?? "No workstream selected"}` : "Supervise work across every workstream"}
-            </p>
+            <div className="mt-1 flex items-center gap-1 text-xs text-gray-500"><span>Workstream ·</span><select value={activeChannelId ?? ""} onChange={(event) => { useChannelStore.getState().selectChannel(event.target.value); setScope("workstream") }} className="max-w-48 rounded border border-gray-700 bg-gray-900 px-1.5 py-0.5 text-xs text-gray-300"><option value="" disabled>Select workstream</option>{workstreams.map((channel) => <option key={channel.id} value={channel.id}>#{channel.name}</option>)}</select></div>
           </div>
           <div className="flex rounded-lg border border-gray-700 bg-gray-800 p-1">
             <button onClick={() => setScope("workstream")} className={`rounded px-3 py-1.5 text-xs ${scope === "workstream" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"}`}>This workstream</button>
