@@ -227,3 +227,26 @@ def test_passing_verification_satisfies_matching_criterion(monkeypatch, tmp_path
     assert [(row["criterion"], row["status"]) for row in rows] == [
         ("Relevant verification passes", "passed"), ("Human accepts outcome", "unevaluated"),
     ]
+
+
+def test_product_media_can_be_attached_as_session_evidence(monkeypatch, tmp_path):
+    manager = get_session_manager()
+    session = manager.create_session("test-channel", "test-project", "Review browser behavior")
+    monkeypatch.setattr("remote_dev_ctrl.server.app.get_rdc_home", lambda: tmp_path)
+    token, _ = get_auth_manager().create_token("media-evidence-test", Role.ADMIN)
+    client = TestClient(app)
+    response = client.post(
+        f"/sessions/{session.id}/evidence/media",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("homepage.png", b"png-data", "image/png")},
+        data={"note": "Homepage dashboard renders"},
+    )
+    assert response.status_code == 200
+    assert response.json()["evidence_type"] == "media"
+    evidence_id = response.json()["id"]
+    downloaded = client.get(
+        f"/sessions/{session.id}/evidence/{evidence_id}/file",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"png-data"

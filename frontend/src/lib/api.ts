@@ -72,3 +72,10 @@ export const PUT = <T = unknown>(path: string, body?: unknown) =>
   })
 export const DELETE = <T = unknown>(path: string) =>
   api<T>(path, { method: "DELETE" })
+
+export async function BLOB(path: string): Promise<Blob> {
+  const token = getToken()
+  const res = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  if (!res.ok) throw new Error(`API ${res.status}: ${await res.text().catch(() => res.statusText)}`)
+  return res.blob()
+}

@@ -9317,6 +9317,62 @@ async def list_session_evidence(session_id: str):
     return [_decode_session_row(row) for row in rows]
 
 
+@app.post("/sessions/{session_id}/evidence/media")
+async def upload_session_media_evidence(
+    session_id: str, file: UploadFile = File(...), note: str = Form(""),
+):
+    """Attach a screenshot or short product video as review evidence."""
+    from .session_manager import get_session_manager
+    manager = get_session_manager()
+    if not manager.get(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    allowed = {
+        "image/png", "image/jpeg", "image/gif", "image/webp",
+        "video/mp4", "video/webm", "video/quicktime",
+    }
+    if file.content_type not in allowed:
+        raise HTTPException(status_code=415, detail="Attach a PNG, JPEG, GIF, WebP, MP4, WebM, or MOV file")
+    content = await file.read(100 * 1024 * 1024 + 1)
+    if len(content) > 100 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Product evidence must be 100 MB or smaller")
+    evidence_id = secrets.token_hex(16)
+    original_name = Path(file.filename or "product-evidence").name
+    suffix = Path(original_name).suffix.lower()[:10]
+    evidence_dir = get_rdc_home() / "session-evidence" / session_id
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{evidence_id}{suffix}"
+    (evidence_dir / stored_name).write_bytes(content)
+    data = {
+        "filename": original_name, "stored_name": stored_name,
+        "content_type": file.content_type, "size": len(content), "note": note.strip(),
+    }
+    db = manager._db()
+    db.execute(
+        """INSERT INTO session_evidence
+           (id, session_id, evidence_type, title, data, source)
+           VALUES (?, ?, 'media', ?, ?, 'user')""",
+        (evidence_id, session_id, note.strip() or original_name, json.dumps(data)),
+    )
+    db.commit()
+    return {"id": evidence_id, "evidence_type": "media", "title": note.strip() or original_name, "data": data}
+
+
+@app.get("/sessions/{session_id}/evidence/{evidence_id}/file")
+async def get_session_media_evidence(session_id: str, evidence_id: str):
+    from .session_manager import get_session_manager
+    row = get_session_manager()._db().execute(
+        "SELECT data FROM session_evidence WHERE session_id = ? AND id = ? AND evidence_type = 'media'",
+        (session_id, evidence_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Media evidence not found")
+    data = json.loads(row["data"] or "{}")
+    path = get_rdc_home() / "session-evidence" / session_id / Path(data.get("stored_name", "")).name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Media evidence file is missing")
+    return FileResponse(path, media_type=data.get("content_type"), filename=data.get("filename"))
+
+
 @app.post("/sessions/{session_id}/evidence/git")
 async def capture_session_git_evidence(session_id: str):
     from .session_manager import get_session_manager
@@ -9374,9 +9430,14 @@ async def run_session_verification(session_id: str, body: VerificationRequest):
     if not argv or any(token in {"&&", "||", ";", "|", ">", "<"} for token in argv):
         raise HTTPException(status_code=422, detail="Verification must be a single executable command")
     started = time.monotonic()
-    result = await asyncio.to_thread(
-        subprocess.run, argv, cwd=path, text=True, capture_output=True, timeout=900, check=False,
-    )
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run, argv, cwd=path, text=True, capture_output=True, timeout=900, check=False,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=422, detail=f"Verification command not found: {argv[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=408, detail="Verification timed out after 15 minutes") from exc
     data = {
         "command": command, "exit_code": result.returncode,
         "duration_seconds": round(time.monotonic() - started, 3),
