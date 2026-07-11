@@ -250,3 +250,36 @@ def test_product_media_can_be_attached_as_session_evidence(monkeypatch, tmp_path
     )
     assert downloaded.status_code == 200
     assert downloaded.content == b"png-data"
+    updated = client.patch(
+        f"/sessions/{session.id}/evidence/{evidence_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"title": "Updated dashboard screenshot", "note": "Updated dashboard screenshot"},
+    )
+    assert updated.status_code == 200
+    deleted = client.delete(
+        f"/sessions/{session.id}/evidence/{evidence_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert deleted.status_code == 200
+    assert not list((tmp_path / "session-evidence" / session.id).iterdir())
+
+
+def test_operator_can_complete_with_audited_review_exception():
+    manager = get_session_manager()
+    session = manager.create_session(
+        "test-channel", "test-project", "Accept known risk",
+        metadata={"supervised": True, "review_mode": "implementation"},
+        acceptance_criteria=["Verification passes"],
+    )
+    session.status = SessionStatus.VERIFYING
+    manager._persist(session)
+    token, _ = get_auth_manager().create_token("review-override-test", Role.ADMIN)
+    response = TestClient(app).post(
+        f"/sessions/{session.id}/complete",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"override": True, "note": "Verified manually in the deployed preview"},
+    )
+    assert response.status_code == 200
+    restored = manager.get(session.id)
+    assert restored.status == SessionStatus.COMPLETED
+    assert "Verified manually" in restored.unresolved_risks[-1]

@@ -9024,6 +9024,9 @@ def _session_review_mode(session) -> str:
 
 def _session_response(session) -> dict:
     metadata = session.metadata or {}
+    project_record = get_project_repo().get(session.project)
+    project_profile = (project_record.config or {}).get("profile", {}) if project_record else {}
+    verification_command = str(project_profile.get("test_command") or "").strip() or None
     return {
         "id": session.id, "channel_id": session.channel_id, "project": session.project,
         "terminal_ids": session.terminal_ids, "task_id": session.task_id,
@@ -9040,6 +9043,7 @@ def _session_response(session) -> dict:
         "output_summary": session.output_summary,
         "review_mode": _session_review_mode(session),
         "parent_session_id": metadata.get("parent_session_id"),
+        "verification_command": verification_command,
     }
 
 
@@ -9373,6 +9377,59 @@ async def get_session_media_evidence(session_id: str, evidence_id: str):
     return FileResponse(path, media_type=data.get("content_type"), filename=data.get("filename"))
 
 
+class UpdateSessionEvidenceRequest(BaseModel):
+    title: str
+    note: str | None = None
+
+
+@app.patch("/sessions/{session_id}/evidence/{evidence_id}")
+async def update_session_evidence(session_id: str, evidence_id: str, body: UpdateSessionEvidenceRequest):
+    from .session_manager import get_session_manager
+    manager = get_session_manager()
+    row = manager._db().execute(
+        "SELECT evidence_type, data FROM session_evidence WHERE session_id = ? AND id = ?",
+        (session_id, evidence_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Evidence title is required")
+    data = json.loads(row["data"] or "{}")
+    if row["evidence_type"] == "media":
+        data["note"] = (body.note or title).strip()
+    manager._db().execute(
+        "UPDATE session_evidence SET title = ?, data = ? WHERE session_id = ? AND id = ?",
+        (title, json.dumps(data), session_id, evidence_id),
+    )
+    manager._db().commit()
+    return {"id": evidence_id, "title": title, "data": data}
+
+
+@app.delete("/sessions/{session_id}/evidence/{evidence_id}")
+async def delete_session_evidence(session_id: str, evidence_id: str):
+    from .session_manager import get_session_manager
+    manager = get_session_manager()
+    row = manager._db().execute(
+        "SELECT evidence_type, data FROM session_evidence WHERE session_id = ? AND id = ?",
+        (session_id, evidence_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    if row["evidence_type"] == "media":
+        data = json.loads(row["data"] or "{}")
+        path = get_rdc_home() / "session-evidence" / session_id / Path(data.get("stored_name", "")).name
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove media evidence file %s", path)
+    manager._db().execute(
+        "DELETE FROM session_evidence WHERE session_id = ? AND id = ?", (session_id, evidence_id),
+    )
+    manager._db().commit()
+    return {"deleted": True, "id": evidence_id}
+
+
 @app.post("/sessions/{session_id}/evidence/git")
 async def capture_session_git_evidence(session_id: str):
     from .session_manager import get_session_manager
@@ -9599,8 +9656,13 @@ async def decide_session_criterion(
     return {"status": body.status}
 
 
+class CompleteSessionRequest(BaseModel):
+    override: bool = False
+    note: str = ""
+
+
 @app.post("/sessions/{session_id}/complete")
-async def complete_session(session_id: str):
+async def complete_session(session_id: str, body: CompleteSessionRequest | None = None):
     """Manually mark a session as done — kills terminals and generates summary."""
     from .session_manager import get_session_manager, SessionStatus
     from .terminal import get_terminal_manager
@@ -9632,7 +9694,24 @@ async def complete_session(session_id: str):
         if unresolved:
             missing.append("resolved acceptance criteria")
         if missing:
-            raise HTTPException(status_code=409, detail=f"Completion requires {', '.join(missing)}")
+            override = bool(body and body.override)
+            note = (body.note if body else "").strip()
+            if not override:
+                raise HTTPException(status_code=409, detail=f"Completion requires {', '.join(missing)}")
+            if len(note) < 5:
+                raise HTTPException(status_code=422, detail="Explain why this Session can be accepted with missing review evidence")
+            now = datetime.now().isoformat()
+            sm._db().execute(
+                """UPDATE session_criteria SET status = 'waived', note = ?, evaluated_by = 'operator-override', evaluated_at = ?
+                   WHERE session_id = ? AND status NOT IN ('passed', 'waived')""",
+                (note, now, session_id),
+            )
+            sm._db().commit()
+            risk = f"Accepted with review exception ({', '.join(missing)}): {note}"
+            s.unresolved_risks = [*s.unresolved_risks, risk]
+            s.metadata = {**(s.metadata or {}), "review_override": {"note": note, "missing": missing, "accepted_at": now}}
+            sm._persist(s)
+            sm.log_event(s, "session.review_overridden", {"note": note, "missing": missing})
     # Save terminal log before killing
     sm._save_terminal_log(s)
     # Kill associated terminals

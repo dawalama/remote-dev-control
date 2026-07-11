@@ -1,7 +1,7 @@
 import { useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { api, BLOB, GET, POST, PUT } from "@/lib/api"
+import { api, BLOB, DELETE, GET, PATCH, POST, PUT } from "@/lib/api"
 import { useUIStore } from "@/stores/ui-store"
 import { TerminalView, TerminalToolbar } from "@/features/terminal/terminal-view"
 import { useMountEffect } from "@/hooks/use-mount-effect"
@@ -26,6 +26,7 @@ interface SessionData {
   blocker: string | null
   review_mode: "advisory" | "implementation"
   parent_session_id: string | null
+  verification_command: string | null
 }
 
 interface SessionEvidence { id: string; evidence_type: string; title: string; data: Record<string, unknown> }
@@ -63,6 +64,9 @@ export function SessionViewer({
   const [verifyingEvidence, setVerifyingEvidence] = useState(false)
   const [productEvidenceNote, setProductEvidenceNote] = useState("")
   const [uploadingEvidence, setUploadingEvidence] = useState(false)
+  const [showAcceptanceOverride, setShowAcceptanceOverride] = useState(false)
+  const [acceptanceOverrideNote, setAcceptanceOverrideNote] = useState("")
+  const [acceptingOverride, setAcceptingOverride] = useState(false)
   const evidenceInputRef = useRef<HTMLInputElement | null>(null)
   const [approvals, setApprovals] = useState<SessionApproval[]>([])
   const [guidance, setGuidance] = useState("")
@@ -127,12 +131,16 @@ export function SessionViewer({
     } catch { setLog("Failed to load log.") }
   }
 
-  const markDone = async () => {
+  const markDone = async (overrideInput: unknown = false) => {
+    const override = overrideInput === true
+    if (override) setAcceptingOverride(true)
     try {
-      await POST(`/sessions/${sessionId}/complete`)
-      toast("Session completed", "success")
+      await POST(`/sessions/${sessionId}/complete`, override ? { override: true, note: acceptanceOverrideNote.trim() } : undefined)
+      toast(override ? "Session accepted with exception" : "Session completed", "success")
       loadSession()
-    } catch { toast("Failed", "error") }
+      await loadSupervision()
+    } catch (error) { toast(error instanceof Error ? error.message : "Could not complete Session", "error") }
+    if (override) setAcceptingOverride(false)
   }
 
   const retry = async () => {
@@ -182,7 +190,9 @@ export function SessionViewer({
       await loadSupervision()
       toast("Project checks recorded", "success")
     } catch (error) {
-      setVerificationError(error instanceof Error ? error.message.replace(/^API \d+:\s*/, "") : "Project checks could not run")
+      const message = error instanceof Error ? error.message : "Project checks could not run"
+      const detail = message.match(/"detail"\s*:\s*"([^"]+)"/)?.[1]
+      setVerificationError(detail || message.replace(/^API \d+:\s*/, ""))
     }
     setVerifyingEvidence(false)
   }
@@ -273,6 +283,7 @@ export function SessionViewer({
   const defaultContinuationGoal = needsImplementationEvidence
     ? "Prepare the completed changes for release. Review the diff, create an appropriate commit, and propose the target branch and production tag. Request approval before pushing the branch or tag."
     : "Implement the approved outcome from this analysis. Make the changes, run relevant verification, and summarize the delivered result."
+  const runnableVerificationCommand = verificationCommand.trim() || session.verification_command
 
   return (
     <div className="flex-1 flex flex-col min-h-0 rounded-lg overflow-hidden">
@@ -299,7 +310,8 @@ export function SessionViewer({
       {approvals.some((approval) => approval.status === "pending") && <div className="space-y-2 border-b border-yellow-900 bg-yellow-950/20 p-3"><div className="text-xs font-medium text-yellow-300">Needs your decision</div>{approvals.filter((approval) => approval.status === "pending").map((approval) => <div key={approval.id} className="flex items-center gap-2 rounded border border-yellow-800 p-2 text-xs"><span className="mr-auto text-gray-200">{approval.summary}</span><button onClick={() => decideApproval(approval, "approved")} className="rounded bg-green-700 px-2 py-1 text-[10px]">Approve</button><button onClick={() => decideApproval(approval, "rejected")} className="rounded bg-red-700 px-2 py-1 text-[10px]">Reject</button></div>)}</div>}
       {session.status === "verifying" && needsImplementationEvidence && <div className="border-b border-gray-700 bg-gray-950/40 px-3 py-3"><div className="mb-2 text-xs font-medium text-gray-200">Complete this review</div><div className="grid gap-2 text-[10px] sm:grid-cols-3"><ReviewStep number={1} done={hasGitEvidence} label="Capture changes" detail={hasGitEvidence ? "Git evidence captured" : "Open Verification details and capture Git evidence"} /><ReviewStep number={2} done={hasPassingVerification} label="Verify independently" detail={hasPassingVerification ? "Verification passed" : "Run the project verification command"} /><ReviewStep number={3} done={criteriaResolved} label="Accept the outcome" detail={criteriaResolved ? "All criteria resolved" : `${criteria.filter((item) => !["passed", "waived"].includes(item.status)).length} criteria need review`} /></div></div>}
       {session.status === "verifying" && <div className="flex flex-wrap items-end gap-2 border-b border-gray-700 bg-gray-900 px-3 py-2"><label className="min-w-52 flex-1 text-[10px] text-gray-500">Product evidence note <span className="text-gray-700">(optional)</span><input value={productEvidenceNote} onChange={(event) => setProductEvidenceNote(event.target.value)} placeholder="What does this screenshot or video demonstrate?" className="mt-1 w-full rounded border border-gray-600 bg-gray-950 px-2 py-1.5 text-[10px] text-gray-200" /></label><input ref={evidenceInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm,video/quicktime" className="hidden" onChange={(event) => { void attachProductEvidence(event.target.files?.[0]) }} /><button disabled={uploadingEvidence} onClick={() => evidenceInputRef.current?.click()} className="rounded border border-purple-600 px-3 py-1.5 text-[10px] text-purple-300 disabled:opacity-50">{uploadingEvidence ? "Uploading…" : "Attach screenshot or video"}</button></div>}
-      {(criteria.length > 0 || session.status === "verifying" || (["completed", "done"].includes(session.status) && session.review_mode === "advisory")) && <div className="space-y-3 border-b border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-200">Review outcome</span><span className="rounded bg-gray-800 px-2 py-0.5 text-[10px] text-gray-400">{needsImplementationEvidence ? "Implementation" : "Analysis only"}</span>{needsImplementationEvidence && <span className="text-[10px] text-gray-500">{evidence.length} evidence item{evidence.length === 1 ? "" : "s"}</span>}{!needsImplementationEvidence && ["completed", "done"].includes(session.status) && (continuation ? <button onClick={() => useUIStore.getState().setViewingSessionId(continuation.id)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">View implementation · {statusLabel(continuation.status)}</button> : <button onClick={() => setShowContinue((value) => !value)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">Continue with implementation</button>)}{session.status === "verifying" && <button disabled={!canComplete} title={canComplete ? "Complete session" : needsImplementationEvidence ? "Capture Git evidence, pass verification, and resolve criteria first" : "Resolve acceptance criteria first"} onClick={markDone} className="rounded bg-green-600 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-40">{canComplete ? "Complete session" : criteriaResolved ? "Evidence required" : "Criteria required"}</button>}</div>{showContinue && !continuation && <div className="rounded-lg border border-blue-900 bg-blue-950/10 p-3"><label className="block text-[10px] font-medium uppercase tracking-wide text-gray-500">Next Session goal<textarea autoFocus rows={4} value={continuationGoal} onChange={(event) => setContinuationGoal(event.target.value)} className="mt-2 w-full resize-y rounded border border-gray-600 bg-gray-950 px-3 py-2 text-xs normal-case tracking-normal text-gray-200" /></label><div className="mt-2 flex items-center justify-between gap-3"><span className="text-[10px] text-gray-500">The prior goal, result, evidence references, project, and policy will be inherited.</span><button disabled={continuing || !continuationGoal.trim()} onClick={continueWithImplementation} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50">{continuing ? "Starting…" : "Start linked Session"}</button></div></div>}{criteria.map((criterion) => <div key={criterion.criterion_index} className="flex flex-wrap items-center gap-2 rounded border border-gray-700 px-2 py-1.5 text-[10px]"><span className="mr-auto text-gray-300">{criterion.criterion}</span><span className="text-gray-500">{criterion.status === "unevaluated" ? "Not reviewed" : criterion.status}</span>{criterion.status === "unevaluated" && <><button onClick={() => decideCriterion(criterion, "passed")} className="text-green-400">Pass</button><button onClick={() => decideCriterion(criterion, "failed")} className="text-red-400">Fail</button><button onClick={() => decideCriterion(criterion, "waived")} className="text-gray-400">Waive</button></>}</div>)}{needsImplementationEvidence && <details className="rounded border border-gray-700 bg-gray-950/40 p-2"><summary className="cursor-pointer text-[10px] text-gray-400">Run project checks</summary><div className="mt-2 space-y-2"><label className="block text-[10px] text-gray-500">Optional command override<input value={verificationCommand} onChange={(event) => setVerificationCommand(event.target.value)} placeholder="Leave empty for the project default, or enter e.g. pytest" className="mt-1 w-full rounded border border-gray-600 bg-gray-950 px-2 py-1.5 text-[10px] text-gray-200" /></label><div className="flex items-center gap-2"><button onClick={captureGit} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Refresh Git evidence</button><button disabled={verifyingEvidence} onClick={verify} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white disabled:opacity-50">{verifyingEvidence ? "Running checks…" : "Run project checks"}</button></div>{verificationError && <div className="rounded border border-red-900 bg-red-950/20 p-2 text-[10px] text-red-300">{verificationError}</div>}</div></details>}</div>}
+      {session.status === "verifying" && !canComplete && <div className="border-b border-gray-700 bg-gray-950/30 px-3 py-2">{showAcceptanceOverride ? <div className="flex flex-wrap items-end gap-2"><label className="min-w-64 flex-1 text-[10px] text-yellow-300">Reason for accepting with missing review evidence<textarea autoFocus rows={2} value={acceptanceOverrideNote} onChange={(event) => setAcceptanceOverrideNote(event.target.value)} placeholder="Explain the known risk or why the existing evidence is sufficient…" className="mt-1 w-full resize-y rounded border border-yellow-800 bg-gray-950 px-2 py-1.5 text-xs text-gray-200" /></label><button onClick={() => setShowAcceptanceOverride(false)} className="px-2 py-1.5 text-[10px] text-gray-400">Cancel</button><button disabled={acceptingOverride || acceptanceOverrideNote.trim().length < 5} onClick={() => { void markDone(true) }} className="rounded bg-yellow-700 px-3 py-1.5 text-[10px] text-white disabled:opacity-40">{acceptingOverride ? "Accepting…" : "Accept with exception"}</button></div> : <div className="flex items-center justify-between gap-3 text-[10px]"><span className="text-gray-500">Checks and criteria are recommended, but you remain in control.</span><button onClick={() => setShowAcceptanceOverride(true)} className="text-yellow-400">Accept anyway…</button></div>}</div>}
+      {(criteria.length > 0 || session.status === "verifying" || (["completed", "done"].includes(session.status) && session.review_mode === "advisory")) && <div className="space-y-3 border-b border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-200">Review outcome</span><span className="rounded bg-gray-800 px-2 py-0.5 text-[10px] text-gray-400">{needsImplementationEvidence ? "Implementation" : "Analysis only"}</span>{needsImplementationEvidence && <span className="text-[10px] text-gray-500">{evidence.length} evidence item{evidence.length === 1 ? "" : "s"}</span>}{!needsImplementationEvidence && ["completed", "done"].includes(session.status) && (continuation ? <button onClick={() => useUIStore.getState().setViewingSessionId(continuation.id)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">View implementation · {statusLabel(continuation.status)}</button> : <button onClick={() => setShowContinue((value) => !value)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">Continue with implementation</button>)}{session.status === "verifying" && <button disabled={!canComplete} title={canComplete ? "Complete session" : needsImplementationEvidence ? "Capture Git evidence, pass verification, and resolve criteria first" : "Resolve acceptance criteria first"} onClick={markDone} className="rounded bg-green-600 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-40">{canComplete ? "Complete session" : criteriaResolved ? "Evidence required" : "Criteria required"}</button>}</div>{showContinue && !continuation && <div className="rounded-lg border border-blue-900 bg-blue-950/10 p-3"><label className="block text-[10px] font-medium uppercase tracking-wide text-gray-500">Next Session goal<textarea autoFocus rows={4} value={continuationGoal} onChange={(event) => setContinuationGoal(event.target.value)} className="mt-2 w-full resize-y rounded border border-gray-600 bg-gray-950 px-3 py-2 text-xs normal-case tracking-normal text-gray-200" /></label><div className="mt-2 flex items-center justify-between gap-3"><span className="text-[10px] text-gray-500">The prior goal, result, evidence references, project, and policy will be inherited.</span><button disabled={continuing || !continuationGoal.trim()} onClick={continueWithImplementation} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50">{continuing ? "Starting…" : "Start linked Session"}</button></div></div>}{criteria.map((criterion) => <div key={criterion.criterion_index} className="flex flex-wrap items-center gap-2 rounded border border-gray-700 px-2 py-1.5 text-[10px]"><span className="mr-auto text-gray-300">{criterion.criterion}</span><span className="text-gray-500">{criterion.status === "unevaluated" ? "Not reviewed" : criterion.status}</span>{criterion.status === "unevaluated" && <><button onClick={() => decideCriterion(criterion, "passed")} className="text-green-400">Pass</button><button onClick={() => decideCriterion(criterion, "failed")} className="text-red-400">Fail</button><button onClick={() => decideCriterion(criterion, "waived")} className="text-gray-400">Waive</button></>}</div>)}{needsImplementationEvidence && <details className="rounded border border-gray-700 bg-gray-950/40 p-2"><summary className="cursor-pointer text-[10px] text-gray-400">Run project checks</summary><div className="mt-2 space-y-2">{session.verification_command ? <div className="rounded bg-gray-900 px-2 py-1.5 text-[10px] text-gray-400">Project default: <code className="text-blue-300">{session.verification_command}</code></div> : <div className="rounded border border-yellow-900 bg-yellow-950/20 p-2 text-[10px] text-yellow-200">No project check is configured. Enter the exact command to run below, such as <code>pytest backend/tests/test_dashboard.py</code>.</div>}<label className="block text-[10px] text-gray-500">{session.verification_command ? "Optional command override" : "Command to run"}<input value={verificationCommand} onChange={(event) => { setVerificationCommand(event.target.value); setVerificationError(null) }} placeholder={session.verification_command ? "Leave empty to use the project default" : "e.g. pytest backend/tests/test_dashboard.py"} className="mt-1 w-full rounded border border-gray-600 bg-gray-950 px-2 py-1.5 text-[10px] text-gray-200" /></label><div className="flex items-center gap-2"><button onClick={captureGit} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Refresh Git evidence</button><button disabled={verifyingEvidence || !runnableVerificationCommand} onClick={verify} title={!runnableVerificationCommand ? "Enter a command before running checks" : undefined} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white disabled:cursor-not-allowed disabled:opacity-40">{verifyingEvidence ? "Running checks…" : "Run project checks"}</button></div>{verificationError && <div className="rounded border border-red-900 bg-red-950/20 p-2 text-[10px] text-red-300">{verificationError}</div>}</div></details>}</div>}
       {["completed", "done"].includes(session.status) && needsImplementationEvidence && <div className="space-y-3 border-b border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-200">Implementation accepted</span>{continuation ? <button onClick={() => useUIStore.getState().setViewingSessionId(continuation.id)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">View next Session · {statusLabel(continuation.status)}</button> : <button onClick={() => { setContinuationGoal(defaultContinuationGoal); setShowContinue((value) => !value) }} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">Prepare release</button>}</div>{showContinue && !continuation && <div className="rounded-lg border border-blue-900 bg-blue-950/10 p-3"><label className="block text-[10px] font-medium uppercase tracking-wide text-gray-500">Release Session goal<textarea autoFocus rows={4} value={continuationGoal} onChange={(event) => setContinuationGoal(event.target.value)} className="mt-2 w-full resize-y rounded border border-gray-600 bg-gray-950 px-3 py-2 text-xs normal-case tracking-normal text-gray-200" /></label><div className="mt-2 flex items-center justify-between gap-3"><span className="text-[10px] text-gray-500">The implementation result and evidence will be inherited. The agent must request approval before pushing.</span><button disabled={continuing || !continuationGoal.trim()} onClick={continueWithImplementation} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50">{continuing ? "Starting…" : "Start release Session"}</button></div></div>}</div>}
 
       {/* Main content: terminal (if active) or detail view */}
@@ -333,13 +345,13 @@ export function SessionViewer({
 
           {/* Compact detail strip below terminal */}
           <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800">
-            <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} events={events} log={log} session={session} evidence={evidence}
+            <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
               loadEvents={loadEvents} loadLog={loadLog} compact />
           </div>
         </>
       ) : (
         /* Done/failed: full detail view */
-        <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} events={events} log={log} session={session} evidence={evidence}
+        <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
           loadEvents={loadEvents} loadLog={loadLog} />
       )}
     </div>
@@ -349,7 +361,7 @@ export function SessionViewer({
 // ── Tabbed content (used both as compact strip and full view) ──
 
 function SessionTabs({
-  sessionId, tab, setTab, events, log, session, evidence, loadEvents, loadLog, compact,
+  sessionId, tab, setTab, events, log, session, evidence, loadSupervision, loadEvents, loadLog, compact,
 }: {
   sessionId: string
   tab: "summary" | "timeline" | "log"
@@ -358,6 +370,7 @@ function SessionTabs({
   log: string | null
   session: SessionData
   evidence: SessionEvidence[]
+  loadSupervision: () => Promise<void>
   loadEvents: () => void
   loadLog: () => void
   compact?: boolean
@@ -389,7 +402,7 @@ function SessionTabs({
           <div className="mx-auto max-w-4xl space-y-5 py-2 text-xs">
             <section><div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Requested outcome</div><div className="whitespace-pre-wrap text-gray-200">{session.goal || session.description}</div></section>
             <section className="rounded-lg border border-gray-700 bg-gray-900 p-4"><div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-gray-500">Result</div><MarkdownText content={session.output_summary || (["running", "waiting", "pending"].includes(session.status) ? "Session in progress…" : "The agent did not record a concise outcome. Review the evidence below; use the raw log only for debugging.")} /></section>
-            <EvidenceSummary sessionId={sessionId} evidence={evidence} reviewMode={session.review_mode} />
+            <EvidenceSummary sessionId={sessionId} evidence={evidence} reviewMode={session.review_mode} onChanged={loadSupervision} />
           </div>
         )}
 
@@ -442,7 +455,9 @@ function ReviewStep({ number, done, label, detail }: { number: number; done: boo
   return <div className={`rounded-lg border p-2 ${done ? "border-green-900 bg-green-950/20" : "border-gray-700 bg-gray-900"}`}><div className="flex items-center gap-2"><span className={`flex h-5 w-5 items-center justify-center rounded-full ${done ? "bg-green-700 text-white" : "bg-gray-700 text-gray-300"}`}>{done ? "✓" : number}</span><span className={done ? "text-green-300" : "text-gray-200"}>{label}</span></div><div className="mt-1 pl-7 text-gray-500">{detail}</div></div>
 }
 
-function EvidenceSummary({ sessionId, evidence, reviewMode }: { sessionId: string; evidence: SessionEvidence[]; reviewMode: "advisory" | "implementation" }) {
+function EvidenceSummary({ sessionId, evidence, reviewMode, onChanged }: { sessionId: string; evidence: SessionEvidence[]; reviewMode: "advisory" | "implementation"; onChanged: () => Promise<void> }) {
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingTitle, setEditingTitle] = useState("")
   if (reviewMode === "advisory") return <section className="rounded-lg border border-blue-900/60 bg-blue-950/10 p-4 text-gray-400"><div className="font-medium text-blue-300">Analysis-only outcome</div><div className="mt-1 text-[10px]">No files changed by this Session, so Git and test evidence are not required.</div></section>
   if (evidence.length === 0) return <section className="rounded-lg border border-dashed border-gray-700 p-4 text-gray-500"><div className="font-medium text-gray-400">Independent evidence required</div><div className="mt-1 text-[10px]">Capture Git changes and run verification before completing this Session.</div></section>
   return <section><div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-gray-500">Evidence</div><div className="grid gap-2 md:grid-cols-2">{evidence.map((item) => {
@@ -454,7 +469,16 @@ function EvidenceSummary({ sessionId, evidence, reviewMode }: { sessionId: strin
       : isMedia ? `${String(item.data.filename || "Product evidence")} · ${formatBytes(Number(item.data.size || 0))}`
       : String(item.data.diff_stat || item.data.status || "Git working tree captured")
     const openMedia = async () => { const blob = await BLOB(`/sessions/${sessionId}/evidence/${item.id}/file`); window.open(URL.createObjectURL(blob), "_blank", "noopener,noreferrer") }
-    return <div key={item.id} className="rounded-lg border border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${isVerification ? passed ? "bg-green-500" : "bg-red-500" : isMedia ? "bg-purple-500" : "bg-blue-500"}`} /><span className="font-medium text-gray-200">{item.title}</span>{isMedia && <button onClick={() => { void openMedia() }} className="ml-auto text-[10px] text-blue-400">Open</button>}</div><pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-gray-500">{detail}</pre></div>
+    const saveTitle = async () => { if (!editingTitle.trim()) return; await PATCH(`/sessions/${sessionId}/evidence/${item.id}`, { title: editingTitle.trim(), note: editingTitle.trim() }); setEditingId(null); await onChanged() }
+    const remove = async () => { if (!window.confirm(`Delete evidence “${item.title}”?`)) return; await DELETE(`/sessions/${sessionId}/evidence/${item.id}`); await onChanged() }
+    return <div key={item.id} className="rounded-lg border border-gray-700 bg-gray-900 p-3">
+      {editingId === item.id ? (
+        <div className="flex gap-2"><input autoFocus value={editingTitle} onChange={(event) => setEditingTitle(event.target.value)} className="min-w-0 flex-1 rounded border border-gray-600 bg-gray-950 px-2 py-1 text-xs" /><button onClick={() => { void saveTitle() }} className="text-[10px] text-green-400">Save</button><button onClick={() => setEditingId(null)} className="text-[10px] text-gray-500">Cancel</button></div>
+      ) : (
+        <div className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${isVerification ? passed ? "bg-green-500" : "bg-red-500" : isMedia ? "bg-purple-500" : "bg-blue-500"}`} /><span className="font-medium text-gray-200">{item.title}</span>{isMedia && <button onClick={() => { void openMedia() }} className="ml-auto text-[10px] text-blue-400">Open</button>}{isMedia && <button onClick={() => { setEditingId(item.id); setEditingTitle(item.title) }} className="text-[10px] text-gray-400">Edit</button>}<button onClick={() => { void remove() }} className={`${isMedia ? "" : "ml-auto"} text-[10px] text-red-500`}>Delete</button></div>
+      )}
+      <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-gray-500">{detail}</pre>
+    </div>
   })}</div></section>
 }
 
