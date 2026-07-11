@@ -69,7 +69,12 @@ def build_agent_command(provider: str, description: str) -> str:
     prompt = shlex.quote(description[:4000])
     commands = {
         "claude": f"claude {prompt}",
-        "codex": f"codex --ask-for-approval never exec --sandbox workspace-write {prompt}",
+        "codex": (
+            "rdc_final=$(mktemp /tmp/rdc-codex-final.XXXXXX); "
+            f"codex --ask-for-approval never exec --sandbox workspace-write --output-last-message \"$rdc_final\" {prompt}; "
+            "rdc_code=$?; printf '\\n__RDC_FINAL_BEGIN__\\n'; cat \"$rdc_final\"; "
+            "printf '\\n__RDC_FINAL_END__\\n'; rm -f \"$rdc_final\"; exit $rdc_code"
+        ),
         "cursor": f"cursor-agent -p --trust {prompt}",
         "gemini": f"gemini --prompt-interactive {prompt}",
         "gwd": f"gemini --prompt-interactive {prompt}",
@@ -165,9 +170,12 @@ _EXIT_SIGNAL_RE = re.compile(r"__RDC_EXIT:(\d+)")
 def extract_agent_report(transcript: str, provider: str | None) -> str:
     """Extract the provider's final human-readable answer from a terminal transcript."""
     cleaned = strip_ansi(transcript).replace("\r\n", "\n")
+    final_match = re.search(r"\n__RDC_FINAL_BEGIN__\n(.*?)\n__RDC_FINAL_END__", cleaned, re.DOTALL)
+    if final_match:
+        return final_match.group(1).strip()
     # Codex prints this stable role marker even when RDC recorded the provider
     # as "orchestrated". Inspect the transcript instead of trusting that alias.
-    marker = "\ncodex\n"
+    marker = "codex\n"
     marker_index = cleaned.rfind(marker)
     if marker_index >= 0:
         report = cleaned[marker_index + len(marker):]

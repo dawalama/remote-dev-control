@@ -9141,7 +9141,8 @@ async def get_session(session_id: str):
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     stale_summaries = {"The agent finished without recording a final report or changing files."}
-    if s.status.value == "verifying" and s.output_summary and ("**Recent commits:**" in s.output_summary or s.output_summary in stale_summaries):
+    has_legacy_tool_chatter = s.output_summary and "exec /bin/" in s.output_summary
+    if s.status.value == "verifying" and s.output_summary and ("**Recent commits:**" in s.output_summary or s.output_summary in stale_summaries or has_legacy_tool_chatter):
         summary = await sm._generate_summary(s)
         sm.update_status(s.id, s.status, output_summary=summary)
         s = sm.get(session_id) or s
