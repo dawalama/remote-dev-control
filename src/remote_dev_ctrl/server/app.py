@@ -8996,6 +8996,49 @@ class CreateSupervisedSessionRequest(BaseModel):
     budget: dict | None = None
 
 
+class AgentProviderPolicyRequest(BaseModel):
+    preferred_provider: str
+    fallback_policy: str = "ask"
+
+
+def _agent_provider_policy_path() -> Path:
+    from .config import get_rdc_home
+    return get_rdc_home() / "agent_provider_policy.json"
+
+
+def _load_agent_provider_policy() -> dict:
+    path = _agent_provider_policy_path()
+    try:
+        policy = json.loads(path.read_text()) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        policy = {}
+    return {
+        "preferred_provider": str(policy.get("preferred_provider") or "codex"),
+        "fallback_policy": str(policy.get("fallback_policy") or "ask"),
+    }
+
+
+@app.get("/settings/agent-providers")
+async def get_agent_provider_settings():
+    from .session_manager import list_agent_provider_readiness
+    return {"policy": _load_agent_provider_policy(), "providers": list_agent_provider_readiness()}
+
+
+@app.patch("/settings/agent-providers")
+async def update_agent_provider_settings(body: AgentProviderPolicyRequest):
+    if body.fallback_policy not in {"ask", "disabled"}:
+        raise HTTPException(status_code=422, detail="Fallback policy must be ask or disabled")
+    from .session_manager import list_agent_provider_readiness
+    valid_ids = {provider["id"] for provider in list_agent_provider_readiness() if provider["id"] != "diagnostic"}
+    if body.preferred_provider not in valid_ids:
+        raise HTTPException(status_code=422, detail="Unknown preferred provider")
+    policy = body.model_dump()
+    path = _agent_provider_policy_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(policy, indent=2) + "\n")
+    return {"policy": policy, "providers": list_agent_provider_readiness()}
+
+
 @app.post("/sessions")
 async def create_supervised_session(body: CreateSupervisedSessionRequest):
     """Create a goal-centered session using the current session aggregate."""
@@ -9420,8 +9463,12 @@ async def delete_session(session_id: str):
     return {"success": True}
 
 
+class RetrySessionRequest(BaseModel):
+    provider: str | None = None
+
+
 @app.post("/sessions/{session_id}/retry")
-async def retry_session(session_id: str):
+async def retry_session(session_id: str, body: RetrySessionRequest | None = None):
     """Start or run a failed/cancelled session again with a fresh terminal."""
     from .session_manager import SessionStatus, agent_provider_blocker, build_agent_command, get_session_manager
     from .terminal import get_terminal_manager
@@ -9433,6 +9480,9 @@ async def retry_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     if s.status not in ("pending", "failed", "cancelled"):
         raise HTTPException(status_code=400, detail=f"Cannot retry session in status: {s.status}")
+    if body and body.provider:
+        s.agent_provider = body.provider
+        sm._persist(s)
 
     tm = get_terminal_manager()
     if s.status in {SessionStatus.FAILED, SessionStatus.CANCELLED}:
@@ -9448,14 +9498,19 @@ async def retry_session(session_id: str):
         s.blocker = None
         sm._persist(s)
         sm.log_event(s, "session.run_again", {})
-    provider = s.agent_provider or (config.agents.default_provider if config else "cursor")
+    requested_provider = s.agent_provider or "orchestrated"
+    provider = _load_agent_provider_policy()["preferred_provider"] if requested_provider == "orchestrated" else requested_provider
     provider_blocker = agent_provider_blocker(provider)
     if provider_blocker:
+        if requested_provider == "orchestrated":
+            provider_blocker = f"Preferred provider {provider} is not ready. {provider_blocker} Configure it or explicitly choose another provider."
         s.blocker = provider_blocker
         sm._persist(s)
         sm.update_status(s.id, SessionStatus.FAILED, output_summary="The selected agent is not ready.")
         raise HTTPException(status_code=409, detail=provider_blocker)
     command = build_agent_command(provider, s.description)
+    s.metadata = {**(s.metadata or {}), "requested_provider": requested_provider, "effective_provider": provider}
+    sm._persist(s)
 
     try:
         term = tm.create(project=s.project, command=command)

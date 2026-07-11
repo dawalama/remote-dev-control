@@ -1,6 +1,7 @@
 import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { SessionsCard } from "./sessions-card"
+import { ProviderSetup } from "./provider-setup"
 
 export function SessionsHub() {
   const open = useUIStore((state) => state.sessionsHubOpen)
@@ -30,6 +31,7 @@ export function SessionsHub() {
           <button onClick={() => setOpen(false)} className="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 hover:text-white">Control room</button>
         </header>
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+          <div className="mb-4"><ProviderSetup /></div>
           {scope === "workstream" && !activeChannelId ? (
             <div className="rounded-lg border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">Select a workstream to create and supervise its sessions.</div>
           ) : <SessionsCard key={scope} scope={scope} />}

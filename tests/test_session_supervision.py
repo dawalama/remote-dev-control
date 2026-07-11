@@ -118,7 +118,7 @@ def test_cursor_provider_readiness_is_checked_before_terminal_creation(monkeypat
 
     monkeypatch.setattr("remote_dev_ctrl.server.session_manager.subprocess.run", lambda *args, **kwargs: Result())
     assert "not authenticated" in agent_provider_blocker("cursor")
-    assert agent_provider_blocker("claude") is None
+    assert agent_provider_blocker("diagnostic") is None
 
 
 def test_control_can_be_returned_without_guidance_and_terminal_states_clear_owner():

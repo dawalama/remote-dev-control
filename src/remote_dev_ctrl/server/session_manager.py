@@ -28,6 +28,7 @@ import re
 import secrets
 import shlex
 import subprocess
+import shutil
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -66,6 +67,7 @@ def build_agent_command(provider: str, description: str) -> str:
     prompt = shlex.quote(description[:4000])
     commands = {
         "claude": f"claude {prompt}",
+        "codex": f"codex exec --sandbox workspace-write --ask-for-approval never {prompt}",
         "cursor": f"cursor-agent -p --trust {prompt}",
         "gemini": f"gemini --prompt-interactive {prompt}",
         "gwd": f"gemini --prompt-interactive {prompt}",
@@ -79,23 +81,62 @@ def build_agent_command(provider: str, description: str) -> str:
 
 def agent_provider_blocker(provider: str) -> str | None:
     """Return a user-facing blocker before creating a terminal for a provider."""
-    if provider != "cursor":
+    checks = {
+        "cursor": (["cursor-agent", "status"], "Cursor Agent", "cursor-agent login", "CURSOR_API_KEY"),
+        "codex": (["codex", "login", "status"], "Codex CLI", "codex login", "OPENAI_API_KEY"),
+        "claude": (["claude", "auth", "status"], "Claude Code", "claude auth login", "ANTHROPIC_API_KEY"),
+    }
+    if provider in {"diagnostic", "gemini", "gwd"}:
+        executable = "gemini" if provider in {"gemini", "gwd"} else None
+        if executable and not shutil.which(executable):
+            return "Gemini CLI is not installed on the RDC host."
         return None
+    check = checks.get(provider)
+    if not check:
+        return f"Unsupported session provider: {provider}"
+    command, label, setup_command, key_name = check
+    if not shutil.which(command[0]):
+        return f"{label} is not installed on the RDC host."
     try:
         result = subprocess.run(
-            ["cursor-agent", "status"],
+            command,
             capture_output=True,
             text=True,
             timeout=10,
             check=False,
         )
     except FileNotFoundError:
-        return "Cursor Agent is not installed on the RDC host."
+        return f"{label} is not installed on the RDC host."
     except subprocess.TimeoutExpired:
-        return "Cursor Agent authentication check timed out. Run `cursor-agent login` on the RDC host."
+        return f"{label} authentication check timed out. Run `{setup_command}` on the RDC host."
     if result.returncode != 0:
-        return "Cursor Agent is not authenticated for RDC. Run `cursor-agent login` on the RDC host or configure CURSOR_API_KEY."
+        return f"{label} is not authenticated for RDC. Run `{setup_command}` on the RDC host or configure {key_name}."
     return None
+
+
+def list_agent_provider_readiness() -> list[dict[str, Any]]:
+    definitions = [
+        ("codex", "Codex CLI", "codex", "codex login"),
+        ("claude", "Claude Code", "claude", "claude auth login"),
+        ("cursor", "Cursor Agent", "cursor-agent", "cursor-agent login"),
+        ("gemini", "Gemini CLI", "gemini", "gemini"),
+        ("diagnostic", "Diagnostic", None, None),
+    ]
+    providers = []
+    for provider_id, label, executable, setup_command in definitions:
+        installed = executable is None or shutil.which(executable) is not None
+        blocker = agent_provider_blocker(provider_id) if installed else f"{label} is not installed on the RDC host."
+        providers.append({
+            "id": provider_id,
+            "label": label,
+            "installed": installed,
+            "ready": blocker is None,
+            "status": "ready" if blocker is None else ("needs_auth" if installed else "not_installed"),
+            "detail": blocker,
+            "setup_command": setup_command,
+            "capabilities": ["plan", "write", "verify"] if provider_id != "diagnostic" else ["verify"],
+        })
+    return providers
 
 # Patterns that indicate the agent is waiting for user input
 _INPUT_PATTERNS = [

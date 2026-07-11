@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react"
 import { ChevronDown, Menu } from "lucide-react"
-import { SessionViewer } from "@/features/sessions/session-viewer"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
@@ -49,8 +48,6 @@ export function KioskLayout() {
   const terminals = useStateStore((s) => s.terminals)
   const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
-  const viewingSessionId = useUIStore((s) => s.viewingSessionId)
-  const closeSessionViewer = useUIStore((s) => s.closeSessionViewer)
   const openProcessLog = useLogsStore((s) => s.openProcessLog)
 
   const [projectSheetOpen, setProjectSheetOpen] = useState(false)
@@ -408,16 +405,6 @@ export function KioskLayout() {
           onEditProject={() => setProjectSettingsOpen(true)}
           onSystemSettings={() => setSystemSettingsOpen(true)}
         />
-      )}
-
-      {/* Session viewer overlay */}
-      {viewingSessionId && (
-        <div className="fixed inset-0 z-[140] bg-gray-900 flex flex-col h-app">
-          <SessionViewer
-            sessionId={viewingSessionId}
-            onClose={closeSessionViewer}
-          />
-        </div>
       )}
 
       <FloatingAgentPanel channel="kiosk" />

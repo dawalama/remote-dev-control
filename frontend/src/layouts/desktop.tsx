@@ -21,7 +21,6 @@ import { useChannelStore } from "@/stores/channel-store"
 import { ChannelSidebar } from "@/features/channels/channel-sidebar"
 import { AddProjectModal } from "@/components/project-bar"
 import { FloatingChannelPanel } from "@/features/channels/floating-channel-panel"
-import { SessionViewer } from "@/features/sessions/session-viewer"
 import { SessionsNavButton } from "@/features/sessions/sessions-hub"
 
 const LAYOUTS = [
@@ -55,8 +54,6 @@ export function DesktopLayout() {
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
   // channelPanelOpen removed — FloatingChannelPanel manages its own state
   const [addProjectOpen, setAddProjectOpen] = useState(false)
-  const viewingSessionId = useUIStore((s) => s.viewingSessionId)
-  const closeSessionViewer = useUIStore((s) => s.closeSessionViewer)
   const presets = useTerminalPresetsStore((s) => s.presets)
   const loadPresets = useTerminalPresetsStore((s) => s.load)
 
@@ -263,14 +260,7 @@ export function DesktopLayout() {
 
         {/* Workspace: terminal + optional session viewer tab */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0 px-2 py-2">
-          {viewingSessionId ? (
-            <SessionViewer
-              sessionId={viewingSessionId}
-              onClose={closeSessionViewer}
-            />
-          ) : (
-            <EmbeddedTerminal />
-          )}
+          <EmbeddedTerminal />
         </div>
 
         {/* Right tabs */}

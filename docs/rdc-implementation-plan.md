@@ -122,3 +122,9 @@ The first shell audit reduced the default workflow to outcome, progress, interve
 - the viewer presents state-relevant primary actions while Stop/Cancel and Delete live under a secondary menu;
 - verification machinery stays collapsed until the work is ready for review;
 - failure context is surfaced before Retry.
+
+### Provider readiness and Session workspace
+
+Provider discovery/setup is separate from orchestration. RDC records a preferred provider, tests installed CLI authentication, exposes guided setup commands, and refuses to silently fall back when that preference is unavailable. **Orchestrated** means “use the configured preference,” not “pick any provider that happens to respond.” Failed or cancelled sessions can explicitly choose a different provider when run again.
+
+Selecting a Session now opens a dedicated full-screen Session workspace. The Control room remains available through an explicit transition, but its project sidebar, generic terminal tabs, actions, and browser chrome no longer surround supervised work. This preserves the conceptual boundary: Sessions own outcomes and supervision; Control room is an intervention surface.

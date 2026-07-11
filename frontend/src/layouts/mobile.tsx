@@ -26,7 +26,6 @@ import { ProjectSettingsModal } from "@/features/modals/project-settings"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { RecordingPlayer } from "@/features/browser/recording-player"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
-import { SessionViewer } from "@/features/sessions/session-viewer"
 import { useChannelStore } from "@/stores/channel-store"
 import { MobileChannelPanel } from "@/features/channels/mobile-channel-panel"
 import { WorkspaceSelectorSheet } from "@/features/channels/mobile-workspace-selector"
@@ -52,8 +51,6 @@ export function MobileLayout() {
   const terminals = useStateStore((s) => s.terminals)
   const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
-  const viewingSessionId = useUIStore((s) => s.viewingSessionId)
-  const closeSessionViewer = useUIStore((s) => s.closeSessionViewer)
 
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
 
@@ -482,15 +479,6 @@ export function MobileLayout() {
           onPlayRecording={(id) => { setBrowserFullscreen(false); setPlayingRecording(id) }}
         />
       )}
-      {viewingSessionId && (
-        <div className="fixed inset-0 z-[140] bg-gray-900 flex flex-col h-app">
-          <SessionViewer
-            sessionId={viewingSessionId}
-            onClose={closeSessionViewer}
-          />
-        </div>
-      )}
-
       <FloatingAgentPanel channel="mobile" />
       <GlobalTextInput />
     </div>
