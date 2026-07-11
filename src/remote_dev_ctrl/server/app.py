@@ -9112,18 +9112,31 @@ async def update_agent_provider_settings(body: AgentProviderPolicyRequest):
     return {"policy": policy, "providers": providers}
 
 
+@app.get("/settings/evidence-providers")
+async def get_evidence_provider_settings(project: str | None = None):
+    from .evidence_providers import list_evidence_provider_readiness
+    project_record = get_project_repo().get(project) if project else None
+    project_path = Path(project_record.path) if project_record and project_record.path else None
+    providers = await asyncio.to_thread(list_evidence_provider_readiness, project_path)
+    return {"project": project, "providers": providers}
+
+
 @app.post("/sessions")
 async def create_supervised_session(body: CreateSupervisedSessionRequest):
     """Create a goal-centered session using the current session aggregate."""
     if not resolve_project_id(body.project):
         raise HTTPException(status_code=404, detail="Project not found")
     from .session_manager import get_session_manager
+    from .evidence_providers import active_evidence_provider_refs
+    project_record = get_project_repo().get(body.project)
+    project_path = Path(project_record.path) if project_record and project_record.path else None
+    evidence_providers = await asyncio.to_thread(active_evidence_provider_refs, project_path)
     session = get_session_manager().create_session(
         channel_id=body.channel_id,
         project=body.project,
         description=body.goal,
         agent_provider=body.provider,
-        metadata={"supervised": True, "git_baseline": _session_git_snapshot(body.project)},
+        metadata={"supervised": True, "git_baseline": _session_git_snapshot(body.project), "evidence_providers": evidence_providers},
         acceptance_criteria=[item.strip() for item in body.acceptance_criteria if item.strip()],
         policy=body.policy,
         budget=body.budget,
@@ -9168,6 +9181,7 @@ async def continue_supervised_session(session_id: str, body: ContinueSessionRequ
             "parent_session_id": parent.id,
             "git_baseline": _session_git_snapshot(parent.project),
             "inherited_context": inherited_context,
+            "evidence_providers": (parent.metadata or {}).get("evidence_providers", [{"id": "native", "label": "RDC native evidence"}]),
         },
         acceptance_criteria=[item.strip() for item in body.acceptance_criteria if item.strip()],
         policy=parent.policy,
