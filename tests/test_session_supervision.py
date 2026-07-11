@@ -110,6 +110,8 @@ def test_provider_selection_builds_the_selected_agent_command():
     assert "claude" not in cursor_command
     assert "gemini --prompt-interactive" in build_agent_command("gemini", "Review data")
     assert "diagnostic session" in build_agent_command("diagnostic", "No writes")
+    codex_command = build_agent_command("codex", "Fix the homepage")
+    assert "codex --ask-for-approval never exec --sandbox workspace-write" in codex_command
 
 
 def test_cursor_provider_readiness_is_checked_before_terminal_creation(monkeypatch):

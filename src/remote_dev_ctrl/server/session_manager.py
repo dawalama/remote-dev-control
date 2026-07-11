@@ -69,7 +69,7 @@ def build_agent_command(provider: str, description: str) -> str:
     prompt = shlex.quote(description[:4000])
     commands = {
         "claude": f"claude {prompt}",
-        "codex": f"codex exec --sandbox workspace-write --ask-for-approval never {prompt}",
+        "codex": f"codex --ask-for-approval never exec --sandbox workspace-write {prompt}",
         "cursor": f"cursor-agent -p --trust {prompt}",
         "gemini": f"gemini --prompt-interactive {prompt}",
         "gwd": f"gemini --prompt-interactive {prompt}",
@@ -458,8 +458,11 @@ class SessionManager:
                 self.log_event(session, "session.terminal_stopped", {"terminal_id": terminal_id, "status": term_status})
                 active_terms = [tid for tid in session.terminal_ids if tm.get(tid) and tid != terminal_id]
                 if not active_terms and session.status == SessionStatus.RUNNING:
+                    terminal_text = strip_ansi(bytes(term._output_buffer).decode("utf-8", errors="replace"))
+                    exit_match = _EXIT_SIGNAL_RE.search(terminal_text)
+                    exit_code = int(exit_match.group(1)) if exit_match else None
                     summary = await self._generate_summary(session)
-                    end_status = SessionStatus.FAILED if term_status == "error" else self.successful_execution_status(session)
+                    end_status = self.successful_execution_status(session) if exit_code == 0 else SessionStatus.FAILED
                     self.update_status(session.id, end_status, output_summary=summary)
                     cm.post_message(session.channel_id, role="system", content=f"Session ended — terminal {term_status}.",
                         metadata={"type": "a2ui", "components": [
