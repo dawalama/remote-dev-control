@@ -109,3 +109,16 @@ The first founder review showed that placing Sessions beside Activity, Actions, 
 - opening a session still reuses the full Session viewer and its terminal/control/evidence workflow.
 
 This is a shell promotion, not a second session system: both views use the existing `/sessions` and `/channels/{channel_id}/sessions` APIs and the existing session manager.
+
+### Simplification pass
+
+The first shell audit reduced the default workflow to outcome, progress, intervention, and review:
+
+- creation asks for the desired outcome and inherits the workstream project and default agent;
+- project, provider, and acceptance criteria are optional controls behind **Options**;
+- product language maps internal states to Queued, Working, Needs you, Ready for review, Completed, Failed, and Cancelled;
+- session lists and open viewers refresh automatically;
+- returning from a session restores the Sessions hub and its previous scope;
+- the viewer presents state-relevant primary actions while Stop/Cancel and Delete live under a secondary menu;
+- verification machinery stays collapsed until the work is ready for review;
+- failure context is surfaced before Retry.

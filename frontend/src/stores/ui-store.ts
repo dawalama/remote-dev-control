@@ -21,6 +21,7 @@ interface UIState {
   selectedTaskId: string | null
   agentPanelOpen: boolean
   viewingSessionId: string | null
+  returnToSessionsHub: boolean
   sessionsHubOpen: boolean
   sessionsHubScope: "workstream" | "all"
   projectSettingsOpen: boolean
@@ -53,6 +54,8 @@ interface UIState {
   toggleAgentPanel: () => void
   setAgentPanelOpen: (open: boolean) => void
   setViewingSessionId: (id: string | null) => void
+  openSessionFromHub: (id: string) => void
+  closeSessionViewer: () => void
   setSessionsHubOpen: (open: boolean) => void
   setSessionsHubScope: (scope: "workstream" | "all") => void
   setProjectSettingsOpen: (open: boolean) => void
@@ -78,6 +81,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   selectedTaskId: null,
   agentPanelOpen: false,
   viewingSessionId: null,
+  returnToSessionsHub: false,
   sessionsHubOpen: false,
   sessionsHubScope: "workstream",
   projectSettingsOpen: false,
@@ -141,7 +145,9 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),
   setAgentPanelOpen: (open) => set({ agentPanelOpen: open }),
-  setViewingSessionId: (id) => set({ viewingSessionId: id }),
+  setViewingSessionId: (id) => set({ viewingSessionId: id, returnToSessionsHub: false }),
+  openSessionFromHub: (id) => set({ viewingSessionId: id, sessionsHubOpen: false, returnToSessionsHub: true }),
+  closeSessionViewer: () => set((state) => ({ viewingSessionId: null, sessionsHubOpen: state.returnToSessionsHub, returnToSessionsHub: false })),
   setSessionsHubOpen: (open) => set({ sessionsHubOpen: open }),
   setSessionsHubScope: (scope) => set({ sessionsHubScope: scope }),
   setProjectSettingsOpen: (open) => set({ projectSettingsOpen: open }),

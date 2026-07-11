@@ -32,7 +32,7 @@ export function SessionsHub() {
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
           {scope === "workstream" && !activeChannelId ? (
             <div className="rounded-lg border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">Select a workstream to create and supervise its sessions.</div>
-          ) : <SessionsCard scope={scope} />}
+          ) : <SessionsCard key={scope} scope={scope} />}
         </div>
       </section>
     </div>

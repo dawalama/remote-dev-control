@@ -53,7 +53,7 @@ export function MobileLayout() {
   const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
   const viewingSessionId = useUIStore((s) => s.viewingSessionId)
-  const setViewingSessionId = useUIStore((s) => s.setViewingSessionId)
+  const closeSessionViewer = useUIStore((s) => s.closeSessionViewer)
 
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
 
@@ -486,7 +486,7 @@ export function MobileLayout() {
         <div className="fixed inset-0 z-[140] bg-gray-900 flex flex-col h-app">
           <SessionViewer
             sessionId={viewingSessionId}
-            onClose={() => setViewingSessionId(null)}
+            onClose={closeSessionViewer}
           />
         </div>
       )}

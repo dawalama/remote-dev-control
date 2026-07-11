@@ -56,7 +56,7 @@ export function DesktopLayout() {
   // channelPanelOpen removed — FloatingChannelPanel manages its own state
   const [addProjectOpen, setAddProjectOpen] = useState(false)
   const viewingSessionId = useUIStore((s) => s.viewingSessionId)
-  const setViewingSessionId = useUIStore((s) => s.setViewingSessionId)
+  const closeSessionViewer = useUIStore((s) => s.closeSessionViewer)
   const presets = useTerminalPresetsStore((s) => s.presets)
   const loadPresets = useTerminalPresetsStore((s) => s.load)
 
@@ -263,26 +263,10 @@ export function DesktopLayout() {
 
         {/* Workspace: terminal + optional session viewer tab */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0 px-2 py-2">
-          {/* Tab bar when a session is open */}
-          {viewingSessionId && (
-            <div className="flex items-center gap-0.5 bg-gray-800 rounded-t-lg px-2 py-1 flex-shrink-0">
-              <button
-                onClick={() => setViewingSessionId(null)}
-                className="px-2 py-0.5 text-[10px] rounded text-gray-500 hover:text-gray-300 hover:bg-gray-700"
-              >
-                Terminals
-              </button>
-              <button
-                className="px-2 py-0.5 text-[10px] rounded bg-gray-700 text-white"
-              >
-                Session
-              </button>
-            </div>
-          )}
           {viewingSessionId ? (
             <SessionViewer
               sessionId={viewingSessionId}
-              onClose={() => setViewingSessionId(null)}
+              onClose={closeSessionViewer}
             />
           ) : (
             <EmbeddedTerminal />

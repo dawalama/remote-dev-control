@@ -57,12 +57,21 @@ export function SessionViewer({
   const [verificationCommand, setVerificationCommand] = useState("")
   const [approvals, setApprovals] = useState<SessionApproval[]>([])
   const [guidance, setGuidance] = useState("")
+  const [showVerification, setShowVerification] = useState(false)
+  const [showMoreActions, setShowMoreActions] = useState(false)
   const toast = useUIStore((s) => s.toast)
   const layout = useUIStore((s) => s.layout)
 
   useMountEffect(() => {
     loadSession()
     loadSupervision()
+  })
+  useMountEffect(() => {
+    const interval = window.setInterval(() => {
+      void loadSession()
+      void loadSupervision()
+    }, 5000)
+    return () => window.clearInterval(interval)
   })
 
   const loadSupervision = async () => {
@@ -102,7 +111,7 @@ export function SessionViewer({
   const markDone = async () => {
     try {
       await POST(`/sessions/${sessionId}/complete`)
-      toast("Session marked done", "success")
+      toast("Session completed", "success")
       loadSession()
     } catch { toast("Failed", "error") }
   }
@@ -110,7 +119,7 @@ export function SessionViewer({
   const retry = async () => {
     try {
       await POST(`/sessions/${sessionId}/retry`)
-      toast("Session retried", "success")
+      toast(session?.status === "pending" ? "Session started" : "Session restarted", "success")
       loadSession()
     } catch { toast("Retry failed", "error") }
   }
@@ -172,7 +181,7 @@ export function SessionViewer({
 
   const statusColor = session.status === "running" ? "bg-blue-500 animate-pulse"
     : session.status === "waiting" ? "bg-yellow-500 animate-pulse"
-    : session.status === "done" ? "bg-green-500"
+    : ["done", "completed"].includes(session.status) ? "bg-green-500"
     : session.status === "failed" ? "bg-red-500"
     : "bg-gray-500"
 
@@ -184,43 +193,32 @@ export function SessionViewer({
     <div className="flex-1 flex flex-col min-h-0 rounded-lg overflow-hidden">
       {/* Session header bar */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 border-b border-gray-700 flex-shrink-0">
-        <button onClick={onClose} className="text-xs text-blue-400 hover:text-blue-300 flex-shrink-0">← Back</button>
+        <button onClick={onClose} className="text-xs text-blue-400 hover:text-blue-300 flex-shrink-0">← Sessions</button>
         <span className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor}`} />
         <span className="text-xs text-gray-200 truncate flex-1" title={session.description}>{shortDesc}</span>
+        <span className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] text-gray-300 flex-shrink-0">{statusLabel(session.status)}</span>
         <span className="text-[10px] text-gray-500 flex-shrink-0">{session.project}</span>
-        {session.agent_provider && <span className="text-[10px] text-gray-600 flex-shrink-0">{session.agent_provider}</span>}
         <span className="text-[10px] text-gray-600 flex-shrink-0">{duration}</span>
         {session.status === "verifying" && (
-          <button onClick={markDone} className="text-[10px] px-2 py-0.5 rounded bg-green-600/20 text-green-400 hover:bg-green-600/30 flex-shrink-0">
-            Mark complete
+          <button onClick={() => setShowVerification((value) => !value)} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white flex-shrink-0">
+            Review outcome
           </button>
-        )}
-        {isExecuting && session.status !== "pending" && (
-          <button onClick={() => setConfirmCancel(true)} className="text-[10px] px-2 py-0.5 rounded bg-red-600/20 text-red-400 hover:bg-red-600/30 flex-shrink-0">Cancel session</button>
         )}
         {["running", "waiting"].includes(session.status) && session.control_owner !== "human" && <button onClick={takeControl} className="rounded bg-yellow-600/20 px-2 py-0.5 text-[10px] text-yellow-300">Take control</button>}
-        {(session.status === "failed" || session.status === "pending") && (
+        {session.status === "pending" && (
           <button onClick={retry} className="text-[10px] px-2 py-0.5 rounded bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/30 flex-shrink-0">
-            {session.status === "pending" ? "Start" : "Retry"}
+            Start
           </button>
         )}
-        {!isOpen && (
-          <button onClick={async () => {
-            try {
-              const { DELETE: DEL } = await import("@/lib/api")
-              await DEL(`/sessions/${sessionId}`)
-              toast("Session deleted", "success")
-              onClose()
-            } catch { toast("Delete failed", "error") }
-          }} className="text-[10px] px-2 py-0.5 rounded bg-red-600/20 text-red-400 hover:bg-red-600/30 flex-shrink-0">
-            Delete
-          </button>
-        )}
+        {session.status === "failed" && <button onClick={retry} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Retry</button>}
+        <div className="relative"><button onClick={() => setShowMoreActions((value) => !value)} className="rounded px-2 py-1 text-sm text-gray-500 hover:bg-gray-700 hover:text-gray-200" aria-label="More session actions">•••</button>{showMoreActions && <div className="absolute right-0 top-full z-20 mt-1 min-w-32 rounded border border-gray-700 bg-gray-800 p-1 shadow-xl">{isOpen && <button onClick={() => { setShowMoreActions(false); setConfirmCancel(true) }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">{session.status === "pending" ? "Cancel session" : "Stop session"}</button>}{!isOpen && <button onClick={async () => { try { const { DELETE: DEL } = await import("@/lib/api"); await DEL(`/sessions/${sessionId}`); toast("Session deleted", "success"); onClose() } catch { toast("Delete failed", "error") } }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">Delete session</button>}</div>}</div>
       </div>
-      {confirmCancel && <div className="flex items-center justify-end gap-2 border-b border-red-900 bg-red-950/40 px-3 py-2 text-xs"><span className="mr-auto text-red-200">Permanently stop this session? It cannot currently be resumed.</span><button onClick={() => setConfirmCancel(false)} className="rounded border border-gray-600 px-2 py-1">Go back</button><button onClick={cancel} className="rounded bg-red-700 px-2 py-1 text-white">Cancel session</button></div>}
+      {confirmCancel && <div className="flex items-center justify-end gap-2 border-b border-red-900 bg-red-950/40 px-3 py-2 text-xs"><span className="mr-auto text-red-200">{session.status === "pending" ? "Cancel this queued session?" : "Stop this session? It cannot currently be resumed."}</span><button onClick={() => setConfirmCancel(false)} className="rounded border border-gray-600 px-2 py-1">Go back</button><button onClick={cancel} className="rounded bg-red-700 px-2 py-1 text-white">{session.status === "pending" ? "Cancel session" : "Stop session"}</button></div>}
+      {session.status === "failed" && <div className="border-b border-red-900 bg-red-950/20 px-3 py-2 text-xs"><span className="font-medium text-red-300">Session failed.</span><span className="ml-2 text-gray-400">{session.blocker || session.output_summary || "Open the log for details, then retry when ready."}</span></div>}
       {session.control_owner === "human" && <div className="flex items-center gap-2 border-b border-yellow-900 bg-yellow-950/30 px-3 py-2"><span className="text-[10px] text-yellow-200">You have control</span><input value={guidance} onChange={(event) => setGuidance(event.target.value)} placeholder="Guidance before returning control" className="min-w-52 flex-1 rounded border border-yellow-800 bg-gray-950 px-2 py-1 text-[10px]" /><button disabled={!guidance.trim()} onClick={returnControl} className="rounded bg-green-700 px-2 py-1 text-[10px] text-white disabled:opacity-50">Return control</button></div>}
       {approvals.some((approval) => approval.status === "pending") && <div className="space-y-2 border-b border-yellow-900 bg-yellow-950/20 p-3"><div className="text-xs font-medium text-yellow-300">Needs your decision</div>{approvals.filter((approval) => approval.status === "pending").map((approval) => <div key={approval.id} className="flex items-center gap-2 rounded border border-yellow-800 p-2 text-xs"><span className="mr-auto text-gray-200">{approval.summary}</span><button onClick={() => decideApproval(approval, "approved")} className="rounded bg-green-700 px-2 py-1 text-[10px]">Approve</button><button onClick={() => decideApproval(approval, "rejected")} className="rounded bg-red-700 px-2 py-1 text-[10px]">Reject</button></div>)}</div>}
-      {(criteria.length > 0 || session.status === "verifying") && <div className="space-y-2 border-b border-gray-700 bg-gray-900 p-3"><div className="flex flex-wrap items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-300">Completion evidence</span><button onClick={captureGit} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Capture Git</button><input value={verificationCommand} onChange={(event) => setVerificationCommand(event.target.value)} placeholder="Verification command or project default" className="min-w-52 flex-1 rounded border border-gray-600 bg-gray-950 px-2 py-1 text-[10px]" /><button onClick={verify} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Run verification</button></div>{criteria.map((criterion) => <div key={criterion.criterion_index} className="flex flex-wrap items-center gap-2 rounded border border-gray-700 px-2 py-1.5 text-[10px]"><span className="mr-auto text-gray-300">{criterion.criterion}</span><span className="text-gray-500">{criterion.status}</span>{criterion.status === "unevaluated" && <><button onClick={() => decideCriterion(criterion, "passed")} className="text-green-400">Pass with evidence</button><button onClick={() => decideCriterion(criterion, "failed")} className="text-red-400">Fail</button><button onClick={() => decideCriterion(criterion, "waived")} className="text-gray-400">Waive</button></>}</div>)}</div>}
+      {session.status === "verifying" && !showVerification && <button onClick={() => setShowVerification(true)} className="flex items-center justify-between border-b border-blue-900 bg-blue-950/20 px-3 py-2 text-left text-xs text-blue-300"><span>The work is ready for your review.</span><span>Review outcome →</span></button>}
+      {showVerification && (criteria.length > 0 || session.status === "verifying") && <div className="space-y-3 border-b border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-200">Review outcome</span><span className="text-[10px] text-gray-500">{evidence.length} evidence item{evidence.length === 1 ? "" : "s"}</span>{session.status === "verifying" && <button onClick={markDone} className="rounded bg-green-600 px-3 py-1 text-xs text-white">Complete session</button>}</div>{criteria.map((criterion) => <div key={criterion.criterion_index} className="flex flex-wrap items-center gap-2 rounded border border-gray-700 px-2 py-1.5 text-[10px]"><span className="mr-auto text-gray-300">{criterion.criterion}</span><span className="text-gray-500">{criterion.status === "unevaluated" ? "Not reviewed" : criterion.status}</span>{criterion.status === "unevaluated" && <><button onClick={() => decideCriterion(criterion, "passed")} className="text-green-400">Pass</button><button onClick={() => decideCriterion(criterion, "failed")} className="text-red-400">Fail</button><button onClick={() => decideCriterion(criterion, "waived")} className="text-gray-400">Waive</button></>}</div>)}<details className="rounded border border-gray-700 bg-gray-950/40 p-2"><summary className="cursor-pointer text-[10px] text-gray-400">Verification details</summary><div className="mt-2 flex flex-wrap items-center gap-2"><button onClick={captureGit} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Capture Git evidence</button><input value={verificationCommand} onChange={(event) => setVerificationCommand(event.target.value)} placeholder="Verification command or project default" className="min-w-52 flex-1 rounded border border-gray-600 bg-gray-950 px-2 py-1 text-[10px]" /><button onClick={verify} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Run verification</button></div></details></div>}
 
       {/* Main content: terminal (if active) or detail view */}
       {isExecuting && terminalId ? (
@@ -362,4 +360,8 @@ function formatDuration(start: Date, end: Date): string {
   const mins = Math.floor(secs / 60)
   if (mins < 60) return `${mins}m ${secs % 60}s`
   return `${Math.floor(mins / 60)}h ${mins % 60}m`
+}
+
+function statusLabel(status: SessionStatusValue): string {
+  return ({ pending: "Queued", running: "Working", waiting: "Needs you", verifying: "Ready for review", done: "Completed", completed: "Completed", failed: "Failed", cancelled: "Cancelled" })[status]
 }

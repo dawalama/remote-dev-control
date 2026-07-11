@@ -48,16 +48,18 @@ export function SessionsCard({
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
+  const [showOptions, setShowOptions] = useState(false)
   const [creating, setCreating] = useState(false)
   const projects = useProjectStore((s) => s.projects)
-  const currentProject = useProjectStore((s) => s.currentProject)
-  const [draft, setDraft] = useState({ project: currentProject || "", goal: "", criteria: "", provider: "" })
-  const setViewingSessionId = useUIStore((s) => s.setViewingSessionId)
-  const setSessionsHubOpen = useUIStore((s) => s.setSessionsHubOpen)
+  const [draft, setDraft] = useState({ project: "", goal: "", criteria: "", provider: "" })
+  const openSessionFromHub = useUIStore((s) => s.openSessionFromHub)
+  const toast = useUIStore((s) => s.toast)
+  const activeChannel = channels.find((channel) => channel.id === activeChannelId)
+  const workstreamProjects = activeChannel?.project_names ?? []
+  const selectedProject = draft.project || workstreamProjects[0] || ""
 
   const openSession = (sessionId: string) => {
-    setViewingSessionId(sessionId)
-    setSessionsHubOpen(false)
+    openSessionFromHub(sessionId)
   }
 
   const load = useCallback(async () => {
@@ -69,6 +71,8 @@ export function SessionsCard({
     } catch { /* ignore */ }
     setLoading(false)
   }, [activeChannelId, scope])
+  const loadRef = useRef(load)
+  loadRef.current = load
 
   // Load on mount and when channel changes
   const prevChannelRef = useRef(activeChannelId)
@@ -77,14 +81,18 @@ export function SessionsCard({
     load()
   }
   useMountEffect(() => { load() })
+  useMountEffect(() => {
+    const interval = window.setInterval(() => { void loadRef.current() }, 5000)
+    return () => window.clearInterval(interval)
+  })
 
   const createSession = async () => {
-    if (!activeChannelId || !draft.project || !draft.goal.trim()) return
+    if (!activeChannelId || !selectedProject || !draft.goal.trim()) return
     setCreating(true)
     try {
       const created = await POST<SessionInfo>("/sessions", {
         channel_id: activeChannelId,
-        project: draft.project,
+        project: selectedProject,
         goal: draft.goal.trim(),
         acceptance_criteria: draft.criteria.split("\n").map((item) => item.trim()).filter(Boolean),
         provider: draft.provider || undefined,
@@ -92,8 +100,11 @@ export function SessionsCard({
       await POST(`/sessions/${created.id}/retry`)
       setDraft((value) => ({ ...value, goal: "", criteria: "" }))
       setShowCreate(false)
+      setShowOptions(false)
       await load()
       openSession(created.id)
+    } catch {
+      toast("Could not start the session", "error")
     } finally { setCreating(false) }
   }
 
@@ -106,10 +117,10 @@ export function SessionsCard({
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{scope === "all" ? "All sessions" : "Workstream sessions"}</h3>
-        <div className="flex gap-2">{scope === "workstream" && <button onClick={() => setShowCreate((value) => !value)} className="rounded bg-blue-600 px-2 py-1 text-[10px] font-medium text-white">New session</button>}<button onClick={load} className="text-[10px] text-gray-500 hover:text-gray-300">Refresh</button></div>
+        {scope === "workstream" && <button onClick={() => setShowCreate((value) => !value)} className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white">New session</button>}
       </div>
 
-      {showCreate && <form onSubmit={(event) => { event.preventDefault(); void createSession() }} className="space-y-2 rounded-lg border border-gray-700 bg-gray-800 p-3"><select required value={draft.project} onChange={(event) => setDraft({ ...draft, project: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="" disabled>Select registered project</option>{projects.map((project) => <option key={project.name} value={project.name}>{project.name} — {project.path}</option>)}</select><textarea required rows={3} value={draft.goal} onChange={(event) => setDraft({ ...draft, goal: event.target.value })} placeholder="What outcome should be true?" className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs" /><textarea rows={3} value={draft.criteria} onChange={(event) => setDraft({ ...draft, criteria: event.target.value })} placeholder={'Acceptance criteria — one per line'} className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs" /><select value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="">Default provider</option><option value="claude">Claude</option><option value="cursor">Cursor</option><option value="gwd">Gemini</option><option value="diagnostic">Diagnostic (no writes)</option></select><div className="flex justify-end gap-2"><button type="button" onClick={() => setShowCreate(false)} className="px-2 py-1 text-[10px] text-gray-400">Cancel</button><button disabled={creating || !draft.project || !draft.goal.trim()} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white disabled:opacity-50">{creating ? "Starting…" : "Create and start"}</button></div></form>}
+      {showCreate && <form onSubmit={(event) => { event.preventDefault(); void createSession() }} className="space-y-3 rounded-lg border border-blue-500/30 bg-gray-800 p-4"><label className="block"><span className="mb-1 block text-xs font-medium text-gray-300">What should be accomplished?</span><textarea autoFocus required rows={4} value={draft.goal} onChange={(event) => setDraft({ ...draft, goal: event.target.value })} placeholder="Describe the outcome you want…" className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-3 py-2 text-sm" /></label><button type="button" onClick={() => setShowOptions((value) => !value)} className="text-xs text-gray-400 hover:text-gray-200">{showOptions ? "Hide options" : "Options"}</button>{showOptions && <div className="space-y-2 border-t border-gray-700 pt-3">{(workstreamProjects.length !== 1 || !selectedProject) && <select required value={selectedProject} onChange={(event) => setDraft({ ...draft, project: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.name} value={project.name}>{project.name}</option>)}</select>}<textarea rows={3} value={draft.criteria} onChange={(event) => setDraft({ ...draft, criteria: event.target.value })} placeholder="Optional acceptance criteria — one per line" className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs" /><select value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="">Default agent</option><option value="claude">Claude</option><option value="cursor">Cursor</option><option value="gwd">Gemini</option><option value="diagnostic">Diagnostic (no writes)</option></select></div>}<div className="flex items-center justify-between gap-2"><span className="truncate text-[10px] text-gray-500">{selectedProject ? `Using ${selectedProject}` : "Select a project in Options"}</span><div className="flex gap-2"><button type="button" onClick={() => { setShowCreate(false); setShowOptions(false) }} className="px-3 py-1.5 text-xs text-gray-400">Cancel</button><button disabled={creating || !selectedProject || !draft.goal.trim()} className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{creating ? "Starting…" : "Start session"}</button></div></div></form>}
 
       {loading && sessions.length === 0 && (
         <p className="text-xs text-gray-500 text-center py-4">Loading...</p>
@@ -117,7 +128,7 @@ export function SessionsCard({
 
       {!loading && sessions.length === 0 && (
         <p className="text-xs text-gray-500 text-center py-4">
-          No sessions yet. Ask the orchestrator to build something.
+          No sessions yet. Start with an outcome you want accomplished.
         </p>
       )}
 
@@ -130,7 +141,7 @@ export function SessionsCard({
 
       {active.length > 0 && (
         <div className="space-y-1.5">
-          <span className="text-[10px] text-gray-500 uppercase">Active</span>
+          <span className="text-[10px] text-gray-500 uppercase">In progress</span>
           {active.map((s) => (
             <SessionRow
               key={s.id}
@@ -210,7 +221,7 @@ function SessionRow({
         <span className={`text-[10px] ${
           [SESSION_STATUS.DONE, SESSION_STATUS.COMPLETED].includes(s.status as "done" | "completed") ? "text-green-400" : s.status === SESSION_STATUS.FAILED ? "text-red-400" : "text-gray-400"
         }`}>
-          {s.status}
+          {statusLabel(s.status)}
         </span>
       </div>
     </button>
@@ -229,4 +240,8 @@ function formatAge(iso: string): string {
   const hours = Math.floor(mins / 60)
   if (hours < 24) return `${hours}h`
   return `${Math.floor(hours / 24)}d`
+}
+
+function statusLabel(status: SessionStatusValue): string {
+  return ({ pending: "Queued", running: "Working", waiting: "Needs you", verifying: "Ready for review", done: "Completed", completed: "Completed", failed: "Failed", cancelled: "Cancelled" })[status]
 }
