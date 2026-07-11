@@ -128,3 +128,9 @@ The first shell audit reduced the default workflow to outcome, progress, interve
 Provider discovery/setup is separate from orchestration. RDC records a preferred provider, tests installed CLI authentication, exposes guided setup commands, and refuses to silently fall back when that preference is unavailable. **Orchestrated** means “use the configured preference,” not “pick any provider that happens to respond.” Failed or cancelled sessions can explicitly choose a different provider when run again.
 
 Selecting a Session now opens a dedicated full-screen Session workspace. The Control room remains available through an explicit transition, but its project sidebar, generic terminal tabs, actions, and browser chrome no longer surround supervised work. This preserves the conceptual boundary: Sessions own outcomes and supervision; Control room is an intervention surface.
+
+### Project bootstrap from Sessions
+
+Sessions is also the entry point for starting new work. **New project** uses a guided bootstrap to collect a name, purpose, and optional location, then creates the directory, registers the project, and creates its default workstream. This deterministic setup should remain fast and understandable rather than masquerading as agent work.
+
+The recommended next step is an optional first Session whose goal is to initialize the repository structure, documentation, tests, and development workflow. That work is delegated because it benefits from supervision, logs, retry, and review. Users may skip the first Session when they only need an empty registered project. This creates a clear boundary: RDC creates the container; a Session creates and verifies the product structure.

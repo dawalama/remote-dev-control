@@ -8041,6 +8041,37 @@ class ScaffoldProjectRequest(BaseModel):
     collection_id: str | None = None
 
 
+class BootstrapProjectRequest(BaseModel):
+    name: str
+    description: str
+    path: str | None = None
+    collection_id: str | None = None
+
+
+@app.post("/projects/bootstrap")
+async def bootstrap_empty_project(req: BootstrapProjectRequest):
+    """Create an empty project directory, register it, and create its workstream."""
+    from pathlib import Path as _Path
+    if not req.name.strip() or "/" in req.name or "\\" in req.name:
+        raise HTTPException(status_code=422, detail="Use a simple project name without path separators")
+    if req.path:
+        project_path = _Path(req.path).expanduser().resolve()
+    else:
+        from .config import Config
+        loaded_config = Config.load()
+        projects_dir = loaded_config.projects_dir or os.environ.get("RDC_PROJECTS_DIR") or str(_Path.home() / "projects")
+        project_path = (_Path(projects_dir) / req.name).resolve()
+    if project_path.exists() and any(project_path.iterdir()):
+        raise HTTPException(status_code=400, detail=f"Directory is not empty: {project_path}")
+    project_path.mkdir(parents=True, exist_ok=True)
+    return await create_project(CreateProjectRequest(
+        path=str(project_path),
+        name=req.name.strip(),
+        description=req.description.strip(),
+        collection_id=req.collection_id,
+    ))
+
+
 @app.post("/projects/scaffold")
 async def scaffold_new_project(req: ScaffoldProjectRequest):
     """Scaffold a new project from scratch."""

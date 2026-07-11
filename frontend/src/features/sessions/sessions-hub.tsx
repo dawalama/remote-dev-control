@@ -1,9 +1,12 @@
+import { useState } from "react"
 import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { SessionsCard } from "./sessions-card"
 import { ProviderSetup } from "./provider-setup"
+import { ProjectBootstrap } from "./project-bootstrap"
 
 export function SessionsHub() {
+  const [showProjectBootstrap, setShowProjectBootstrap] = useState(false)
   const open = useUIStore((state) => state.sessionsHubOpen)
   const setOpen = useUIStore((state) => state.setSessionsHubOpen)
   const channels = useChannelStore((state) => state.channels)
@@ -28,6 +31,7 @@ export function SessionsHub() {
             <button onClick={() => setScope("workstream")} className={`rounded px-3 py-1.5 text-xs ${scope === "workstream" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"}`}>This workstream</button>
             <button onClick={() => setScope("all")} className={`rounded px-3 py-1.5 text-xs ${scope === "all" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"}`}>All workstreams</button>
           </div>
+          <button onClick={() => setShowProjectBootstrap(true)} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500">New project</button>
           <button onClick={() => setOpen(false)} className="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 hover:text-white">Control room</button>
         </header>
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
@@ -37,6 +41,7 @@ export function SessionsHub() {
           ) : <SessionsCard key={scope} scope={scope} />}
         </div>
       </section>
+      {showProjectBootstrap && <ProjectBootstrap onClose={() => setShowProjectBootstrap(false)} />}
     </div>
   )
 }
