@@ -22,6 +22,7 @@ import { ChannelSidebar } from "@/features/channels/channel-sidebar"
 import { AddProjectModal } from "@/components/project-bar"
 import { FloatingChannelPanel } from "@/features/channels/floating-channel-panel"
 import { SessionViewer } from "@/features/sessions/session-viewer"
+import { SessionsNavButton } from "@/features/sessions/sessions-hub"
 
 const LAYOUTS = [
   { id: "desktop", label: "Desktop", short: "D" },
@@ -167,6 +168,7 @@ export function DesktopLayout() {
           <span className="text-[10px] text-gray-500 font-mono self-end mb-0.5">v0.1.0</span>
         </div>
         <div className="flex items-center gap-3">
+          <SessionsNavButton />
           <div className="flex rounded-md overflow-hidden border border-gray-700">
             {LAYOUTS.map((l) => (
               <button
@@ -366,4 +368,3 @@ export function DesktopLayout() {
     </div>
   )
 }
-

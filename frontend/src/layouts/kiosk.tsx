@@ -5,7 +5,7 @@ import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { ProcessesCard } from "@/features/mobile/processes-card"
-import { SessionsCard } from "@/features/sessions/sessions-card"
+import { SessionsNavButton } from "@/features/sessions/sessions-hub"
 import { ContextsCard } from "@/features/mobile/contexts-card"
 import { BrowserCard } from "@/features/mobile/browser-card"
 import { TerminalOverlay } from "@/features/mobile/terminal-overlay"
@@ -202,6 +202,7 @@ export function KioskLayout() {
         </button>
 
         <div className="flex items-center gap-2">
+          <SessionsNavButton compact />
           <span className="text-[10px] text-gray-500 font-mono" title={getClientId()}>
             {getClientName() || getClientId().slice(0, 12)}
           </span>
@@ -425,7 +426,7 @@ export function KioskLayout() {
   )
 }
 
-type SideTab = "project" | "processes" | "tasks" | "browser" | "attachments"
+type SideTab = "project" | "processes" | "browser" | "attachments"
 
 function KioskSideTabs({
   collapsed,
@@ -452,7 +453,6 @@ function KioskSideTabs({
   const GLOBAL_TO_SIDE: Record<string, SideTab> = {
     project: "project",
     processes: "processes",
-    tasks: "tasks",
     browser: "browser",
     pinchtab: "browser",  // legacy: map to unified browser tab
     attachments: "attachments",
@@ -464,7 +464,6 @@ function KioskSideTabs({
   const tabs: { id: SideTab; label: string; short: string }[] = [
     { id: "project", label: "Project", short: "Proj" },
     { id: "processes", label: "Actions", short: "Acts" },
-    { id: "tasks", label: "Sessions", short: "Sess" },
     { id: "browser", label: "Browser", short: "Brws" },
     { id: "attachments", label: "Attachments", short: "Atch" },
   ]
@@ -524,7 +523,6 @@ function KioskSideTabs({
         {sideTab === "processes" && (
           <ProcessesCard onLogs={(id, name) => onLogs(id, name)} />
         )}
-        {sideTab === "tasks" && <SessionsCard />}
         {sideTab === "browser" && (
           <BrowserCard
             onOpenSession={(session) => onOpenSession(session)}

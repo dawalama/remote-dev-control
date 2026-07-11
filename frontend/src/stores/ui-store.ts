@@ -21,6 +21,8 @@ interface UIState {
   selectedTaskId: string | null
   agentPanelOpen: boolean
   viewingSessionId: string | null
+  sessionsHubOpen: boolean
+  sessionsHubScope: "workstream" | "all"
   projectSettingsOpen: boolean
   systemSettingsOpen: boolean
 
@@ -51,6 +53,8 @@ interface UIState {
   toggleAgentPanel: () => void
   setAgentPanelOpen: (open: boolean) => void
   setViewingSessionId: (id: string | null) => void
+  setSessionsHubOpen: (open: boolean) => void
+  setSessionsHubScope: (scope: "workstream" | "all") => void
   setProjectSettingsOpen: (open: boolean) => void
   setSystemSettingsOpen: (open: boolean) => void
   openTextInput: (callback: (text: string) => void, label?: string, initialValue?: string, keepOpen?: boolean, targetEl?: HTMLElement | null) => void
@@ -74,6 +78,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   selectedTaskId: null,
   agentPanelOpen: false,
   viewingSessionId: null,
+  sessionsHubOpen: false,
+  sessionsHubScope: "workstream",
   projectSettingsOpen: false,
   systemSettingsOpen: false,
   textInputOpen: false,
@@ -136,6 +142,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),
   setAgentPanelOpen: (open) => set({ agentPanelOpen: open }),
   setViewingSessionId: (id) => set({ viewingSessionId: id }),
+  setSessionsHubOpen: (open) => set({ sessionsHubOpen: open }),
+  setSessionsHubScope: (scope) => set({ sessionsHubScope: scope }),
   setProjectSettingsOpen: (open) => set({ projectSettingsOpen: open }),
   setSystemSettingsOpen: (open) => set({ systemSettingsOpen: open }),
 

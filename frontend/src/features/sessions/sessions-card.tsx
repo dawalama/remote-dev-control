@@ -38,10 +38,13 @@ interface SessionInfo {
 
 export function SessionsCard({
   onOpenTerminal,
+  scope = "workstream",
 }: {
   onOpenTerminal?: (terminalId: string) => void
+  scope?: "workstream" | "all"
 }) {
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
+  const channels = useChannelStore((s) => s.channels)
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
@@ -50,16 +53,22 @@ export function SessionsCard({
   const currentProject = useProjectStore((s) => s.currentProject)
   const [draft, setDraft] = useState({ project: currentProject || "", goal: "", criteria: "", provider: "" })
   const setViewingSessionId = useUIStore((s) => s.setViewingSessionId)
+  const setSessionsHubOpen = useUIStore((s) => s.setSessionsHubOpen)
+
+  const openSession = (sessionId: string) => {
+    setViewingSessionId(sessionId)
+    setSessionsHubOpen(false)
+  }
 
   const load = useCallback(async () => {
-    if (!activeChannelId) return
+    if (scope === "workstream" && !activeChannelId) return
     setLoading(true)
     try {
-      const data = await GET<SessionInfo[]>(`/channels/${activeChannelId}/sessions`)
+      const data = await GET<SessionInfo[]>(scope === "all" ? "/sessions" : `/channels/${activeChannelId}/sessions`)
       setSessions(data ?? [])
     } catch { /* ignore */ }
     setLoading(false)
-  }, [activeChannelId])
+  }, [activeChannelId, scope])
 
   // Load on mount and when channel changes
   const prevChannelRef = useRef(activeChannelId)
@@ -84,19 +93,20 @@ export function SessionsCard({
       setDraft((value) => ({ ...value, goal: "", criteria: "" }))
       setShowCreate(false)
       await load()
-      setViewingSessionId(created.id)
+      openSession(created.id)
     } finally { setCreating(false) }
   }
 
   // List view — clicking a session opens the full-width viewer
-  const active = sessions.filter((s) => (ACTIVE_STATUSES as string[]).includes(s.status))
+  const needsAttention = sessions.filter((s) => s.status === SESSION_STATUS.WAITING)
+  const active = sessions.filter((s) => (ACTIVE_STATUSES as string[]).includes(s.status) && s.status !== SESSION_STATUS.WAITING)
   const completed = sessions.filter((s) => (TERMINAL_STATUSES as string[]).includes(s.status))
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Sessions</h3>
-        <div className="flex gap-2"><button onClick={() => setShowCreate((value) => !value)} className="rounded bg-blue-600 px-2 py-1 text-[10px] font-medium text-white">New session</button><button onClick={load} className="text-[10px] text-gray-500 hover:text-gray-300">Refresh</button></div>
+        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{scope === "all" ? "All sessions" : "Workstream sessions"}</h3>
+        <div className="flex gap-2">{scope === "workstream" && <button onClick={() => setShowCreate((value) => !value)} className="rounded bg-blue-600 px-2 py-1 text-[10px] font-medium text-white">New session</button>}<button onClick={load} className="text-[10px] text-gray-500 hover:text-gray-300">Refresh</button></div>
       </div>
 
       {showCreate && <form onSubmit={(event) => { event.preventDefault(); void createSession() }} className="space-y-2 rounded-lg border border-gray-700 bg-gray-800 p-3"><select required value={draft.project} onChange={(event) => setDraft({ ...draft, project: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="" disabled>Select registered project</option>{projects.map((project) => <option key={project.name} value={project.name}>{project.name} — {project.path}</option>)}</select><textarea required rows={3} value={draft.goal} onChange={(event) => setDraft({ ...draft, goal: event.target.value })} placeholder="What outcome should be true?" className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs" /><textarea rows={3} value={draft.criteria} onChange={(event) => setDraft({ ...draft, criteria: event.target.value })} placeholder={'Acceptance criteria — one per line'} className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs" /><select value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="">Default provider</option><option value="claude">Claude</option><option value="cursor">Cursor</option><option value="gwd">Gemini</option><option value="diagnostic">Diagnostic (no writes)</option></select><div className="flex justify-end gap-2"><button type="button" onClick={() => setShowCreate(false)} className="px-2 py-1 text-[10px] text-gray-400">Cancel</button><button disabled={creating || !draft.project || !draft.goal.trim()} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white disabled:opacity-50">{creating ? "Starting…" : "Create and start"}</button></div></form>}
@@ -111,6 +121,13 @@ export function SessionsCard({
         </p>
       )}
 
+      {needsAttention.length > 0 && (
+        <div className="space-y-1.5 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-2">
+          <span className="text-[10px] font-medium uppercase text-yellow-400">Needs attention</span>
+          {needsAttention.map((s) => <SessionRow key={s.id} session={s} context={scope === "all" ? channels.find((channel) => channel.id === s.channel_id)?.name : undefined} onSelect={() => openSession(s.id)} />)}
+        </div>
+      )}
+
       {active.length > 0 && (
         <div className="space-y-1.5">
           <span className="text-[10px] text-gray-500 uppercase">Active</span>
@@ -118,7 +135,8 @@ export function SessionsCard({
             <SessionRow
               key={s.id}
               session={s}
-              onSelect={() => setViewingSessionId(s.id)}
+              context={scope === "all" ? channels.find((channel) => channel.id === s.channel_id)?.name : undefined}
+              onSelect={() => openSession(s.id)}
               onAction={() => {
                 if (s.terminal_ids.length > 0) {
                   const tid = s.terminal_ids[0]
@@ -138,7 +156,8 @@ export function SessionsCard({
             <SessionRow
               key={s.id}
               session={s}
-              onSelect={() => setViewingSessionId(s.id)}
+              context={scope === "all" ? channels.find((channel) => channel.id === s.channel_id)?.name : undefined}
+              onSelect={() => openSession(s.id)}
             />
           ))}
         </div>
@@ -153,10 +172,12 @@ function SessionRow({
   session: s,
   onSelect,
   onAction,
+  context,
 }: {
   session: SessionInfo
   onSelect: () => void
   onAction?: () => void
+  context?: string
 }) {
   const isActive = (ACTIVE_STATUSES as string[]).includes(s.status)
   const statusColor = s.status === SESSION_STATUS.RUNNING ? "bg-blue-500 animate-pulse"
@@ -176,7 +197,7 @@ function SessionRow({
         <span className="text-[10px] text-gray-500">{formatAge(s.created_at)}</span>
       </div>
       <div className="flex items-center gap-2 mt-1 ml-4">
-        <span className="text-[10px] text-gray-500">{s.project}</span>
+        <span className="text-[10px] text-gray-500">{context ? `${context} · ${s.project}` : s.project}</span>
         <div className="flex-1" />
         {isActive && onAction && s.terminal_ids.length > 0 && (
           <span

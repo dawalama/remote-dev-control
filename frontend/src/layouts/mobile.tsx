@@ -5,7 +5,7 @@ import { useUIStore } from "@/stores/ui-store"
 import { AttentionCard } from "@/features/mobile/attention-card"
 import { TerminalsCard } from "@/features/mobile/terminals-card"
 import { ProcessesCard } from "@/features/mobile/processes-card"
-import { SessionsCard } from "@/features/sessions/sessions-card"
+import { SessionsNavButton } from "@/features/sessions/sessions-hub"
 import { ContextsCard } from "@/features/mobile/contexts-card"
 import { DictationCard } from "@/features/mobile/dictation-card"
 import { BrowserCard } from "@/features/mobile/browser-card"
@@ -245,6 +245,7 @@ export function MobileLayout() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <SessionsNavButton compact />
           <span className="text-[10px] text-gray-500 font-mono" title={getClientId()}>
             {getClientName() || getClientId().slice(0, 8)}
           </span>
@@ -290,7 +291,6 @@ export function MobileLayout() {
           }}
           onPlayRecording={(id) => setPlayingRecording(id)}
         />
-        <SessionsCard onOpenTerminal={(tid) => setTerminalOverlayId(tid)} />
         <ContextsCard />
         <PhoneDictation />
       </div>

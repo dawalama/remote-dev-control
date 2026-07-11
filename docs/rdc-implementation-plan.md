@@ -95,3 +95,17 @@ Known baseline debt:
 - One-off terminal work remains available when durable supervision is unnecessary.
 - Settings, pairing, channels, knowledge, and administration remain global utilities.
 - No older control is deleted merely because a replacement exists on paper; founder dogfood must prove it.
+
+## Workstream Sessions shell decision (July 2026)
+
+The first founder review showed that placing Sessions beside Activity, Actions, Browser, and Attachments understated the new workflow and confused durable work with intervention tools. The implemented shell now follows this hierarchy:
+
+- a Session belongs to one workstream/channel and carries the outcome, lifecycle, evidence, and decisions;
+- projects are resources selected when a session is created, rather than the parent navigation concept;
+- Sessions has a persistent entry in the active workstream header on desktop, mobile, and kiosk;
+- the Sessions hub opens on **This workstream**, including creation and its active/recent history;
+- **All workstreams** is the global supervision inbox, with attention-required work separated from running and recent sessions;
+- Activity, Actions, Browser, Attachments, and System remain control-room surfaces and no longer contain the primary Sessions entry;
+- opening a session still reuses the full Session viewer and its terminal/control/evidence workflow.
+
+This is a shell promotion, not a second session system: both views use the existing `/sessions` and `/channels/{channel_id}/sessions` APIs and the existing session manager.
