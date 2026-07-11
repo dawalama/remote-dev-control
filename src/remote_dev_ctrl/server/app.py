@@ -9275,6 +9275,8 @@ async def return_session_control(session_id: str, body: SessionGuidanceRequest):
         raise HTTPException(status_code=404, detail="Session not found")
     if session.control_owner != "human":
         raise HTTPException(status_code=409, detail="Human does not own control")
+    if session.status not in {SessionStatus.RUNNING, SessionStatus.WAITING}:
+        raise HTTPException(status_code=409, detail=f"Cannot return control while {session.status.value}")
     guidance = body.guidance.strip()
     if guidance and session.terminal_ids:
         from .terminal import get_terminal_manager
@@ -9382,13 +9384,13 @@ async def cancel_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     if session.status in {SessionStatus.COMPLETED, SessionStatus.DONE, SessionStatus.FAILED, SessionStatus.CANCELLED}:
         raise HTTPException(status_code=409, detail="Session is already terminal")
+    manager.stop_monitor(session_id)
+    manager.update_status(session_id, SessionStatus.CANCELLED)
     for terminal_id in session.terminal_ids:
         try:
             get_terminal_manager().destroy(terminal_id)
         except Exception:
             logger.warning("Failed to stop terminal %s while cancelling %s", terminal_id, session_id)
-    manager.update_status(session_id, SessionStatus.CANCELLED)
-    manager.stop_monitor(session_id)
     return _session_response(manager.get(session_id))
 
 
@@ -9420,8 +9422,8 @@ async def delete_session(session_id: str):
 
 @app.post("/sessions/{session_id}/retry")
 async def retry_session(session_id: str):
-    """Retry a failed/pending session — re-spawns the terminal."""
-    from .session_manager import build_agent_command, get_session_manager
+    """Start or run a failed/cancelled session again with a fresh terminal."""
+    from .session_manager import SessionStatus, build_agent_command, get_session_manager
     from .terminal import get_terminal_manager
     from .channel_manager import get_channel_manager
 
@@ -9429,10 +9431,23 @@ async def retry_session(session_id: str):
     s = sm.get(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    if s.status not in ("pending", "failed"):
+    if s.status not in ("pending", "failed", "cancelled"):
         raise HTTPException(status_code=400, detail=f"Cannot retry session in status: {s.status}")
 
     tm = get_terminal_manager()
+    if s.status in {SessionStatus.FAILED, SessionStatus.CANCELLED}:
+        sm.stop_monitor(s.id)
+        for terminal_id in s.terminal_ids:
+            tm.destroy(terminal_id)
+        sm._db().execute("DELETE FROM session_terminals WHERE session_id = ?", (s.id,))
+        sm._db().commit()
+        s.terminal_ids = []
+        s.status = SessionStatus.PENDING
+        s.completed_at = None
+        s.control_owner = "none"
+        s.blocker = None
+        sm._persist(s)
+        sm.log_event(s, "session.run_again", {})
     provider = s.agent_provider or (config.agents.default_provider if config else "cursor")
     command = build_agent_command(provider, s.description)
 
@@ -9451,6 +9466,9 @@ async def retry_session(session_id: str):
         )
         return {"success": True, "session_id": s.id, "terminal_id": term.id}
     except Exception as e:
+        s.blocker = str(e)
+        sm._persist(s)
+        sm.update_status(s.id, SessionStatus.FAILED, output_summary="Could not start the agent.")
         raise HTTPException(status_code=500, detail=str(e))
 
 

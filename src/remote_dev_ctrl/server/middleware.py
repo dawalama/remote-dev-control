@@ -6,6 +6,7 @@ import secrets
 from collections import defaultdict
 from datetime import datetime
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
 from fastapi import Request, HTTPException, WebSocket, status
 from fastapi.responses import JSONResponse
@@ -253,16 +254,28 @@ def get_required_permission(method: str, path: str) -> Optional[Permission]:
     return Permission.SYSTEM_CONTROL
 
 
-async def authenticate_websocket(websocket: WebSocket, permission: Permission) -> TokenInfo | None:
-    """Authenticate and authorize a WebSocket before accepting it."""
-    origin = websocket.headers.get("origin")
-    configured = os.environ.get("RDC_ALLOWED_ORIGINS", "")
+def is_websocket_origin_allowed(origin: str | None, host: str, configured: str = "") -> bool:
+    """Allow explicit development origins or the same public host serving RDC."""
+    if not origin:
+        return True
     allowed_origins = {
         "http://127.0.0.1:8420", "http://localhost:8420",
         "http://127.0.0.1:5173", "http://localhost:5173",
         *(item.strip() for item in configured.split(",") if item.strip()),
     }
-    if origin and origin not in allowed_origins:
+    if origin in allowed_origins:
+        return True
+    parsed = urlparse(origin)
+    return parsed.scheme in {"http", "https"} and parsed.netloc.lower() == host.lower()
+
+
+async def authenticate_websocket(websocket: WebSocket, permission: Permission) -> TokenInfo | None:
+    """Authenticate and authorize a WebSocket before accepting it."""
+    origin = websocket.headers.get("origin")
+    configured = os.environ.get("RDC_ALLOWED_ORIGINS", "")
+    public_host = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host", "")
+    public_host = public_host.split(",", 1)[0].strip()
+    if not is_websocket_origin_allowed(origin, public_host, configured):
         await websocket.close(code=4403, reason="Origin not allowed")
         return None
     ticket = websocket.query_params.get("ticket", "")

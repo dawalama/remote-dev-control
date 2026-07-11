@@ -27,7 +27,7 @@ export function SessionsHub() {
             <button onClick={() => setScope("workstream")} className={`rounded px-3 py-1.5 text-xs ${scope === "workstream" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"}`}>This workstream</button>
             <button onClick={() => setScope("all")} className={`rounded px-3 py-1.5 text-xs ${scope === "all" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"}`}>All workstreams</button>
           </div>
-          <button onClick={() => setOpen(false)} className="rounded px-2 py-1 text-lg text-gray-500 hover:bg-gray-800 hover:text-gray-200" aria-label="Close sessions">×</button>
+          <button onClick={() => setOpen(false)} className="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 hover:text-white">Control room</button>
         </header>
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
           {scope === "workstream" && !activeChannelId ? (

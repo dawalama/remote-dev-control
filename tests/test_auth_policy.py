@@ -12,7 +12,13 @@ from remote_dev_ctrl.server.auth import (
     issue_websocket_ticket,
     validate_websocket_ticket,
 )
-from remote_dev_ctrl.server.middleware import get_required_permission, is_public_path
+from remote_dev_ctrl.server.middleware import get_required_permission, is_public_path, is_websocket_origin_allowed
+
+
+def test_websocket_origin_allows_same_public_host_but_rejects_cross_site():
+    assert is_websocket_origin_allowed("https://rdc.example.com", "rdc.example.com")
+    assert is_websocket_origin_allowed("http://127.0.0.1:8420", "127.0.0.1:8420")
+    assert not is_websocket_origin_allowed("https://evil.example", "rdc.example.com")
 
 SENSITIVE_PREFIXES = (
     "/context",

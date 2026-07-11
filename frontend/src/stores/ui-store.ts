@@ -82,7 +82,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   agentPanelOpen: false,
   viewingSessionId: null,
   returnToSessionsHub: false,
-  sessionsHubOpen: false,
+  sessionsHubOpen: true,
   sessionsHubScope: "workstream",
   projectSettingsOpen: false,
   systemSettingsOpen: false,

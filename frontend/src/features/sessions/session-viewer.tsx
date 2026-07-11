@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { GET, POST, PUT } from "@/lib/api"
 import { useUIStore } from "@/stores/ui-store"
 import { TerminalView, TerminalToolbar } from "@/features/terminal/terminal-view"
@@ -59,6 +59,8 @@ export function SessionViewer({
   const [guidance, setGuidance] = useState("")
   const [showVerification, setShowVerification] = useState(false)
   const [showMoreActions, setShowMoreActions] = useState(false)
+  const [terminalGeneration, setTerminalGeneration] = useState(0)
+  const redrawRef = useRef<() => void>(() => {})
   const toast = useUIStore((s) => s.toast)
   const layout = useUIStore((s) => s.layout)
 
@@ -122,6 +124,18 @@ export function SessionViewer({
       toast(session?.status === "pending" ? "Session started" : "Session restarted", "success")
       loadSession()
     } catch { toast("Retry failed", "error") }
+  }
+
+  const restartTerminal = async () => {
+    if (!terminalId) return
+    try {
+      setConnected(false)
+      await POST(`/terminals/${terminalId}/restart`)
+      setTerminalGeneration((value) => value + 1)
+      toast("Terminal restarted", "success")
+    } catch {
+      toast("Terminal could not be restarted. Stop the session, then run it again.", "error")
+    }
   }
 
   const cancel = async () => {
@@ -209,7 +223,7 @@ export function SessionViewer({
             Start
           </button>
         )}
-        {session.status === "failed" && <button onClick={retry} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Retry</button>}
+        {["failed", "cancelled"].includes(session.status) && <button onClick={retry} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Run again</button>}
         <div className="relative"><button onClick={() => setShowMoreActions((value) => !value)} className="rounded px-2 py-1 text-sm text-gray-500 hover:bg-gray-700 hover:text-gray-200" aria-label="More session actions">•••</button>{showMoreActions && <div className="absolute right-0 top-full z-20 mt-1 min-w-32 rounded border border-gray-700 bg-gray-800 p-1 shadow-xl">{isOpen && <button onClick={() => { setShowMoreActions(false); setConfirmCancel(true) }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">{session.status === "pending" ? "Cancel session" : "Stop session"}</button>}{!isOpen && <button onClick={async () => { try { const { DELETE: DEL } = await import("@/lib/api"); await DEL(`/sessions/${sessionId}`); toast("Session deleted", "success"); onClose() } catch { toast("Delete failed", "error") } }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">Delete session</button>}</div>}</div>
       </div>
       {confirmCancel && <div className="flex items-center justify-end gap-2 border-b border-red-900 bg-red-950/40 px-3 py-2 text-xs"><span className="mr-auto text-red-200">{session.status === "pending" ? "Cancel this queued session?" : "Stop this session? It cannot currently be resumed."}</span><button onClick={() => setConfirmCancel(false)} className="rounded border border-gray-600 px-2 py-1">Go back</button><button onClick={cancel} className="rounded bg-red-700 px-2 py-1 text-white">{session.status === "pending" ? "Cancel session" : "Stop session"}</button></div>}
@@ -228,22 +242,22 @@ export function SessionViewer({
               project={session.project}
               sessionId={terminalId}
               connected={connected}
-              onRestart={() => {}}
-              onDisconnect={() => {}}
-              onKill={() => {}}
-              onReset={() => {}}
+              onRestart={() => { void restartTerminal() }}
+              onDisconnect={onClose}
+              onKill={() => setConfirmCancel(true)}
+              onReset={() => redrawRef.current()}
               mode="embedded"
               onModeChange={() => {}}
             />
             <div className="flex-1 min-h-0">
               <TerminalView
-                key={terminalId}
+                key={`${terminalId}:${terminalGeneration}`}
                 sessionId={terminalId}
                 project={session.project}
                 fontSize={layout === "kiosk" ? 15 : 13}
                 onDisconnect={() => setConnected(false)}
                 onSendReady={() => setConnected(true)}
-                onRedrawReady={() => {}}
+                onRedrawReady={(redraw) => { redrawRef.current = redraw }}
               />
             </div>
           </div>
@@ -301,9 +315,7 @@ function SessionTabs({
       {/* Content */}
       <div className={`overflow-y-auto px-3 py-2 ${compact ? "max-h-32" : "flex-1 min-h-0"}`}>
         {tab === "summary" && (
-          <div className="text-xs text-gray-400 whitespace-pre-wrap">
-            {session.output_summary || (["running", "waiting", "pending"].includes(session.status) ? "Session in progress..." : "No summary available.")}
-          </div>
+          <div className="space-y-3 text-xs"><div><div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Goal</div><div className="whitespace-pre-wrap text-gray-200">{session.goal || session.description}</div></div><div><div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Outcome</div><div className="whitespace-pre-wrap text-gray-400">{session.output_summary || (["running", "waiting", "pending"].includes(session.status) ? "Session in progress…" : "No outcome was recorded.")}</div></div></div>
         )}
 
         {tab === "timeline" && (

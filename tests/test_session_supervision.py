@@ -135,3 +135,9 @@ def test_control_can_be_returned_without_guidance_and_terminal_states_clear_owne
 
     manager.update_status(session.id, SessionStatus.CANCELLED)
     assert manager.get(session.id).control_owner == "none"
+    rejected = TestClient(app).post(
+        f"/sessions/{session.id}/return-control",
+        headers={"Authorization": f"Bearer {token}"},
+        json={},
+    )
+    assert rejected.status_code == 409
