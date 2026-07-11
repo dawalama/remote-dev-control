@@ -72,6 +72,8 @@ export function SessionViewer({
     const interval = window.setInterval(() => {
       void loadSession()
       void loadSupervision()
+      void loadEvents()
+      void loadLog()
     }, 5000)
     return () => window.clearInterval(interval)
   })
@@ -200,7 +202,7 @@ export function SessionViewer({
 
   const duration = session.completed_at
     ? formatDuration(new Date(session.created_at), new Date(session.completed_at))
-    : formatAge(session.created_at)
+    : `Updated ${formatAge(session.updated_at)}`
 
   return (
     <div className="flex-1 flex flex-col min-h-0 rounded-lg overflow-hidden">

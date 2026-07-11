@@ -9423,7 +9423,7 @@ async def delete_session(session_id: str):
 @app.post("/sessions/{session_id}/retry")
 async def retry_session(session_id: str):
     """Start or run a failed/cancelled session again with a fresh terminal."""
-    from .session_manager import SessionStatus, build_agent_command, get_session_manager
+    from .session_manager import SessionStatus, agent_provider_blocker, build_agent_command, get_session_manager
     from .terminal import get_terminal_manager
     from .channel_manager import get_channel_manager
 
@@ -9449,6 +9449,12 @@ async def retry_session(session_id: str):
         sm._persist(s)
         sm.log_event(s, "session.run_again", {})
     provider = s.agent_provider or (config.agents.default_provider if config else "cursor")
+    provider_blocker = agent_provider_blocker(provider)
+    if provider_blocker:
+        s.blocker = provider_blocker
+        sm._persist(s)
+        sm.update_status(s.id, SessionStatus.FAILED, output_summary="The selected agent is not ready.")
+        raise HTTPException(status_code=409, detail=provider_blocker)
     command = build_agent_command(provider, s.description)
 
     try:

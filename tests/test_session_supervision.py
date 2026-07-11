@@ -7,6 +7,7 @@ from remote_dev_ctrl.server.auth import Role, get_auth_manager
 from remote_dev_ctrl.server.session_manager import (
     SessionManager,
     SessionStatus,
+    agent_provider_blocker,
     build_agent_command,
     get_session_manager,
 )
@@ -105,11 +106,19 @@ def test_terminal_approval_is_durable_and_decided_idempotently():
 
 def test_provider_selection_builds_the_selected_agent_command():
     cursor_command = build_agent_command("cursor", "Fix the homepage")
-    assert "cursor-agent status" in cursor_command
     assert "cursor-agent -p --trust" in cursor_command
     assert "claude" not in cursor_command
     assert "gemini --prompt-interactive" in build_agent_command("gemini", "Review data")
     assert "diagnostic session" in build_agent_command("diagnostic", "No writes")
+
+
+def test_cursor_provider_readiness_is_checked_before_terminal_creation(monkeypatch):
+    class Result:
+        returncode = 1
+
+    monkeypatch.setattr("remote_dev_ctrl.server.session_manager.subprocess.run", lambda *args, **kwargs: Result())
+    assert "not authenticated" in agent_provider_blocker("cursor")
+    assert agent_provider_blocker("claude") is None
 
 
 def test_control_can_be_returned_without_guidance_and_terminal_states_clear_owner():

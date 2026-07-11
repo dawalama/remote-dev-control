@@ -66,12 +66,7 @@ def build_agent_command(provider: str, description: str) -> str:
     prompt = shlex.quote(description[:4000])
     commands = {
         "claude": f"claude {prompt}",
-        "cursor": (
-            "cursor-agent status >/dev/null 2>&1 || { "
-            "printf 'Cursor Agent is not authenticated. Run cursor-agent login on the RDC host before starting a Cursor session.\\n'; "
-            "exit 78; }; "
-            f"cursor-agent -p --trust {prompt}"
-        ),
+        "cursor": f"cursor-agent -p --trust {prompt}",
         "gemini": f"gemini --prompt-interactive {prompt}",
         "gwd": f"gemini --prompt-interactive {prompt}",
         "diagnostic": "printf 'RDC diagnostic session completed without project writes\\n'",
@@ -80,6 +75,27 @@ def build_agent_command(provider: str, description: str) -> str:
     if inner is None:
         raise ValueError(f"Unsupported session provider: {provider}")
     return f"trap 'echo __RDC_EXIT:$?' EXIT; {inner}"
+
+
+def agent_provider_blocker(provider: str) -> str | None:
+    """Return a user-facing blocker before creating a terminal for a provider."""
+    if provider != "cursor":
+        return None
+    try:
+        result = subprocess.run(
+            ["cursor-agent", "status"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "Cursor Agent is not installed on the RDC host."
+    except subprocess.TimeoutExpired:
+        return "Cursor Agent authentication check timed out. Run `cursor-agent login` on the RDC host."
+    if result.returncode != 0:
+        return "Cursor Agent is not authenticated for RDC. Run `cursor-agent login` on the RDC host or configure CURSOR_API_KEY."
+    return None
 
 # Patterns that indicate the agent is waiting for user input
 _INPUT_PATTERNS = [
