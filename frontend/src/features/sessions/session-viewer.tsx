@@ -1,4 +1,6 @@
 import { useRef, useState } from "react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import { GET, POST, PUT } from "@/lib/api"
 import { useUIStore } from "@/stores/ui-store"
 import { TerminalView, TerminalToolbar } from "@/features/terminal/terminal-view"
@@ -182,6 +184,11 @@ export function SessionViewer({
     catch { toast("Could not return control", "error") }
   }
 
+  const openReview = () => {
+    setTab("summary")
+    setShowVerification(true)
+  }
+
   if (!session) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -220,7 +227,7 @@ export function SessionViewer({
         <span className="text-[10px] text-gray-500 flex-shrink-0">{session.project}</span>
         <span className="text-[10px] text-gray-600 flex-shrink-0">{duration}</span>
         {session.status === "verifying" && (
-          <button onClick={() => setShowVerification((value) => !value)} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white flex-shrink-0">
+          <button onClick={() => showVerification ? setShowVerification(false) : openReview()} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white flex-shrink-0">
             Review outcome
           </button>
         )}
@@ -237,7 +244,7 @@ export function SessionViewer({
       {session.status === "failed" && <div className="border-b border-red-900 bg-red-950/20 px-3 py-2 text-xs"><span className="font-medium text-red-300">Session failed.</span><span className="ml-2 text-gray-400">{session.blocker || session.output_summary || "Open the log for details, then retry when ready."}</span></div>}
       {isOpen && session.control_owner === "human" && <div className="flex items-center gap-2 border-b border-yellow-900 bg-yellow-950/30 px-3 py-2"><span className="text-[10px] text-yellow-200">You have control</span><input value={guidance} onChange={(event) => setGuidance(event.target.value)} placeholder="Optional guidance before returning control" className="min-w-52 flex-1 rounded border border-yellow-800 bg-gray-950 px-2 py-1 text-[10px]" /><button onClick={returnControl} className="rounded bg-green-700 px-2 py-1 text-[10px] text-white">Return control</button></div>}
       {approvals.some((approval) => approval.status === "pending") && <div className="space-y-2 border-b border-yellow-900 bg-yellow-950/20 p-3"><div className="text-xs font-medium text-yellow-300">Needs your decision</div>{approvals.filter((approval) => approval.status === "pending").map((approval) => <div key={approval.id} className="flex items-center gap-2 rounded border border-yellow-800 p-2 text-xs"><span className="mr-auto text-gray-200">{approval.summary}</span><button onClick={() => decideApproval(approval, "approved")} className="rounded bg-green-700 px-2 py-1 text-[10px]">Approve</button><button onClick={() => decideApproval(approval, "rejected")} className="rounded bg-red-700 px-2 py-1 text-[10px]">Reject</button></div>)}</div>}
-      {session.status === "verifying" && !showVerification && <button onClick={() => setShowVerification(true)} className="flex items-center justify-between border-b border-blue-900 bg-blue-950/20 px-3 py-2 text-left text-xs text-blue-300"><span>The work is ready for your review.</span><span>Review outcome →</span></button>}
+      {session.status === "verifying" && !showVerification && <button onClick={openReview} className="flex items-center justify-between border-b border-blue-900 bg-blue-950/20 px-3 py-2 text-left text-xs text-blue-300"><span>The work is ready for your review.</span><span>Review outcome →</span></button>}
       {showVerification && (criteria.length > 0 || session.status === "verifying") && <div className="space-y-3 border-b border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-200">Review outcome</span><span className="text-[10px] text-gray-500">{evidence.length} evidence item{evidence.length === 1 ? "" : "s"}</span>{session.status === "verifying" && <button disabled={!canComplete} title={canComplete ? "Complete session" : "Capture Git evidence, pass verification, and resolve criteria first"} onClick={markDone} className="rounded bg-green-600 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-40">{canComplete ? "Complete session" : "Evidence required"}</button>}</div>{criteria.map((criterion) => <div key={criterion.criterion_index} className="flex flex-wrap items-center gap-2 rounded border border-gray-700 px-2 py-1.5 text-[10px]"><span className="mr-auto text-gray-300">{criterion.criterion}</span><span className="text-gray-500">{criterion.status === "unevaluated" ? "Not reviewed" : criterion.status}</span>{criterion.status === "unevaluated" && <><button onClick={() => decideCriterion(criterion, "passed")} className="text-green-400">Pass</button><button onClick={() => decideCriterion(criterion, "failed")} className="text-red-400">Fail</button><button onClick={() => decideCriterion(criterion, "waived")} className="text-gray-400">Waive</button></>}</div>)}<details className="rounded border border-gray-700 bg-gray-950/40 p-2"><summary className="cursor-pointer text-[10px] text-gray-400">Verification details</summary><div className="mt-2 flex flex-wrap items-center gap-2"><button onClick={captureGit} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Capture Git evidence</button><input value={verificationCommand} onChange={(event) => setVerificationCommand(event.target.value)} placeholder="Verification command or project default" className="min-w-52 flex-1 rounded border border-gray-600 bg-gray-950 px-2 py-1 text-[10px]" /><button onClick={verify} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Run verification</button></div></details></div>}
 
       {/* Main content: terminal (if active) or detail view */}
@@ -271,13 +278,13 @@ export function SessionViewer({
 
           {/* Compact detail strip below terminal */}
           <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800">
-            <SessionTabs tab={tab} setTab={setTab} events={events} log={log} session={session}
+            <SessionTabs tab={tab} setTab={setTab} events={events} log={log} session={session} evidence={evidence}
               loadEvents={loadEvents} loadLog={loadLog} compact />
           </div>
         </>
       ) : (
         /* Done/failed: full detail view */
-        <SessionTabs tab={tab} setTab={setTab} events={events} log={log} session={session}
+        <SessionTabs tab={tab} setTab={setTab} events={events} log={log} session={session} evidence={evidence}
           loadEvents={loadEvents} loadLog={loadLog} />
       )}
     </div>
@@ -287,13 +294,14 @@ export function SessionViewer({
 // ── Tabbed content (used both as compact strip and full view) ──
 
 function SessionTabs({
-  tab, setTab, events, log, session, loadEvents, loadLog, compact,
+  tab, setTab, events, log, session, evidence, loadEvents, loadLog, compact,
 }: {
   tab: "summary" | "timeline" | "log"
   setTab: (t: "summary" | "timeline" | "log") => void
   events: SessionEvent[] | null
   log: string | null
   session: SessionData
+  evidence: SessionEvidence[]
   loadEvents: () => void
   loadLog: () => void
   compact?: boolean
@@ -314,7 +322,7 @@ function SessionTabs({
               tab === t ? "border-blue-500 text-white" : "border-transparent text-gray-500 hover:text-gray-300"
             }`}
           >
-            {t.charAt(0).toUpperCase() + t.slice(1)}
+            {t === "log" ? "Raw log" : t.charAt(0).toUpperCase() + t.slice(1)}
           </button>
         ))}
       </div>
@@ -322,7 +330,11 @@ function SessionTabs({
       {/* Content */}
       <div className={`overflow-y-auto px-3 py-2 ${compact ? "max-h-32" : "flex-1 min-h-0"}`}>
         {tab === "summary" && (
-          <div className="space-y-3 text-xs"><div><div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Goal</div><div className="whitespace-pre-wrap text-gray-200">{session.goal || session.description}</div></div><div><div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Outcome</div><div className="whitespace-pre-wrap text-gray-400">{session.output_summary || (["running", "waiting", "pending"].includes(session.status) ? "Session in progress…" : "No outcome was recorded.")}</div></div></div>
+          <div className="mx-auto max-w-4xl space-y-5 py-2 text-xs">
+            <section><div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Requested outcome</div><div className="whitespace-pre-wrap text-gray-200">{session.goal || session.description}</div></section>
+            <section className="rounded-lg border border-gray-700 bg-gray-900 p-4"><div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-gray-500">Result</div><MarkdownText content={session.output_summary || (["running", "waiting", "pending"].includes(session.status) ? "Session in progress…" : "The agent did not record a concise outcome. Review the evidence below; use the raw log only for debugging.")} /></section>
+            <EvidenceSummary evidence={evidence} />
+          </div>
         )}
 
         {tab === "timeline" && (
@@ -350,13 +362,36 @@ function SessionTabs({
         )}
 
         {tab === "log" && (
-          <pre className="text-[10px] text-gray-400 whitespace-pre-wrap font-mono bg-gray-950 rounded p-3">
-            {log === null ? "Loading..." : log}
-          </pre>
+          <div className="space-y-2"><p className="text-[10px] text-gray-500">Raw agent transcript for debugging. The readable outcome is under Summary.</p><pre className="whitespace-pre-wrap rounded bg-gray-950 p-3 font-mono text-[10px] text-gray-400">{log === null ? "Loading..." : log}</pre></div>
         )}
       </div>
     </div>
   )
+}
+
+function MarkdownText({ content }: { content: string }) {
+  return <div className="space-y-2 text-sm leading-6 text-gray-300"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+    h1: ({ children }) => <h3 className="text-base font-semibold text-gray-100">{children}</h3>,
+    h2: ({ children }) => <h3 className="text-sm font-semibold text-gray-100">{children}</h3>,
+    h3: ({ children }) => <h4 className="font-medium text-gray-100">{children}</h4>,
+    ul: ({ children }) => <ul className="ml-5 list-disc space-y-1">{children}</ul>,
+    ol: ({ children }) => <ol className="ml-5 list-decimal space-y-1">{children}</ol>,
+    pre: ({ children }) => <pre className="overflow-x-auto rounded bg-gray-950 p-3 text-xs">{children}</pre>,
+    code: ({ children }) => <code className="rounded bg-gray-950 px-1 py-0.5 font-mono text-xs text-gray-300">{children}</code>,
+    p: ({ children }) => <p>{children}</p>,
+  }}>{content}</ReactMarkdown></div>
+}
+
+function EvidenceSummary({ evidence }: { evidence: SessionEvidence[] }) {
+  if (evidence.length === 0) return <section className="rounded-lg border border-dashed border-gray-700 p-4 text-gray-500"><div className="font-medium text-gray-400">No independent evidence yet</div><div className="mt-1 text-[10px]">Capture Git changes and run verification before completing this Session.</div></section>
+  return <section><div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-gray-500">Evidence</div><div className="grid gap-2 md:grid-cols-2">{evidence.map((item) => {
+    const isVerification = item.evidence_type === "verification"
+    const passed = isVerification && Number(item.data.exit_code) === 0
+    const detail = isVerification
+      ? `${String(item.data.command || "Verification")} · ${passed ? "Passed" : `Failed (exit ${String(item.data.exit_code)})`}`
+      : String(item.data.diff_stat || item.data.status || "Git working tree captured")
+    return <div key={item.id} className="rounded-lg border border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${isVerification ? passed ? "bg-green-500" : "bg-red-500" : "bg-blue-500"}`} /><span className="font-medium text-gray-200">{item.title}</span></div><pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-gray-500">{detail}</pre></div>
+  })}</div></section>
 }
 
 // ── Helpers ──
