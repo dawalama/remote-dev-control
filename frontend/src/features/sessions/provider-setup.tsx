@@ -1,6 +1,5 @@
 import { useCallback, useState } from "react"
 import { GET, PATCH } from "@/lib/api"
-import { useMountEffect } from "@/hooks/use-mount-effect"
 import { useUIStore } from "@/stores/ui-store"
 
 interface ProviderReadiness {
@@ -23,15 +22,17 @@ export function ProviderSetup() {
   const [settings, setSettings] = useState<ProviderSettings | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [checking, setChecking] = useState(false)
   const toast = useUIStore((state) => state.toast)
 
   const load = useCallback(async () => {
+    setChecking(true)
     try { setSettings(await GET<ProviderSettings>("/settings/agent-providers")) }
     catch { /* The sessions list remains usable if discovery is unavailable. */ }
+    setChecking(false)
   }, [])
-  useMountEffect(() => { void load() })
 
-  if (!settings) return null
+  if (!settings) return <section className="rounded-lg border border-gray-700 bg-gray-800/50 p-3"><div className="flex items-center gap-3"><span className="h-2 w-2 rounded-full bg-gray-500" /><div className="min-w-0 flex-1"><div className="text-xs font-medium text-gray-200">Agent setup</div><div className="text-[10px] text-gray-500">Discover, authenticate, and choose your preferred coding agents.</div></div><button disabled={checking} onClick={() => { void load() }} className="rounded border border-gray-700 px-2 py-1 text-[10px] text-gray-300 disabled:opacity-50">{checking ? "Checking…" : "Open setup"}</button></div></section>
   const preferred = settings.providers.find((provider) => provider.id === settings.policy.preferred_provider)
   const readyCount = settings.providers.filter((provider) => provider.ready && provider.id !== "diagnostic").length
 

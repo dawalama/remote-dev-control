@@ -9021,7 +9021,8 @@ def _load_agent_provider_policy() -> dict:
 @app.get("/settings/agent-providers")
 async def get_agent_provider_settings():
     from .session_manager import list_agent_provider_readiness
-    return {"policy": _load_agent_provider_policy(), "providers": list_agent_provider_readiness()}
+    providers = await asyncio.to_thread(list_agent_provider_readiness)
+    return {"policy": _load_agent_provider_policy(), "providers": providers}
 
 
 @app.patch("/settings/agent-providers")
@@ -9029,14 +9030,15 @@ async def update_agent_provider_settings(body: AgentProviderPolicyRequest):
     if body.fallback_policy not in {"ask", "disabled"}:
         raise HTTPException(status_code=422, detail="Fallback policy must be ask or disabled")
     from .session_manager import list_agent_provider_readiness
-    valid_ids = {provider["id"] for provider in list_agent_provider_readiness() if provider["id"] != "diagnostic"}
+    providers = await asyncio.to_thread(list_agent_provider_readiness)
+    valid_ids = {provider["id"] for provider in providers if provider["id"] != "diagnostic"}
     if body.preferred_provider not in valid_ids:
         raise HTTPException(status_code=422, detail="Unknown preferred provider")
     policy = body.model_dump()
     path = _agent_provider_policy_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(policy, indent=2) + "\n")
-    return {"policy": policy, "providers": list_agent_provider_readiness()}
+    return {"policy": policy, "providers": providers}
 
 
 @app.post("/sessions")
