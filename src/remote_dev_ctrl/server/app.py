@@ -9023,6 +9023,7 @@ def _session_review_mode(session) -> str:
 
 
 def _session_response(session) -> dict:
+    metadata = session.metadata or {}
     return {
         "id": session.id, "channel_id": session.channel_id, "project": session.project,
         "terminal_ids": session.terminal_ids, "task_id": session.task_id,
@@ -9038,6 +9039,7 @@ def _session_response(session) -> dict:
         "completed_at": session.completed_at.isoformat() if session.completed_at else None,
         "output_summary": session.output_summary,
         "review_mode": _session_review_mode(session),
+        "parent_session_id": metadata.get("parent_session_id"),
     }
 
 
@@ -9049,6 +9051,12 @@ class CreateSupervisedSessionRequest(BaseModel):
     provider: str | None = None
     policy: dict = Field(default_factory=dict)
     budget: dict | None = None
+
+
+class ContinueSessionRequest(BaseModel):
+    goal: str
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    provider: str | None = "orchestrated"
 
 
 class AgentProviderPolicyRequest(BaseModel):
@@ -9113,6 +9121,47 @@ async def create_supervised_session(body: CreateSupervisedSessionRequest):
         budget=body.budget,
     )
     return _session_response(session)
+
+
+@app.post("/sessions/{session_id}/continue")
+async def continue_supervised_session(session_id: str, body: ContinueSessionRequest):
+    """Create a linked child Session with a durable handoff from its parent."""
+    from .session_manager import get_session_manager
+    sm = get_session_manager()
+    parent = sm.get(session_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent Session not found")
+    if not body.goal.strip():
+        raise HTTPException(status_code=422, detail="A continuation goal is required")
+    evidence_rows = sm._db().execute(
+        "SELECT id, evidence_type, title, data FROM session_evidence WHERE session_id = ? ORDER BY observed_at",
+        (session_id,),
+    ).fetchall()
+    inherited_context = {
+        "parent_goal": parent.goal or parent.description,
+        "parent_result": parent.output_summary or "No final report was recorded.",
+        "evidence": [
+            {"id": row["id"], "type": row["evidence_type"], "title": row["title"], "data": json.loads(row["data"] or "{}")}
+            for row in evidence_rows
+        ],
+    }
+    child = sm.create_session(
+        channel_id=parent.channel_id,
+        project=parent.project,
+        description=body.goal.strip(),
+        agent_provider=body.provider,
+        metadata={
+            "supervised": True,
+            "parent_session_id": parent.id,
+            "git_baseline": _session_git_snapshot(parent.project),
+            "inherited_context": inherited_context,
+        },
+        acceptance_criteria=[item.strip() for item in body.acceptance_criteria if item.strip()],
+        policy=parent.policy,
+        budget=parent.budget,
+    )
+    sm.log_event(child, "session.context_inherited", {"parent_session_id": parent.id, "evidence_ids": [item["id"] for item in inherited_context["evidence"]]})
+    return _session_response(child)
 
 
 @app.get("/sessions")
@@ -9531,6 +9580,25 @@ class RetrySessionRequest(BaseModel):
     provider: str | None = None
 
 
+def _session_execution_prompt(session) -> str:
+    inherited = (session.metadata or {}).get("inherited_context")
+    if not isinstance(inherited, dict):
+        return session.description
+    evidence = inherited.get("evidence") or []
+    evidence_summary = "\n".join(
+        f"- {item.get('title', item.get('type', 'Evidence'))} ({item.get('id', 'unknown')})"
+        for item in evidence if isinstance(item, dict)
+    ) or "- No independent evidence was attached."
+    return (
+        f"{session.description}\n\n"
+        "This Session continues approved work from a parent Session. Use the handoff below as durable context; "
+        "inspect the repository and verify assumptions before changing files.\n\n"
+        f"Parent goal:\n{str(inherited.get('parent_goal') or '')[:4000]}\n\n"
+        f"Parent result / artifact:\n{str(inherited.get('parent_result') or '')[:12000]}\n\n"
+        f"Inherited evidence references:\n{evidence_summary}"
+    )
+
+
 @app.post("/sessions/{session_id}/retry")
 async def retry_session(session_id: str, body: RetrySessionRequest | None = None):
     """Start or run a failed/cancelled session again with a fresh terminal."""
@@ -9572,7 +9640,7 @@ async def retry_session(session_id: str, body: RetrySessionRequest | None = None
         sm._persist(s)
         sm.update_status(s.id, SessionStatus.FAILED, output_summary="The selected agent is not ready.")
         raise HTTPException(status_code=409, detail=provider_blocker)
-    command = build_agent_command(provider, s.description)
+    command = build_agent_command(provider, _session_execution_prompt(s))
     s.metadata = {**(s.metadata or {}), "requested_provider": requested_provider, "effective_provider": provider}
     sm._persist(s)
 

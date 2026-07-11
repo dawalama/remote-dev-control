@@ -84,6 +84,23 @@ def test_codex_final_report_is_extracted_without_cli_noise():
     assert extract_agent_report(marked, "orchestrated") == "Final answer only."
 
 
+def test_continuation_inherits_parent_context_and_lineage():
+    manager = get_session_manager()
+    parent = manager.create_session("test-channel", "test-project", "Evaluate the homepage", metadata={"supervised": True})
+    manager.update_status(parent.id, SessionStatus.COMPLETED, output_summary="Build a dashboard endpoint and summary cards.")
+    token, _ = get_auth_manager().create_token("continuation-test", Role.ADMIN)
+    response = TestClient(app).post(
+        f"/sessions/{parent.id}/continue",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"goal": "Implement the approved dashboard plan", "provider": "orchestrated"},
+    )
+    assert response.status_code == 200
+    child = manager.get(response.json()["id"])
+    assert child is not None
+    assert child.metadata["parent_session_id"] == parent.id
+    assert child.metadata["inherited_context"]["parent_result"] == "Build a dashboard endpoint and summary cards."
+
+
 def test_terminal_approval_is_durable_and_decided_idempotently():
     manager = get_session_manager()
     session = manager.create_session(
