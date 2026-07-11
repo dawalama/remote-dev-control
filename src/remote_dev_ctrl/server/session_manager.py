@@ -24,6 +24,7 @@ import asyncio
 import enum
 import json
 import logging
+import os
 import re
 import secrets
 import shlex
@@ -32,6 +33,7 @@ import shutil
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 
@@ -86,10 +88,13 @@ def agent_provider_blocker(provider: str) -> str | None:
         "codex": (["codex", "login", "status"], "Codex CLI", "codex login", "OPENAI_API_KEY"),
         "claude": (["claude", "auth", "status"], "Claude Code", "claude auth login", "ANTHROPIC_API_KEY"),
     }
-    if provider in {"diagnostic", "gemini", "gwd"}:
-        executable = "gemini" if provider in {"gemini", "gwd"} else None
-        if executable and not shutil.which(executable):
+    if provider == "diagnostic":
+        return None
+    if provider in {"gemini", "gwd"}:
+        if not shutil.which("gemini"):
             return "Gemini CLI is not installed on the RDC host."
+        if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or (Path.home() / ".gemini" / "oauth_creds.json").exists()):
+            return "Gemini CLI is installed but not authenticated. Run `gemini` on the RDC host or configure GEMINI_API_KEY."
         return None
     check = checks.get(provider)
     if not check:
