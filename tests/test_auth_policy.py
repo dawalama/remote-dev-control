@@ -80,6 +80,14 @@ def test_unknown_route_fails_closed_to_admin_control():
     assert get_required_permission("POST", "/future-capability/action") == Permission.SYSTEM_CONTROL
 
 
+def test_project_evidence_hooks_use_project_control_permission():
+    assert get_required_permission(
+        "POST", "/settings/evidence-providers/entire/enable"
+    ) == Permission.PROJECTS_CONTROL
+    assert Permission.PROJECTS_CONTROL in ROLE_PERMISSIONS[Role.OPERATOR]
+    assert Permission.PROJECTS_CONTROL not in ROLE_PERMISSIONS[Role.VIEWER]
+
+
 def test_anonymous_sensitive_request_is_rejected():
     response = TestClient(app).get("/terminals")
     assert response.status_code == 401

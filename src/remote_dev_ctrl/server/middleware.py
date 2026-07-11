@@ -154,6 +154,9 @@ ENDPOINT_PERMISSIONS: dict[tuple[str, str], Permission] = {
     # Config (admin only)
     ("GET", "/config"): Permission.CONFIG_WRITE,
     ("POST", "/config"): Permission.CONFIG_WRITE,
+    # Project-scoped evidence hooks are an operator project mutation, not a
+    # server-wide configuration change.
+    ("POST", "/settings/evidence-providers/entire/enable"): Permission.PROJECTS_CONTROL,
     
     # Tokens (admin only)
     ("GET", "/tokens"): Permission.TOKENS_MANAGE,
