@@ -66,7 +66,12 @@ def build_agent_command(provider: str, description: str) -> str:
     prompt = shlex.quote(description[:4000])
     commands = {
         "claude": f"claude {prompt}",
-        "cursor": f"cursor-agent {prompt}",
+        "cursor": (
+            "cursor-agent status >/dev/null 2>&1 || { "
+            "printf 'Cursor Agent is not authenticated. Run cursor-agent login on the RDC host before starting a Cursor session.\\n'; "
+            "exit 78; }; "
+            f"cursor-agent -p --trust {prompt}"
+        ),
         "gemini": f"gemini --prompt-interactive {prompt}",
         "gwd": f"gemini --prompt-interactive {prompt}",
         "diagnostic": "printf 'RDC diagnostic session completed without project writes\\n'",
@@ -263,6 +268,7 @@ class SessionManager:
         session.updated_at = datetime.now()
         if session.status in (SessionStatus.DONE, SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED):
             session.completed_at = datetime.now()
+            session.control_owner = "none"
         if output_summary:
             session.output_summary = output_summary
         self._persist(session)

@@ -9248,7 +9248,7 @@ async def decide_session_approval(
 
 
 class SessionGuidanceRequest(BaseModel):
-    guidance: str
+    guidance: str = ""
 
 
 @app.post("/sessions/{session_id}/take-control")
@@ -9275,13 +9275,14 @@ async def return_session_control(session_id: str, body: SessionGuidanceRequest):
         raise HTTPException(status_code=404, detail="Session not found")
     if session.control_owner != "human":
         raise HTTPException(status_code=409, detail="Human does not own control")
-    if session.terminal_ids:
+    guidance = body.guidance.strip()
+    if guidance and session.terminal_ids:
         from .terminal import get_terminal_manager
-        get_terminal_manager().write(session.terminal_ids[0], f"{body.guidance}\n".encode())
+        get_terminal_manager().write(session.terminal_ids[0], f"{guidance}\n".encode())
     session.control_owner = "agent"
     session.status = SessionStatus.RUNNING
     manager._persist(session)
-    manager.log_event(session, "session.control_returned", {"guidance": body.guidance})
+    manager.log_event(session, "session.control_returned", {"guidance": guidance})
     return _session_response(session)
 
 
@@ -9350,7 +9351,7 @@ async def complete_session(session_id: str):
     # Kill associated terminals
     for tid in s.terminal_ids:
         try:
-            tm.kill(tid)
+            tm.destroy(tid)
         except Exception:
             pass
     summary = await sm._generate_summary(s)
@@ -9383,7 +9384,7 @@ async def cancel_session(session_id: str):
         raise HTTPException(status_code=409, detail="Session is already terminal")
     for terminal_id in session.terminal_ids:
         try:
-            get_terminal_manager().kill(terminal_id)
+            get_terminal_manager().destroy(terminal_id)
         except Exception:
             logger.warning("Failed to stop terminal %s while cancelling %s", terminal_id, session_id)
     manager.update_status(session_id, SessionStatus.CANCELLED)
