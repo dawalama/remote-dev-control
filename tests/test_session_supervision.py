@@ -110,6 +110,29 @@ def test_continuation_inherits_parent_context_and_lineage():
     assert repeated.json()["id"] == child.id
 
 
+def test_execution_prompt_reconstructs_same_session_followups():
+    from remote_dev_ctrl.server.app import _session_execution_prompt
+
+    session = get_session_manager().create_session(
+        "test-channel",
+        "test-project",
+        "Implement the dashboard",
+        metadata={
+            "supervised": True,
+            "followup_instructions": [
+                {
+                    "prior_result": "Dashboard implementation and tests completed.",
+                    "instruction": "Commit the changes and request approval before pushing.",
+                }
+            ],
+        },
+    )
+    prompt = _session_execution_prompt(session)
+    assert "continued conversation within the same RDC Session" in prompt
+    assert "Dashboard implementation and tests completed" in prompt
+    assert "Commit the changes" in prompt
+
+
 def test_terminal_approval_is_durable_and_decided_idempotently():
     manager = get_session_manager()
     session = manager.create_session(

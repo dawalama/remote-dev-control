@@ -10,7 +10,7 @@ import subprocess
 import time
 import secrets
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -9811,8 +9811,24 @@ class RetrySessionRequest(BaseModel):
 
 def _session_execution_prompt(session) -> str:
     inherited = (session.metadata or {}).get("inherited_context")
+    followups = (session.metadata or {}).get("followup_instructions") or []
+    followup_context = ""
+    if isinstance(followups, list) and followups:
+        turns = []
+        for item in followups[-10:]:
+            if not isinstance(item, dict):
+                continue
+            prior = str(item.get("prior_result") or "").strip()
+            instruction = str(item.get("instruction") or "").strip()
+            turns.append(f"Prior agent outcome:\n{prior[:8000]}\n\nUser follow-up:\n{instruction[:4000]}")
+        if turns:
+            followup_context = (
+                "\n\nThis is a continued conversation within the same RDC Session. Native provider resume was not available, "
+                "so RDC reconstructed the durable conversation below. Inspect the repository to confirm current state, "
+                "then carry out the latest user instruction.\n\n" + "\n\n---\n\n".join(turns)
+            )
     if not isinstance(inherited, dict):
-        return session.description
+        return session.description + followup_context
     evidence = inherited.get("evidence") or []
     evidence_summary = "\n".join(
         f"- {item.get('title', item.get('type', 'Evidence'))} ({item.get('id', 'unknown')})"
@@ -9824,7 +9840,7 @@ def _session_execution_prompt(session) -> str:
         "inspect the repository and verify assumptions before changing files.\n\n"
         f"Parent goal:\n{str(inherited.get('parent_goal') or '')[:4000]}\n\n"
         f"Parent result / artifact:\n{str(inherited.get('parent_result') or '')[:12000]}\n\n"
-        f"Inherited evidence references:\n{evidence_summary}"
+        f"Inherited evidence references:\n{evidence_summary}{followup_context}"
     )
 
 
@@ -9892,6 +9908,40 @@ async def retry_session(session_id: str, body: RetrySessionRequest | None = None
         sm._persist(s)
         sm.update_status(s.id, SessionStatus.FAILED, output_summary="Could not start the agent.")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class SessionInstructionRequest(BaseModel):
+    instruction: str
+
+
+@app.post("/sessions/{session_id}/instructions")
+async def instruct_session(session_id: str, body: SessionInstructionRequest):
+    """Append a durable follow-up and resume work in the same RDC Session."""
+    from .session_manager import SessionStatus, get_session_manager
+
+    instruction = body.instruction.strip()
+    if not instruction:
+        raise HTTPException(status_code=422, detail="Tell the agent what to do next")
+    sm = get_session_manager()
+    session = sm.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status.value not in {"verifying", "completed", "done", "failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Take control to guide an agent that is still running")
+
+    followups = list((session.metadata or {}).get("followup_instructions") or [])
+    followups.append({
+        "instruction": instruction,
+        "prior_result": session.output_summary or "No prior outcome was recorded.",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    session.metadata = {**(session.metadata or {}), "followup_instructions": followups, "review_mode": "implementation"}
+    session.status = SessionStatus.CANCELLED
+    session.completed_at = None
+    sm._persist(session)
+    sm.log_event(session, "session.instruction_added", {"instruction": instruction, "context_mode": "reconstructed"})
+    result = await retry_session(session_id, RetrySessionRequest(provider=session.agent_provider))
+    return {**result, "context_mode": "reconstructed", "instruction": instruction}
 
 
 @app.patch("/channels/{channel_id}")
