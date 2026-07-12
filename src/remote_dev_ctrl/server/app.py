@@ -9061,6 +9061,7 @@ class ContinueSessionRequest(BaseModel):
     goal: str
     acceptance_criteria: list[str] = Field(default_factory=list)
     provider: str | None = "orchestrated"
+    review_mode: str = Field(default="implementation", pattern="^(implementation|advisory)$")
 
 
 def _find_continuation(parent_session_id: str):
@@ -9205,6 +9206,7 @@ async def continue_supervised_session(session_id: str, body: ContinueSessionRequ
         metadata={
             "supervised": True,
             "parent_session_id": parent.id,
+            "review_mode": body.review_mode,
             "git_baseline": _session_git_snapshot(parent.project),
             "inherited_context": inherited_context,
             "evidence_providers": (parent.metadata or {}).get("evidence_providers", [{"id": "native", "label": "RDC native evidence"}]),

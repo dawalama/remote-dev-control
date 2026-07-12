@@ -98,6 +98,8 @@ def test_continuation_inherits_parent_context_and_lineage():
     child = manager.get(response.json()["id"])
     assert child is not None
     assert child.metadata["parent_session_id"] == parent.id
+    assert child.metadata["review_mode"] == "implementation"
+    assert response.json()["review_mode"] == "implementation"
     assert child.metadata["inherited_context"]["parent_result"] == "Build a dashboard endpoint and summary cards."
     repeated = TestClient(app).post(
         f"/sessions/{parent.id}/continue",
