@@ -8,6 +8,7 @@ import { useVoice } from "@/hooks/use-voice"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
 import { useChannelStore } from "@/stores/channel-store"
 import { useProjectStore } from "@/stores/project-store"
+import { ChatScopeChip } from "@/components/chat-scope-chip"
 
 export function CommandBar() {
   const toast = useUIStore((s) => s.toast)
@@ -44,6 +45,8 @@ export function CommandBar() {
   }, [toast, orchestrator])
 
   const voice = useVoice({ channel: "desktop", onFinal: handleVoiceFinal })
+  const setVoicePanelOpen = useUIStore((s) => s.setVoicePanelOpen)
+  const voicePanelOpen = useUIStore((s) => s.voicePanelOpen)
 
   const handlePhone = async () => {
     if (phone?.active) {
@@ -65,6 +68,7 @@ export function CommandBar() {
     <div className="fixed bottom-0 left-0 right-0 h-[48px] bg-gray-800 border-t border-gray-700 z-40 flex items-center px-4 gap-2">
       {/* Left: logs pill */}
       <LogsPill />
+      <ChatScopeChip compact />
 
       {/* Spacer */}
       <div className="flex-1" />
@@ -87,23 +91,19 @@ export function CommandBar() {
           📱
         </button>
 
-        {/* Voice */}
+        {/* Voice — opens HomeBase Voice panel (clear connect surface) */}
         <button
-          className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${
-            voice.listening
+          className={`h-8 rounded-full flex items-center gap-1.5 px-3 text-xs font-medium transition-colors ${
+            voicePanelOpen || voice.listening
               ? "bg-red-600 text-white animate-pulse"
               : "bg-gray-600 text-gray-300 hover:bg-gray-500"
           }`}
-          onClick={voice.toggle}
-          title={voice.listening ? "Stop listening" : "Voice input"}
+          onClick={() => setVoicePanelOpen(true)}
+          title="HomeBase Voice — talk to this machine"
         >
           🎤
+          <span className="hidden sm:inline">Voice</span>
         </button>
-        {voice.interim && (
-          <span className="text-xs text-gray-400 italic max-w-[200px] truncate">
-            {voice.interim}
-          </span>
-        )}
 
         {/* Chat toggle */}
         <ChatToggle />

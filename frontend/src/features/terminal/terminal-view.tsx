@@ -8,6 +8,7 @@ import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 import { api, GET } from "@/lib/api"
+import { createAuthenticatedWebSocket } from "@/lib/ws"
 import type { TabId } from "@/types"
 import "@xterm/xterm/css/xterm.css"
 
@@ -126,12 +127,8 @@ export function TerminalView({
     if (!sessionId || connectStartedRef.current) return
     connectStartedRef.current = true
 
-    const token = localStorage.getItem("rdc_token")
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:"
-    const base = `${proto}//${window.location.host}`
-    const url = `${base}/terminals/${encodeURIComponent(sessionId)}/ws${token ? `?token=${token}` : ""}`
-
-    const ws = new WebSocket(url)
+    void createAuthenticatedWebSocket(`/terminals/${encodeURIComponent(sessionId)}/ws`).then((ws) => {
+    if (intentionalCloseRef.current) { ws.close(); return }
     ws.binaryType = "arraybuffer"
 
     ws.onopen = () => {
@@ -253,6 +250,7 @@ export function TerminalView({
     }
 
     wsRef.current = ws
+    }).catch(() => { connectStartedRef.current = false })
   }, [sessionId])
 
   // Initialize xterm

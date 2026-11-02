@@ -21,6 +21,10 @@ interface UIState {
   selectedTaskId: string | null
   agentPanelOpen: boolean
   viewingSessionId: string | null
+  returnToSessionsHub: boolean
+  sessionsHubOpen: boolean
+  sessionsHubScope: "workstream" | "all"
+  voicePanelOpen: boolean
   projectSettingsOpen: boolean
   systemSettingsOpen: boolean
 
@@ -51,6 +55,12 @@ interface UIState {
   toggleAgentPanel: () => void
   setAgentPanelOpen: (open: boolean) => void
   setViewingSessionId: (id: string | null) => void
+  openSessionFromHub: (id: string) => void
+  closeSessionViewer: () => void
+  setSessionsHubOpen: (open: boolean) => void
+  setSessionsHubScope: (scope: "workstream" | "all") => void
+  setVoicePanelOpen: (open: boolean) => void
+  toggleVoicePanel: () => void
   setProjectSettingsOpen: (open: boolean) => void
   setSystemSettingsOpen: (open: boolean) => void
   openTextInput: (callback: (text: string) => void, label?: string, initialValue?: string, keepOpen?: boolean, targetEl?: HTMLElement | null) => void
@@ -74,6 +84,10 @@ export const useUIStore = create<UIState>((set, get) => ({
   selectedTaskId: null,
   agentPanelOpen: false,
   viewingSessionId: null,
+  returnToSessionsHub: false,
+  sessionsHubOpen: true,
+  sessionsHubScope: "workstream",
+  voicePanelOpen: false,
   projectSettingsOpen: false,
   systemSettingsOpen: false,
   textInputOpen: false,
@@ -135,7 +149,13 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),
   setAgentPanelOpen: (open) => set({ agentPanelOpen: open }),
-  setViewingSessionId: (id) => set({ viewingSessionId: id }),
+  setViewingSessionId: (id) => set({ viewingSessionId: id, returnToSessionsHub: false }),
+  openSessionFromHub: (id) => set({ viewingSessionId: id, sessionsHubOpen: false, returnToSessionsHub: true }),
+  closeSessionViewer: () => set((state) => ({ viewingSessionId: null, sessionsHubOpen: state.returnToSessionsHub, returnToSessionsHub: false })),
+  setSessionsHubOpen: (open) => set({ sessionsHubOpen: open }),
+  setSessionsHubScope: (scope) => set({ sessionsHubScope: scope }),
+  setVoicePanelOpen: (open) => set({ voicePanelOpen: open }),
+  toggleVoicePanel: () => set((s) => ({ voicePanelOpen: !s.voicePanelOpen })),
   setProjectSettingsOpen: (open) => set({ projectSettingsOpen: open }),
   setSystemSettingsOpen: (open) => set({ systemSettingsOpen: open }),
 

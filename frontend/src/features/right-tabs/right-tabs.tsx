@@ -15,10 +15,9 @@ import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { ContextViewerModal } from "@/features/modals/context-viewer"
 import { useModels, ModelSelector, CreateTaskForm } from "@/features/tasks/create-task-form"
 import { AddActionForm } from "@/features/processes/add-action-form"
-import { SessionsCard } from "@/features/sessions/sessions-card"
 import type { ActivityEvent, Task } from "@/types"
 
-type RightTab = "activity" | "processes" | "tasks" | "browser" | "attachments" | "system" | "dictation"
+type RightTab = "activity" | "processes" | "browser" | "attachments" | "system" | "dictation"
 
 export function RightTabs() {
   const globalTab = useUIStore((s) => s.currentTab)
@@ -29,20 +28,14 @@ export function RightTabs() {
   // Map global TabId → RightTab (all RightTab values are valid TabIds now)
   const VALID_TABS = new Set<string>(["activity", "processes", "tasks", "browser", "pinchtab", "attachments", "system", "dictation"])
   // Map legacy "pinchtab" tab to unified "browser" tab
-  const mappedTab = globalTab === "pinchtab" ? "browser" : globalTab
+  const mappedTab = globalTab === "pinchtab" ? "browser" : globalTab === "tasks" ? "processes" : globalTab
   const tab: RightTab = VALID_TABS.has(mappedTab) ? (mappedTab as RightTab) : "processes"
   const setTab = (t: RightTab) => setGlobalTab(t)
-  const tasks = useStateStore((s) => s.tasks)
-  const runningCount = tasks.filter(
-    (t) => t.status === "in_progress" || t.status === "running"
-  ).length
-
   const phoneActive = (phone as { active?: boolean })?.active === true
 
   const tabs: { id: RightTab; label: string; badge?: number }[] = [
     { id: "activity", label: "Activity" },
     { id: "processes", label: "Actions" },
-    { id: "tasks", label: "Sessions", badge: runningCount > 0 ? runningCount : undefined },
     { id: "browser", label: "Browser" },
     { id: "attachments", label: "Attachments" },
     ...(phoneActive ? [{ id: "dictation" as RightTab, label: "Dictation", badge: dictationBlocks.length > 0 ? dictationBlocks.length : undefined }] : []),
@@ -74,7 +67,6 @@ export function RightTabs() {
       <div className="px-3 pb-3 pt-2 flex-1 min-h-0 overflow-auto">
         {tab === "activity" && <ActivityTab />}
         {tab === "processes" && <ProcessesTab />}
-        {tab === "tasks" && <SessionsCard />}
         {tab === "browser" && <UnifiedBrowserPanel />}
         {tab === "attachments" && <ContextsTab />}
         {tab === "dictation" && <DictationTab />}

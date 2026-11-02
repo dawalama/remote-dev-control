@@ -21,7 +21,8 @@ import { useChannelStore } from "@/stores/channel-store"
 import { ChannelSidebar } from "@/features/channels/channel-sidebar"
 import { AddProjectModal } from "@/components/project-bar"
 import { FloatingChannelPanel } from "@/features/channels/floating-channel-panel"
-import { SessionViewer } from "@/features/sessions/session-viewer"
+import { SessionsNavButton } from "@/features/sessions/sessions-hub"
+
 
 const LAYOUTS = [
   { id: "desktop", label: "Desktop", short: "D" },
@@ -54,8 +55,6 @@ export function DesktopLayout() {
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
   // channelPanelOpen removed — FloatingChannelPanel manages its own state
   const [addProjectOpen, setAddProjectOpen] = useState(false)
-  const viewingSessionId = useUIStore((s) => s.viewingSessionId)
-  const setViewingSessionId = useUIStore((s) => s.setViewingSessionId)
   const presets = useTerminalPresetsStore((s) => s.presets)
   const loadPresets = useTerminalPresetsStore((s) => s.load)
 
@@ -164,9 +163,16 @@ export function DesktopLayout() {
         <div className="flex items-center gap-2">
           <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${connected ? "bg-green-500" : "bg-red-500"}`} />
           <h1 className="text-lg font-bold tracking-tight">REMOTE CTRL</h1>
+          <span
+            className="text-[10px] uppercase tracking-wider text-gray-400 self-end mb-0.5"
+            title={connected ? "This machine is HomeBase" : "HomeBase disconnected"}
+          >
+            HomeBase
+          </span>
           <span className="text-[10px] text-gray-500 font-mono self-end mb-0.5">v0.1.0</span>
         </div>
         <div className="flex items-center gap-3">
+          <SessionsNavButton />
           <div className="flex rounded-md overflow-hidden border border-gray-700">
             {LAYOUTS.map((l) => (
               <button
@@ -261,30 +267,7 @@ export function DesktopLayout() {
 
         {/* Workspace: terminal + optional session viewer tab */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0 px-2 py-2">
-          {/* Tab bar when a session is open */}
-          {viewingSessionId && (
-            <div className="flex items-center gap-0.5 bg-gray-800 rounded-t-lg px-2 py-1 flex-shrink-0">
-              <button
-                onClick={() => setViewingSessionId(null)}
-                className="px-2 py-0.5 text-[10px] rounded text-gray-500 hover:text-gray-300 hover:bg-gray-700"
-              >
-                Terminals
-              </button>
-              <button
-                className="px-2 py-0.5 text-[10px] rounded bg-gray-700 text-white"
-              >
-                Session
-              </button>
-            </div>
-          )}
-          {viewingSessionId ? (
-            <SessionViewer
-              sessionId={viewingSessionId}
-              onClose={() => setViewingSessionId(null)}
-            />
-          ) : (
-            <EmbeddedTerminal />
-          )}
+          <EmbeddedTerminal />
         </div>
 
         {/* Right tabs */}
@@ -366,4 +349,3 @@ export function DesktopLayout() {
     </div>
   )
 }
-

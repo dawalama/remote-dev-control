@@ -56,10 +56,10 @@ export function PairDeviceQR({ onClose }: { onClose: () => void }) {
     >
       <div className="bg-gray-800 rounded-xl w-[340px] p-6 shadow-2xl">
         <h2 className="text-lg font-bold text-gray-100 text-center mb-1">
-          Pair Device
+          Pair Node
         </h2>
         <p className="text-xs text-gray-400 text-center mb-4">
-          Scan this QR code from a device that is already logged in
+          Scan to connect a Node to this HomeBase. Use a device that is already logged in.
         </p>
 
         {error ? (

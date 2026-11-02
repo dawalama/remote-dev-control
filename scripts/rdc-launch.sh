@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smart agent launcher for RDC terminals.
 #
-# Wraps any agentic CLI (Claude, Cursor, Gemini, etc.) with smart defaults:
+# Wraps any agentic CLI (Claude, Cursor, etc.) with smart defaults:
 # - Detects prior conversation history and resumes if available
 # - Falls back to a fresh start for new projects
 # - Agent-agnostic: knows the resume flags for each supported CLI
@@ -9,14 +9,13 @@
 # Usage: rdc-launch <agent> [extra-args...]
 #   rdc-launch claude
 #   rdc-launch cursor-agent
-#   rdc-launch gemini
 #   rdc-launch some-other-cli --custom-flag
 
 set -euo pipefail
 
 if [ $# -eq 0 ]; then
   echo "Usage: rdc-launch <agent> [extra-args...]"
-  echo "  Supported agents: claude, cursor-agent, gemini, or any CLI"
+  echo "  Supported agents: claude, cursor-agent, or any CLI"
   exit 1
 fi
 
@@ -32,10 +31,6 @@ has_claude_history() {
 
 has_cursor_history() {
   [ -d ".cursor" ] || [ -f ".cursorcontext" ]
-}
-
-has_gemini_history() {
-  [ -d ".gemini" ] && find .gemini -name "*.json" -maxdepth 3 2>/dev/null | grep -q .
 }
 
 # ── Build command with smart flags ──
@@ -55,11 +50,6 @@ case "$AGENT" in
     else
       exec cursor-agent ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
     fi
-    ;;
-
-  gemini)
-    # Gemini CLI doesn't have a resume flag as of now
-    exec gemini ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
     ;;
 
   *)

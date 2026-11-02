@@ -13,8 +13,13 @@ def create_project(
     name: str,
     config: dict,
     register: bool = True,
+    install_deps: bool = False,
 ) -> dict:
-    """Create a new project with the specified configuration."""
+    """Create a new project with the specified configuration.
+
+    install_deps defaults to False so UI bootstrap never blocks the host on
+    long package installs (a prior freeze risk). Callers may opt in explicitly.
+    """
 
     path.mkdir(parents=True, exist_ok=True)
 
@@ -65,8 +70,9 @@ def create_project(
     # Initialize git repo and make initial commit
     _init_git(path)
 
-    # Install dependencies (best-effort, non-blocking)
-    _install_deps(path, config)
+    # Optional dependency install (best-effort) — never default-on for UI paths
+    if install_deps:
+        _install_deps(path, config)
 
     return {
         "path": str(path),

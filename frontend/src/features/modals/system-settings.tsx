@@ -326,7 +326,7 @@ function TerminalSectionGlobal() {
   return (
     <div className="space-y-3">
       <p className="text-[11px] text-gray-400">
-        Configure the global terminal starters shown in the "+" menus (Cursor, Claude, Gemini, Shell, etc.).
+        Configure the global terminal starters shown in the "+" menus (Cursor, Claude, Shell, etc.).
         Projects can still choose their own default starter in project settings.
       </p>
       <p className="text-[11px] text-gray-500">
@@ -1228,9 +1228,18 @@ function APIKeysSection({ secrets }: { secrets: string[] }) {
 
 function ServerInfoSection({ settings }: { settings: Record<string, string> }) {
   const [showRaw, setShowRaw] = useState(false)
+  const hostname = typeof window !== "undefined" ? window.location.hostname : ""
 
   return (
     <div className="space-y-3">
+      <div className="rounded border border-gray-600 bg-gray-800/60 p-3">
+        <div className="text-[10px] uppercase tracking-wider text-gray-400">Role</div>
+        <div className="text-sm font-semibold text-gray-100">HomeBase</div>
+        <p className="mt-1 text-[11px] text-gray-400">
+          This machine runs RDC and executes agent work. Paired phones and browsers are Nodes.
+          {hostname ? ` Host: ${hostname}` : ""}
+        </p>
+      </div>
       <div className="grid grid-cols-3 gap-2">
         <div className="bg-gray-700 rounded p-2">
           <div className="text-[10px] text-gray-400">Version</div>

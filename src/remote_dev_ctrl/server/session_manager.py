@@ -24,12 +24,16 @@ import asyncio
 import enum
 import json
 import logging
+import os
 import re
 import secrets
+import shlex
 import subprocess
+import shutil
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 
@@ -38,17 +42,20 @@ class SessionStatus(str, enum.Enum):
     RUNNING = "running"
     WAITING = "waiting"
     DONE = "done"
+    VERIFYING = "verifying"
+    COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
     @classmethod
     def active_values(cls) -> tuple[str, ...]:
-        return (cls.PENDING.value, cls.RUNNING.value, cls.WAITING.value)
+        return (cls.PENDING.value, cls.RUNNING.value, cls.WAITING.value, cls.VERIFYING.value)
 
     @classmethod
     def terminal_values(cls) -> tuple[str, ...]:
-        return (cls.DONE.value, cls.FAILED.value, cls.CANCELLED.value)
+        return (cls.DONE.value, cls.COMPLETED.value, cls.FAILED.value, cls.CANCELLED.value)
 
+from .scrubber import SecretScrubber
 from .utils import (
     strip_ansi, safe_json_loads, json_field, enum_value,
     get_rdc_db, get_channel_manager, get_terminal_manager,
@@ -56,6 +63,87 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Outbound approval text. Pattern scrub only — do not load the vault here.
+_outbound_scrubber = SecretScrubber()
+WAITING_REASON = "Agent is waiting for input"
+
+
+def build_agent_command(provider: str, description: str) -> str:
+    """Build the terminal command for the provider the user actually selected."""
+    prompt = shlex.quote(description[:4000])
+    commands = {
+        "claude": f"claude {prompt}",
+        "codex": (
+            "rdc_final=$(mktemp /tmp/rdc-codex-final.XXXXXX); "
+            f"codex --ask-for-approval never exec --sandbox workspace-write --output-last-message \"$rdc_final\" {prompt}; "
+            "rdc_code=$?; printf '\\n__RDC_FINAL_BEGIN__\\n'; cat \"$rdc_final\"; "
+            "printf '\\n__RDC_FINAL_END__\\n'; rm -f \"$rdc_final\"; exit $rdc_code"
+        ),
+        "cursor": f"cursor-agent -p --trust {prompt}",
+        "diagnostic": "printf 'RDC diagnostic session completed without project writes\\n'",
+    }
+    inner = description if provider == "shell" else commands.get(provider)
+    if inner is None:
+        raise ValueError(f"Unsupported session provider: {provider}")
+    return f"trap 'echo __RDC_EXIT:$?' EXIT; {inner}"
+
+
+def agent_provider_blocker(provider: str) -> str | None:
+    """Return a user-facing blocker before creating a terminal for a provider."""
+    checks = {
+        "cursor": (["cursor-agent", "status"], "Cursor Agent", "cursor-agent login", "CURSOR_API_KEY"),
+        "codex": (["codex", "login", "status"], "Codex CLI", "codex login", "OPENAI_API_KEY"),
+        "claude": (["claude", "auth", "status"], "Claude Code", "claude auth login", "ANTHROPIC_API_KEY"),
+    }
+    if provider == "diagnostic":
+        return None
+    check = checks.get(provider)
+    if not check:
+        return f"Unsupported session provider: {provider}"
+    command, label, setup_command, key_name = check
+    if not shutil.which(command[0]):
+        return f"{label} is not installed on the RDC host."
+    try:
+        # Long enough for a cold CLI auth check. The session start holds this call.
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except FileNotFoundError:
+        return f"{label} is not installed on the RDC host."
+    except subprocess.TimeoutExpired:
+        return f"{label} authentication check timed out. Run `{setup_command}` on the RDC host."
+    if result.returncode != 0:
+        return f"{label} is not authenticated for RDC. Run `{setup_command}` on the RDC host or configure {key_name}."
+    return None
+
+
+def list_agent_provider_readiness() -> list[dict[str, Any]]:
+    definitions = [
+        ("codex", "Codex CLI", "codex", "codex login"),
+        ("claude", "Claude Code", "claude", "claude auth login"),
+        ("cursor", "Cursor Agent", "cursor-agent", "cursor-agent login"),
+        ("diagnostic", "Diagnostic", None, None),
+    ]
+    providers = []
+    for provider_id, label, executable, setup_command in definitions:
+        installed = executable is None or shutil.which(executable) is not None
+        blocker = agent_provider_blocker(provider_id) if installed else f"{label} is not installed on the RDC host."
+        providers.append({
+            "id": provider_id,
+            "label": label,
+            "installed": installed,
+            "ready": blocker is None,
+            "status": "ready" if blocker is None else ("needs_auth" if installed else "not_installed"),
+            "detail": blocker,
+            "setup_command": setup_command,
+            "capabilities": ["plan", "write", "verify"] if provider_id != "diagnostic" else ["verify"],
+        })
+    return providers
 
 # Patterns that indicate the agent is waiting for user input
 _INPUT_PATTERNS = [
@@ -76,6 +164,23 @@ _SHELL_PROMPT_RE = re.compile(r"[$%>]\s*$")
 _EXIT_SIGNAL_RE = re.compile(r"__RDC_EXIT:(\d+)")
 
 
+def extract_agent_report(transcript: str, provider: str | None) -> str:
+    """Extract the provider's final human-readable answer from a terminal transcript."""
+    cleaned = strip_ansi(transcript).replace("\r\n", "\n")
+    final_match = re.search(r"\n__RDC_FINAL_BEGIN__\n(.*?)\n__RDC_FINAL_END__", cleaned, re.DOTALL)
+    if final_match:
+        return final_match.group(1).strip()
+    # Codex prints this stable role marker even when RDC recorded the provider
+    # as "orchestrated". Inspect the transcript instead of trusting that alias.
+    marker = "codex\n"
+    marker_index = cleaned.rfind(marker)
+    if marker_index >= 0:
+        report = cleaned[marker_index + len(marker):]
+        report = re.split(r"\ntokens used\n|\n__RDC_EXIT:\d+", report, maxsplit=1)[0]
+        return report.strip()
+    return ""
+
+
 @dataclass
 class Session:
     id: str
@@ -91,6 +196,14 @@ class Session:
     completed_at: Optional[datetime] = None
     output_summary: Optional[str] = None
     metadata: Optional[dict] = None
+    goal: str = ""
+    acceptance_criteria: list[str] = field(default_factory=list)
+    control_owner: str = "none"
+    current_step: Optional[str] = None
+    blocker: Optional[str] = None
+    policy: dict = field(default_factory=dict)
+    budget: Optional[dict] = None
+    unresolved_risks: list[str] = field(default_factory=list)
 
 
 class SessionManager:
@@ -103,6 +216,10 @@ class SessionManager:
 
     def _db(self):
         return get_rdc_db()
+
+    @staticmethod
+    def successful_execution_status(session: Session) -> SessionStatus:
+        return SessionStatus.VERIFYING if (session.metadata or {}).get("supervised") else SessionStatus.DONE
 
     # ── Event Logging ──
 
@@ -135,6 +252,39 @@ class SessionManager:
             for r in rows
         ]
 
+    def request_approval(self, session: Session, summary: str, terminal_id: str) -> str:
+        """Create one durable pending approval for a detected terminal prompt."""
+        db = self._db()
+        existing = db.execute(
+            "SELECT id FROM session_approvals WHERE session_id = ? AND status = 'pending' LIMIT 1",
+            (session.id,),
+        ).fetchone()
+        if existing:
+            return existing["id"]
+        safe_summary = _outbound_scrubber.scrub(summary or "").strip() or WAITING_REASON
+        approval_id = f"approval-{secrets.token_hex(8)}"
+        db.execute(
+            """INSERT INTO session_approvals
+               (id, session_id, action_type, risk_level, summary, details, requested_by)
+               VALUES (?, ?, 'terminal_input', 'medium', ?, ?, ?)""",
+            (approval_id, session.id, safe_summary[-1000:], json.dumps({"terminal_id": terminal_id}), "agent"),
+        )
+        db.commit()
+        self.log_event(session, "session.approval_requested", {"approval_id": approval_id})
+        try:
+            from .session_notifier import notify_session_event
+
+            # Same event key as waiting status so lifecycle + approval do not double-notify.
+            notify_session_event(
+                session,
+                event="needs_you",
+                reason=safe_summary[-240:],
+                extra_key="",
+            )
+        except Exception:
+            logger.debug("approval notify failed", exc_info=True)
+        return approval_id
+
     # ── CRUD ──
 
     def create_session(
@@ -145,6 +295,9 @@ class SessionManager:
         agent_provider: Optional[str] = None,
         task_id: Optional[str] = None,
         metadata: Optional[dict] = None,
+        acceptance_criteria: Optional[list[str]] = None,
+        policy: Optional[dict] = None,
+        budget: Optional[dict] = None,
     ) -> Session:
         """Create a new session and persist to DB."""
         session = Session(
@@ -155,9 +308,21 @@ class SessionManager:
             agent_provider=agent_provider,
             task_id=task_id,
             metadata=metadata,
+            goal=description,
+            acceptance_criteria=acceptance_criteria or [],
+            policy=policy or {},
+            budget=budget,
         )
         self._sessions[session.id] = session
         self._persist(session)
+        if session.acceptance_criteria:
+            db = self._db()
+            db.executemany(
+                """INSERT INTO session_criteria
+                   (session_id, criterion_index, criterion) VALUES (?, ?, ?)""",
+                [(session.id, index, criterion) for index, criterion in enumerate(session.acceptance_criteria)],
+            )
+            db.commit()
         self.log_event(session, "session.created", {"description": description[:200], "project": project})
         return session
 
@@ -174,6 +339,89 @@ class SessionManager:
         ).fetchall()
         return self._rows_to_sessions(rows)
 
+    def list_all(self, limit: int = 200) -> list[Session]:
+        rows = self._db().execute(
+            "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return self._rows_to_sessions(rows)
+
+    def resolve_terminal_approvals(self, session_id: str, decided_by: str = "terminal") -> None:
+        """Close terminal prompts that the session has left behind.
+
+        A person can answer in the terminal without using the approval button.
+        The pending row must not keep winning the brief, and it must not block
+        the next real prompt.
+        """
+        db = self._db()
+        db.execute(
+            """UPDATE session_approvals
+               SET status = 'resolved', decided_by = ?, decided_at = ?
+               WHERE session_id = ? AND status = 'pending' AND action_type = 'terminal_input'""",
+            (decided_by, datetime.now().isoformat(), session_id),
+        )
+        db.commit()
+
+    def claim_for_start(self, session_id: str, *, continue_review: bool = False) -> Optional[str]:
+        """Move a startable session to running.
+
+        Returns the previous status, or None when another start already claimed it.
+        Review states are included only when a follow-up is continuing that session.
+        """
+        from .db.connection import get_db_manager
+
+        startable = ["pending", "failed", "cancelled"]
+        if continue_review:
+            startable.extend(("verifying", "completed", "done"))
+        db = self._db()
+        lock = get_db_manager().get_lock("rdc")
+        now = datetime.now()
+        with lock:
+            row = db.execute("SELECT status FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if not row or row["status"] not in set(startable):
+                return None
+            previous = row["status"]
+            cur = db.execute(
+                """UPDATE sessions
+                   SET status = ?, updated_at = ?, completed_at = NULL, blocker = NULL
+                   WHERE id = ? AND status = ?""",
+                ("running", now.isoformat(), session_id, previous),
+            )
+            db.commit()
+            if cur.rowcount != 1:
+                return None
+            session = self._sessions.get(session_id)
+            if session is not None:
+                session.status = SessionStatus.RUNNING
+                session.updated_at = now
+                session.completed_at = None
+                session.blocker = None
+            return previous
+
+    def _note_waiting_for_input(self, session: Session, terminal_id: str, cm) -> None:
+        """Record that the agent needs a person. The terminal keeps the prompt."""
+        session.blocker = WAITING_REASON
+        self._persist(session)
+        self.update_status(session.id, SessionStatus.WAITING, notify_reason=WAITING_REASON)
+        self.log_event(session, "session.waiting_for_input", {"terminal_id": terminal_id})
+        self.request_approval(session, WAITING_REASON, terminal_id)
+        cm.post_message(
+            session.channel_id,
+            role="system",
+            content=WAITING_REASON,
+            metadata={
+                "type": "a2ui",
+                "components": [
+                    {
+                        "type": "confirm",
+                        "title": "The agent needs your input",
+                        "description": "Open the terminal to respond.",
+                        "confirm_label": "Open Terminal",
+                        "cancel_label": "Dismiss",
+                    }
+                ],
+            },
+        )
+
     def list_active(self) -> list[Session]:
         db = self._db()
         placeholders = ",".join("?" for _ in SessionStatus.active_values())
@@ -183,18 +431,36 @@ class SessionManager:
         ).fetchall()
         return self._rows_to_sessions(rows)
 
-    def update_status(self, session_id: str, status: SessionStatus | str, output_summary: Optional[str] = None):
+    def update_status(
+        self,
+        session_id: str,
+        status: SessionStatus | str,
+        output_summary: Optional[str] = None,
+        notify_reason: Optional[str] = None,
+    ):
         session = self.get(session_id)
         if not session:
             return
         session.status = SessionStatus(status) if isinstance(status, str) else status
         session.updated_at = datetime.now()
-        if session.status in (SessionStatus.DONE, SessionStatus.FAILED, SessionStatus.CANCELLED):
+        if session.status in (SessionStatus.DONE, SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED):
             session.completed_at = datetime.now()
+            session.control_owner = "none"
         if output_summary:
             session.output_summary = output_summary
         self._persist(session)
+        if session.status != SessionStatus.WAITING:
+            self.resolve_terminal_approvals(session.id)
         self.log_event(session, f"session.{session.status.value}", {"summary": output_summary[:200] if output_summary else None})
+        # Central lifecycle notify (channel + Telegram). Dedupe inside notifier.
+        # Callers pass notify_reason when the user-facing line is not the summary.
+        try:
+            from .session_notifier import notify_status_transition
+
+            reason = notify_reason if notify_reason is not None else (output_summary or "")
+            notify_status_transition(session, session.status, reason=reason)
+        except Exception:
+            logger.debug("session notify failed", exc_info=True)
 
     # ── Terminal Management ──
 
@@ -207,6 +473,7 @@ class SessionManager:
             session.terminal_ids.append(terminal_id)
         if session.status == SessionStatus.PENDING:
             session.status = SessionStatus.RUNNING
+        session.control_owner = "agent"
         session.updated_at = datetime.now()
         self._persist(session)
 
@@ -300,9 +567,10 @@ class SessionManager:
                 active_terms = [tid for tid in session.terminal_ids if tm.get(tid)]
                 if not active_terms and session.status == SessionStatus.RUNNING:
                     summary = await self._generate_summary(session)
-                    self.update_status(session.id, SessionStatus.DONE, output_summary=summary)
+                    end_status = self.successful_execution_status(session)
+                    self.update_status(session.id, end_status, output_summary=summary)
                     components: list[dict] = [
-                        {"type": "task_card", "title": session.description[:80], "status": SessionStatus.DONE.value, "project": session.project},
+                        {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
                     ]
                     if summary:
                         components.append({"type": "text", "content": summary})
@@ -316,8 +584,11 @@ class SessionManager:
                 self.log_event(session, "session.terminal_stopped", {"terminal_id": terminal_id, "status": term_status})
                 active_terms = [tid for tid in session.terminal_ids if tm.get(tid) and tid != terminal_id]
                 if not active_terms and session.status == SessionStatus.RUNNING:
+                    terminal_text = strip_ansi(bytes(term._output_buffer).decode("utf-8", errors="replace"))
+                    exit_match = _EXIT_SIGNAL_RE.search(terminal_text)
+                    exit_code = int(exit_match.group(1)) if exit_match else None
                     summary = await self._generate_summary(session)
-                    end_status = SessionStatus.FAILED if term_status == "error" else SessionStatus.DONE
+                    end_status = self.successful_execution_status(session) if exit_code == 0 else SessionStatus.FAILED
                     self.update_status(session.id, end_status, output_summary=summary)
                     cm.post_message(session.channel_id, role="system", content=f"Session ended — terminal {term_status}.",
                         metadata={"type": "a2ui", "components": [
@@ -341,9 +612,10 @@ class SessionManager:
                             active_terms = [tid for tid in session.terminal_ids if tid != terminal_id and tm.get(tid)]
                             if not active_terms:
                                 summary = await self._generate_summary(session)
-                                self.update_status(session.id, SessionStatus.DONE, output_summary=summary)
+                                end_status = self.successful_execution_status(session)
+                                self.update_status(session.id, end_status, output_summary=summary)
                                 components = [
-                                    {"type": "task_card", "title": session.description[:80], "status": SessionStatus.DONE.value, "project": session.project},
+                                    {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
                                 ]
                                 if summary:
                                     components.append({"type": "text", "content": summary})
@@ -354,16 +626,8 @@ class SessionManager:
                     # Input waiting
                     if idle_count >= 3 and tm.is_waiting_for_input(terminal_id):
                         if last_event_type != "waiting":
-                            session.status = SessionStatus.WAITING
-                            self._persist(session)
                             last_event_type = "waiting"
-                            tail = strip_ansi(buf[-512:].decode("utf-8", errors="replace"))
-                            self.log_event(session, "session.waiting_for_input", {"terminal_id": terminal_id, "prompt": tail.strip()[-200:]})
-                            cm.post_message(session.channel_id, role="system", content="Agent is waiting for input",
-                                metadata={"type": "a2ui", "components": [
-                                    {"type": "text", "content": f"```\n{tail.strip()[-200:]}\n```"},
-                                    {"type": "confirm", "title": "The agent needs your input", "description": "Open the terminal to respond.", "confirm_label": "Open Terminal", "cancel_label": "Dismiss"},
-                                ]})
+                            self._note_waiting_for_input(session, terminal_id, cm)
                     continue
 
                 idle_count = 0
@@ -375,7 +639,7 @@ class SessionManager:
                 exit_match = _EXIT_SIGNAL_RE.search(text)
                 if exit_match:
                     exit_code = int(exit_match.group(1))
-                    end_status = SessionStatus.DONE if exit_code == 0 else SessionStatus.FAILED
+                    end_status = self.successful_execution_status(session) if exit_code == 0 else SessionStatus.FAILED
                     self.log_event(session, "session.agent_exited", {"terminal_id": terminal_id, "exit_code": exit_code})
                     # Save log + generate summary
                     self._save_terminal_log(session)
@@ -395,21 +659,15 @@ class SessionManager:
                 for pattern in _INPUT_PATTERNS:
                     if pattern.search(text[-500:]):
                         if last_event_type != "waiting":
-                            session.status = SessionStatus.WAITING
-                            self._persist(session)
                             last_event_type = "waiting"
-                            self.log_event(session, "session.waiting_for_input", {"terminal_id": terminal_id})
-                            cm.post_message(session.channel_id, role="system", content="Agent is waiting for input",
-                                metadata={"type": "a2ui", "components": [
-                                    {"type": "text", "content": f"```\n{text[-300:].strip()}\n```"},
-                                    {"type": "confirm", "title": "The agent needs your input", "confirm_label": "Open Terminal", "cancel_label": "Dismiss"},
-                                ]})
+                            self._note_waiting_for_input(session, terminal_id, cm)
                         break
 
                 # Resume from waiting
                 if session.status == SessionStatus.WAITING and last_event_type != "waiting":
-                    session.status = SessionStatus.RUNNING
+                    session.blocker = None
                     self._persist(session)
+                    self.update_status(session.id, SessionStatus.RUNNING)
 
             except Exception:
                 logger.debug("Monitor read error for %s/%s", session.id, terminal_id, exc_info=True)
@@ -439,13 +697,15 @@ class SessionManager:
             logger.debug("Failed to save terminal log", exc_info=True)
 
     async def _generate_summary(self, session: Session) -> str:
-        """Generate a summary by checking git changes. Also saves terminal log."""
+        """Generate an outcome from the agent report and any working-tree changes."""
         self._save_terminal_log(session)
         try:
+            log_file = get_rdc_home() / "sessions" / f"{session.id}.log"
+            report = extract_agent_report(log_file.read_text(errors="replace"), session.agent_provider) if log_file.exists() else ""
             repo = get_project_repo()
             p = repo.get(session.project)
             if not p or not p.path:
-                return ""
+                return report
 
             result = subprocess.run(
                 ["git", "diff", "--stat", "HEAD"],
@@ -453,19 +713,13 @@ class SessionManager:
             )
             diff_stat = result.stdout.strip() if result.returncode == 0 else ""
 
-            result2 = subprocess.run(
-                ["git", "log", "--oneline", "-5", "--no-decorate"],
-                capture_output=True, text=True, cwd=p.path, timeout=10,
-            )
-            recent_commits = result2.stdout.strip() if result2.returncode == 0 else ""
-
             parts = []
+            if report:
+                parts.append(report)
             if diff_stat:
                 parts.append(f"**Files changed:**\n```\n{diff_stat}\n```")
-            if recent_commits:
-                parts.append(f"**Recent commits:**\n```\n{recent_commits}\n```")
             if not parts:
-                parts.append("No file changes detected.")
+                parts.append("The agent finished without recording a final report or changing files.")
             return "\n\n".join(parts)
         except Exception:
             logger.debug("Failed to generate session summary", exc_info=True)
@@ -500,10 +754,32 @@ class SessionManager:
         # Keep terminal_id as first terminal for backward compat
         terminal_id = session.terminal_ids[0] if session.terminal_ids else None
         db.execute(
-            """INSERT OR REPLACE INTO sessions
+            """INSERT INTO sessions
                (id, channel_id, project, terminal_id, task_id, description, status,
-                agent_provider, created_at, updated_at, completed_at, output_summary, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                agent_provider, created_at, updated_at, completed_at, output_summary, metadata,
+                goal, acceptance_criteria, control_owner, current_step, blocker, policy,
+                budget, unresolved_risks)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 channel_id = excluded.channel_id,
+                 project = excluded.project,
+                 terminal_id = excluded.terminal_id,
+                 task_id = excluded.task_id,
+                 description = excluded.description,
+                 status = excluded.status,
+                 agent_provider = excluded.agent_provider,
+                 updated_at = excluded.updated_at,
+                 completed_at = excluded.completed_at,
+                 output_summary = excluded.output_summary,
+                 metadata = excluded.metadata,
+                 goal = excluded.goal,
+                 acceptance_criteria = excluded.acceptance_criteria,
+                 control_owner = excluded.control_owner,
+                 current_step = excluded.current_step,
+                 blocker = excluded.blocker,
+                 policy = excluded.policy,
+                 budget = excluded.budget,
+                 unresolved_risks = excluded.unresolved_risks""",
             (
                 session.id, session.channel_id, session.project,
                 terminal_id, session.task_id, session.description,
@@ -513,6 +789,14 @@ class SessionManager:
                 session.completed_at.isoformat() if session.completed_at else None,
                 session.output_summary,
                 json.dumps(session.metadata) if session.metadata else None,
+                session.goal or session.description,
+                json.dumps(session.acceptance_criteria),
+                session.control_owner,
+                session.current_step,
+                session.blocker,
+                json.dumps(session.policy),
+                json.dumps(session.budget) if session.budget else None,
+                json.dumps(session.unresolved_risks),
             ),
         )
         db.commit()
@@ -592,6 +876,14 @@ class SessionManager:
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
             output_summary=row["output_summary"],
             metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+            goal=row["goal"] or row["description"] or "",
+            acceptance_criteria=json.loads(row["acceptance_criteria"] or "[]"),
+            control_owner=row["control_owner"] or "none",
+            current_step=row["current_step"],
+            blocker=row["blocker"],
+            policy=json.loads(row["policy"] or "{}"),
+            budget=json.loads(row["budget"]) if row["budget"] else None,
+            unresolved_risks=json.loads(row["unresolved_risks"] or "[]"),
         )
 
 

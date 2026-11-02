@@ -1,5 +1,27 @@
 type MessageHandler = (data: unknown) => void
 
+export async function getWebSocketTicket(path: string): Promise<string | null> {
+  const token = localStorage.getItem("rdc_token")
+  if (!token) return null
+  const pathname = new URL(path, window.location.origin).pathname
+  const response = await fetch("/auth/ws-ticket", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ path: pathname }),
+  })
+  if (!response.ok) throw new Error(`WebSocket ticket failed: ${response.status}`)
+  return (await response.json() as { ticket: string }).ticket
+}
+
+export async function createAuthenticatedWebSocket(path: string): Promise<WebSocket> {
+  const ticket = await getWebSocketTicket(path)
+  const separator = path.includes("?") ? "&" : "?"
+  const ticketed = ticket ? `${path}${separator}ticket=${encodeURIComponent(ticket)}` : path
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:"
+  const url = ticketed.startsWith("ws") ? ticketed : `${proto}//${window.location.host}${ticketed}`
+  return new WebSocket(url)
+}
+
 interface WSOptions {
   onOpen?: () => void
   onClose?: () => void
@@ -24,9 +46,16 @@ export class ManagedWebSocket {
 
   connect() {
     this.closed = false
-    const token = localStorage.getItem("rdc_token")
+    void this.open()
+  }
+
+  private async open() {
+    let ticket: string | null = null
+    try { ticket = await getWebSocketTicket(this.url) }
+    catch { /* The normal reconnect behavior handles a rejected socket. */ }
+    if (this.closed) return
     const sep = this.url.includes("?") ? "&" : "?"
-    const fullUrl = token ? `${this.url}${sep}token=${token}` : this.url
+    const fullUrl = ticket ? `${this.url}${sep}ticket=${encodeURIComponent(ticket)}` : this.url
 
     // Build absolute WS URL
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:"

@@ -1546,6 +1546,26 @@ _agent_session_repo: Optional[AgentSessionRepository] = None
 _recipe_repo: Optional[RecipeRepository] = None
 
 
+def reset_repository_singletons() -> None:
+    """Discard repositories backed by database connections that were closed."""
+    global _collection_repo, _task_repo, _project_repo, _event_repo
+    global _agent_run_repo, _process_config_repo, _agent_state_repo
+    global _port_repo, _vnc_repo, _agent_session_repo, _recipe_repo
+    global _email_thread_repo
+    _collection_repo = None
+    _task_repo = None
+    _project_repo = None
+    _event_repo = None
+    _agent_run_repo = None
+    _process_config_repo = None
+    _agent_state_repo = None
+    _port_repo = None
+    _vnc_repo = None
+    _agent_session_repo = None
+    _recipe_repo = None
+    _email_thread_repo = None
+
+
 def get_collection_repo() -> CollectionRepository:
     global _collection_repo
     if _collection_repo is None:

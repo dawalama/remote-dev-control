@@ -1,9 +1,12 @@
 """Authentication and authorization for RDC Command Center."""
 
+import base64
 import hashlib
 import hmac
+import json
 import secrets
 import sqlite3
+import time
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -12,6 +15,44 @@ from typing import Optional
 from pydantic import BaseModel
 
 from .config import get_rdc_home
+
+_WS_TICKET_SECRET = secrets.token_bytes(32)
+
+
+def issue_websocket_ticket(token_info: "TokenInfo", path: str, ttl_seconds: int = 60) -> str:
+    """Issue a short-lived ticket bound to one WebSocket path."""
+    payload = {
+        "sub": token_info.id,
+        "path": path,
+        "exp": int(time.time()) + min(max(ttl_seconds, 10), 120),
+        "nonce": secrets.token_hex(8),
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    signature = hmac.new(_WS_TICKET_SECRET, encoded.encode(), hashlib.sha256).digest()
+    signed = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    return f"{encoded}.{signed}"
+
+
+def validate_websocket_ticket(ticket: str, path: str) -> "TokenInfo | None":
+    """Validate a ticket's signature, expiry, path binding, and token status."""
+    try:
+        encoded, signed = ticket.split(".", 1)
+        expected = base64.urlsafe_b64encode(
+            hmac.new(_WS_TICKET_SECRET, encoded.encode(), hashlib.sha256).digest()
+        ).decode().rstrip("=")
+        if not hmac.compare_digest(signed, expected):
+            return None
+        payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        if payload.get("path") != path or int(payload.get("exp", 0)) < int(time.time()):
+            return None
+        info = get_auth_manager().get_token_by_id(str(payload.get("sub", "")))
+        if not info or info.revoked or (info.expires_at and info.expires_at < datetime.now()):
+            return None
+        return info
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return None
 
 
 class Role(str, Enum):
@@ -28,12 +69,23 @@ class Permission(str, Enum):
     TOKENS_MANAGE = "tokens.manage"
     CONFIG_WRITE = "config.write"
     SECRETS_MANAGE = "secrets.manage"
+    SYSTEM_CONTROL = "system.control"
+    SETTINGS_READ = "settings.read"
     
     # Operator+
     AGENTS_SPAWN = "agents.spawn"
     AGENTS_STOP = "agents.stop"
     TASKS_CREATE = "tasks.create"
     TASKS_CANCEL = "tasks.cancel"
+    TERMINALS_READ = "terminals.read"
+    TERMINALS_CONTROL = "terminals.control"
+    PROCESSES_CONTROL = "processes.control"
+    BROWSER_CONTROL = "browser.control"
+    CONTEXT_WRITE = "context.write"
+    PROJECTS_CONTROL = "projects.control"
+    VOICE_CONTROL = "voice.control"
+    SESSIONS_CONTROL = "sessions.control"
+    STATE_CONTROL = "state.control"
     
     # Viewer+
     AGENTS_READ = "agents.read"
@@ -41,6 +93,11 @@ class Permission(str, Enum):
     LOGS_READ = "logs.read"
     STATUS_READ = "status.read"
     PROJECTS_READ = "projects.read"
+    PROCESSES_READ = "processes.read"
+    BROWSER_READ = "browser.read"
+    CONTEXT_READ = "context.read"
+    SESSIONS_READ = "sessions.read"
+    WORKERS_READ = "workers.read"
     
     # Agent (for agent-to-server)
     HEARTBEAT = "heartbeat"
@@ -60,6 +117,21 @@ ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
         Permission.LOGS_READ,
         Permission.STATUS_READ,
         Permission.PROJECTS_READ,
+        Permission.PROCESSES_READ,
+        Permission.PROCESSES_CONTROL,
+        Permission.TERMINALS_READ,
+        Permission.TERMINALS_CONTROL,
+        Permission.BROWSER_READ,
+        Permission.BROWSER_CONTROL,
+        Permission.CONTEXT_READ,
+        Permission.CONTEXT_WRITE,
+        Permission.PROJECTS_CONTROL,
+        Permission.VOICE_CONTROL,
+        Permission.SETTINGS_READ,
+        Permission.SESSIONS_READ,
+        Permission.SESSIONS_CONTROL,
+        Permission.WORKERS_READ,
+        Permission.STATE_CONTROL,
     },
     Role.VIEWER: {
         Permission.AGENTS_READ,
@@ -67,6 +139,13 @@ ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
         Permission.LOGS_READ,
         Permission.STATUS_READ,
         Permission.PROJECTS_READ,
+        Permission.PROCESSES_READ,
+        Permission.TERMINALS_READ,
+        Permission.BROWSER_READ,
+        Permission.CONTEXT_READ,
+        Permission.SETTINGS_READ,
+        Permission.SESSIONS_READ,
+        Permission.WORKERS_READ,
     },
     Role.AGENT: {
         Permission.HEARTBEAT,

@@ -1,15 +1,12 @@
-import { useState } from "react"
-import { GET, POST } from "@/lib/api"
+import { useRef, useState } from "react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
+import { api, BLOB, DELETE, GET, PATCH, POST, PUT } from "@/lib/api"
 import { useUIStore } from "@/stores/ui-store"
 import { TerminalView, TerminalToolbar } from "@/features/terminal/terminal-view"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 
-const SESSION_STATUS = {
-  PENDING: "pending", RUNNING: "running", WAITING: "waiting",
-  DONE: "done", FAILED: "failed", CANCELLED: "cancelled",
-} as const
-
-type SessionStatusValue = (typeof SESSION_STATUS)[keyof typeof SESSION_STATUS]
+type SessionStatusValue = "pending" | "running" | "waiting" | "verifying" | "done" | "completed" | "failed" | "cancelled"
 
 interface SessionData {
   id: string
@@ -23,7 +20,18 @@ interface SessionData {
   updated_at: string
   completed_at: string | null
   output_summary: string | null
+  goal: string
+  acceptance_criteria: string[]
+  control_owner: "agent" | "human" | "none"
+  blocker: string | null
+  review_mode: "advisory" | "implementation"
+  parent_session_id: string | null
+  verification_command: string | null
 }
+
+interface SessionEvidence { id: string; evidence_type: string; title: string; data: Record<string, unknown> }
+interface SessionCriterion { criterion_index: number; criterion: string; status: "unevaluated" | "passed" | "failed" | "waived" }
+interface SessionApproval { id: string; summary: string; risk_level: string; status: "pending" | "approved" | "rejected" }
 
 interface SessionEvent {
   id: string
@@ -48,12 +56,61 @@ export function SessionViewer({
   const [events, setEvents] = useState<SessionEvent[] | null>(null)
   const [log, setLog] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
+  const [confirmCancel, setConfirmCancel] = useState(false)
+  const [evidence, setEvidence] = useState<SessionEvidence[]>([])
+  const [criteria, setCriteria] = useState<SessionCriterion[]>([])
+  const [verificationCommand, setVerificationCommand] = useState("")
+  const [verificationError, setVerificationError] = useState<string | null>(null)
+  const [verifyingEvidence, setVerifyingEvidence] = useState(false)
+  const [productEvidenceNote, setProductEvidenceNote] = useState("")
+  const [uploadingEvidence, setUploadingEvidence] = useState(false)
+  const [showAcceptanceOverride, setShowAcceptanceOverride] = useState(false)
+  const [acceptanceOverrideNote, setAcceptanceOverrideNote] = useState("")
+  const [acceptingOverride, setAcceptingOverride] = useState(false)
+  const evidenceInputRef = useRef<HTMLInputElement | null>(null)
+  const [approvals, setApprovals] = useState<SessionApproval[]>([])
+  const [guidance, setGuidance] = useState("")
+  const [showMoreActions, setShowMoreActions] = useState(false)
+  const [terminalGeneration, setTerminalGeneration] = useState(0)
+  const [retryProvider, setRetryProvider] = useState("orchestrated")
+  const [showContinue, setShowContinue] = useState(false)
+  const [continuationGoal, setContinuationGoal] = useState("Implement the approved outcome from this analysis. Make the changes, run relevant verification, and summarize the delivered result.")
+  const [continuing, setContinuing] = useState(false)
+  const [continuation, setContinuation] = useState<SessionData | null>(null)
+  const [nextInstruction, setNextInstruction] = useState("")
+  const [sendingInstruction, setSendingInstruction] = useState(false)
+  const redrawRef = useRef<() => void>(() => {})
   const toast = useUIStore((s) => s.toast)
   const layout = useUIStore((s) => s.layout)
 
   useMountEffect(() => {
     loadSession()
+    loadSupervision()
   })
+  useMountEffect(() => {
+    const interval = window.setInterval(() => {
+      void loadSession()
+      void loadSupervision()
+      void loadEvents()
+      void loadLog()
+    }, 5000)
+    return () => window.clearInterval(interval)
+  })
+
+  const loadSupervision = async () => {
+    try {
+      const [evidenceItems, criterionItems, approvalItems, continuationItem] = await Promise.all([
+        GET<SessionEvidence[]>(`/sessions/${sessionId}/evidence`),
+        GET<SessionCriterion[]>(`/sessions/${sessionId}/criteria`),
+        GET<SessionApproval[]>(`/sessions/${sessionId}/approvals`),
+        GET<SessionData | null>(`/sessions/${sessionId}/continuation`),
+      ])
+      setEvidence(evidenceItems ?? [])
+      setCriteria(criterionItems ?? [])
+      setApprovals(approvalItems ?? [])
+      setContinuation(continuationItem ?? null)
+    } catch { /* Legacy sessions may not have supervision records. */ }
+  }
 
   const loadSession = async () => {
     try {
@@ -76,20 +133,141 @@ export function SessionViewer({
     } catch { setLog("Failed to load log.") }
   }
 
-  const markDone = async () => {
+  const markDone = async (overrideInput: unknown = false) => {
+    const override = overrideInput === true
+    if (override) setAcceptingOverride(true)
     try {
-      await POST(`/sessions/${sessionId}/complete`)
-      toast("Session marked done", "success")
+      await POST(`/sessions/${sessionId}/complete`, override ? { override: true, note: acceptanceOverrideNote.trim() } : undefined)
+      toast(override ? "Session accepted with exception" : "Session completed", "success")
       loadSession()
-    } catch { toast("Failed", "error") }
+      await loadSupervision()
+    } catch (error) { toast(error instanceof Error ? error.message : "Could not complete Session", "error") }
+    if (override) setAcceptingOverride(false)
   }
 
   const retry = async () => {
     try {
-      await POST(`/sessions/${sessionId}/retry`)
-      toast("Session retried", "success")
+      await POST(`/sessions/${sessionId}/retry`, { provider: retryProvider })
+      toast(session?.status === "pending" ? "Session started" : "Session restarted", "success")
       loadSession()
     } catch { toast("Retry failed", "error") }
+  }
+
+  const restoreReview = async () => {
+    try { await POST(`/sessions/${sessionId}/restore-review`); toast("Review restored", "success"); await loadSession() }
+    catch { toast("Could not restore review", "error") }
+  }
+
+  const restartTerminal = async () => {
+    if (!terminalId) return
+    try {
+      setConnected(false)
+      await POST(`/terminals/${terminalId}/restart`)
+      setTerminalGeneration((value) => value + 1)
+      toast("Terminal restarted", "success")
+    } catch {
+      toast("Terminal could not be restarted. Stop the session, then run it again.", "error")
+    }
+  }
+
+  const cancel = async () => {
+    try {
+      await POST(`/sessions/${sessionId}/cancel`)
+      setConfirmCancel(false)
+      toast("Session cancelled", "success")
+      loadSession()
+    } catch { toast("Cancellation failed", "error") }
+  }
+
+  const captureGit = async () => {
+    try { await POST(`/sessions/${sessionId}/evidence/git`); await loadSupervision(); toast("Git evidence captured", "success") }
+    catch { toast("Git evidence failed", "error") }
+  }
+
+  const verify = async () => {
+    setVerifyingEvidence(true)
+    setVerificationError(null)
+    try {
+      await POST(`/sessions/${sessionId}/evidence/verification`, { command: verificationCommand.trim() || undefined })
+      await loadSupervision()
+      toast("Project checks recorded", "success")
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Project checks could not run"
+      const detail = message.match(/"detail"\s*:\s*"([^"]+)"/)?.[1]
+      setVerificationError(detail || message.replace(/^API \d+:\s*/, ""))
+    }
+    setVerifyingEvidence(false)
+  }
+
+  const attachProductEvidence = async (file: File | undefined) => {
+    if (!file) return
+    setUploadingEvidence(true)
+    try {
+      const form = new FormData()
+      form.append("file", file)
+      form.append("note", productEvidenceNote.trim())
+      await api(`/sessions/${sessionId}/evidence/media`, { method: "POST", body: form })
+      setProductEvidenceNote("")
+      await loadSupervision()
+      toast("Product evidence attached", "success")
+    } catch (error) { toast(error instanceof Error ? error.message : "Evidence upload failed", "error") }
+    setUploadingEvidence(false)
+    if (evidenceInputRef.current) evidenceInputRef.current.value = ""
+  }
+
+  const decideCriterion = async (criterion: SessionCriterion, status: "passed" | "failed" | "waived") => {
+    try {
+      await PUT(`/sessions/${sessionId}/criteria/${criterion.criterion_index}`, { status, evidence_ids: evidence.map((item) => item.id) })
+      await loadSupervision()
+    } catch { toast("Criterion update failed", "error") }
+  }
+
+  const decideApproval = async (approval: SessionApproval, decision: "approved" | "rejected") => {
+    try { await POST(`/sessions/${sessionId}/approvals/${approval.id}/decide`, { decision }); await loadSupervision(); await loadSession() }
+    catch { toast("Approval decision failed", "error") }
+  }
+
+  const takeControl = async () => {
+    try { await POST(`/sessions/${sessionId}/take-control`); await loadSession() }
+    catch { toast("Could not take control", "error") }
+  }
+
+  const returnControl = async () => {
+    try { await POST(`/sessions/${sessionId}/return-control`, { guidance: guidance.trim() }); setGuidance(""); await loadSession() }
+    catch { toast("Could not return control", "error") }
+  }
+
+  const continueWithImplementation = async () => {
+    if (!continuationGoal.trim()) return
+    setContinuing(true)
+    try {
+      const child = await POST<SessionData>(`/sessions/${sessionId}/continue`, {
+        goal: continuationGoal.trim(),
+        provider: "orchestrated",
+        review_mode: "implementation",
+        acceptance_criteria: ["The requested next outcome is completed", "Relevant verification passes"],
+      })
+      try { await POST(`/sessions/${child.id}/retry`, { provider: "orchestrated" }) }
+      catch { toast("Continuation created; agent setup is required before it can run", "warning") }
+      setContinuation(child)
+      useUIStore.getState().setViewingSessionId(child.id)
+    } catch { toast("Could not create continuation Session", "error") }
+    setContinuing(false)
+  }
+
+  const instructCurrentSession = async () => {
+    if (!nextInstruction.trim()) return
+    setSendingInstruction(true)
+    try {
+      await POST(`/sessions/${sessionId}/instructions`, { instruction: nextInstruction.trim() })
+      setNextInstruction("")
+      toast("Instruction added; the agent is continuing in this Session", "success")
+      await loadSession()
+      await loadSupervision()
+    } catch (error) {
+      toast(apiErrorDetail(error, "Could not continue this Session"), "error")
+    }
+    setSendingInstruction(false)
   }
 
   if (!session) {
@@ -100,56 +278,63 @@ export function SessionViewer({
     )
   }
 
-  const isActive = ["pending", "running", "waiting"].includes(session.status)
+  const isExecuting = ["pending", "running", "waiting"].includes(session.status)
+  const isOpen = ["pending", "running", "waiting"].includes(session.status)
   const terminalId = session.terminal_ids[0] || null
   const shortDesc = session.description.split(/[.\n]/)[0].slice(0, 120) || "Untitled"
 
   const statusColor = session.status === "running" ? "bg-blue-500 animate-pulse"
     : session.status === "waiting" ? "bg-yellow-500 animate-pulse"
-    : session.status === "done" ? "bg-green-500"
+    : ["done", "completed"].includes(session.status) ? "bg-green-500"
     : session.status === "failed" ? "bg-red-500"
     : "bg-gray-500"
 
   const duration = session.completed_at
     ? formatDuration(new Date(session.created_at), new Date(session.completed_at))
-    : formatAge(session.created_at)
+    : `Updated ${formatAge(session.updated_at)}`
+  const hasGitEvidence = evidence.some((item) => item.evidence_type === "git")
+  const hasPassingVerification = evidence.some((item) => item.evidence_type === "verification" && item.data.exit_code === 0)
+  const criteriaResolved = criteria.every((criterion) => ["passed", "waived"].includes(criterion.status))
+  const needsImplementationEvidence = session.review_mode === "implementation"
+  const canComplete = criteriaResolved && (!needsImplementationEvidence || (hasGitEvidence && hasPassingVerification))
+  const canRestoreReview = session.status === "cancelled" && Boolean(session.output_summary)
+  const defaultContinuationGoal = needsImplementationEvidence
+    ? ""
+    : "Implement the approved outcome from this analysis. Make the changes, run relevant verification, and summarize the delivered result."
+  const runnableVerificationCommand = verificationCommand.trim() || session.verification_command
 
   return (
     <div className="flex-1 flex flex-col min-h-0 rounded-lg overflow-hidden">
       {/* Session header bar */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 border-b border-gray-700 flex-shrink-0">
-        <button onClick={onClose} className="text-xs text-blue-400 hover:text-blue-300 flex-shrink-0">← Back</button>
+        <button onClick={onClose} className="text-xs text-blue-400 hover:text-blue-300 flex-shrink-0">← Sessions</button>
         <span className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor}`} />
         <span className="text-xs text-gray-200 truncate flex-1" title={session.description}>{shortDesc}</span>
+        <span className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] text-gray-300 flex-shrink-0">{statusLabel(session.status)}</span>
         <span className="text-[10px] text-gray-500 flex-shrink-0">{session.project}</span>
-        {session.agent_provider && <span className="text-[10px] text-gray-600 flex-shrink-0">{session.agent_provider}</span>}
         <span className="text-[10px] text-gray-600 flex-shrink-0">{duration}</span>
-        {isActive && (
-          <button onClick={markDone} className="text-[10px] px-2 py-0.5 rounded bg-green-600/20 text-green-400 hover:bg-green-600/30 flex-shrink-0">
-            Mark Done
-          </button>
-        )}
-        {(session.status === "failed" || session.status === "pending") && (
+        {["running", "waiting"].includes(session.status) && session.control_owner !== "human" && <button onClick={takeControl} className="rounded bg-yellow-600/20 px-2 py-0.5 text-[10px] text-yellow-300">Take control</button>}
+        {session.status === "pending" && (
           <button onClick={retry} className="text-[10px] px-2 py-0.5 rounded bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/30 flex-shrink-0">
-            Retry
+            Start
           </button>
         )}
-        {!isActive && (
-          <button onClick={async () => {
-            try {
-              const { DELETE: DEL } = await import("@/lib/api")
-              await DEL(`/sessions/${sessionId}`)
-              toast("Session deleted", "success")
-              onClose()
-            } catch { toast("Delete failed", "error") }
-          }} className="text-[10px] px-2 py-0.5 rounded bg-red-600/20 text-red-400 hover:bg-red-600/30 flex-shrink-0">
-            Delete
-          </button>
-        )}
+        {["failed", "cancelled"].includes(session.status) && (canRestoreReview ? <button onClick={restoreReview} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Restore review</button> : <><select value={retryProvider} onChange={(event) => setRetryProvider(event.target.value)} className="rounded border border-gray-600 bg-gray-900 px-2 py-1 text-[10px] text-gray-200"><option value="orchestrated">Configured preference</option><option value="codex">Codex CLI</option><option value="claude">Claude Code</option><option value="cursor">Cursor Agent</option></select><button onClick={retry} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Run again</button></>)}
+        <div className="relative"><button onClick={() => setShowMoreActions((value) => !value)} className="rounded px-2 py-1 text-sm text-gray-500 hover:bg-gray-700 hover:text-gray-200" aria-label="More session actions">•••</button>{showMoreActions && <div className="absolute right-0 top-full z-20 mt-1 min-w-32 rounded border border-gray-700 bg-gray-800 p-1 shadow-xl">{isOpen && <button onClick={() => { setShowMoreActions(false); setConfirmCancel(true) }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">{session.status === "pending" ? "Cancel session" : "Stop session"}</button>}{!isOpen && <button onClick={async () => { try { const { DELETE: DEL } = await import("@/lib/api"); await DEL(`/sessions/${sessionId}`); toast("Session deleted", "success"); onClose() } catch { toast("Delete failed", "error") } }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">Delete session</button>}</div>}</div>
       </div>
+      {confirmCancel && <div className="flex items-center justify-end gap-2 border-b border-red-900 bg-red-950/40 px-3 py-2 text-xs"><span className="mr-auto text-red-200">{session.status === "pending" ? "Cancel this queued session?" : "Stop this session? It cannot currently be resumed."}</span><button onClick={() => setConfirmCancel(false)} className="rounded border border-gray-600 px-2 py-1">Go back</button><button onClick={cancel} className="rounded bg-red-700 px-2 py-1 text-white">{session.status === "pending" ? "Cancel session" : "Stop session"}</button></div>}
+      {session.status === "failed" && <div className="border-b border-red-900 bg-red-950/20 px-3 py-2 text-xs"><span className="font-medium text-red-300">Session failed.</span><span className="ml-2 text-gray-400">{session.blocker || session.output_summary || "Open the log for details, then retry when ready."}</span></div>}
+      {isOpen && session.control_owner === "human" && <div className="flex items-center gap-2 border-b border-yellow-900 bg-yellow-950/30 px-3 py-2"><span className="text-[10px] text-yellow-200">You have control</span><input value={guidance} onChange={(event) => setGuidance(event.target.value)} placeholder="Optional guidance before returning control" className="min-w-52 flex-1 rounded border border-yellow-800 bg-gray-950 px-2 py-1 text-[10px]" /><button onClick={returnControl} className="rounded bg-green-700 px-2 py-1 text-[10px] text-white">Return control</button></div>}
+      {approvals.some((approval) => approval.status === "pending") && <div className="space-y-2 border-b border-yellow-900 bg-yellow-950/20 p-3"><div className="text-xs font-medium text-yellow-300">Needs your decision</div>{approvals.filter((approval) => approval.status === "pending").map((approval) => <div key={approval.id} className="flex items-center gap-2 rounded border border-yellow-800 p-2 text-xs"><span className="mr-auto text-gray-200">{approval.summary}</span><button onClick={() => decideApproval(approval, "approved")} className="rounded bg-green-700 px-2 py-1 text-[10px]">Approve</button><button onClick={() => decideApproval(approval, "rejected")} className="rounded bg-red-700 px-2 py-1 text-[10px]">Reject</button></div>)}</div>}
+      {session.status === "verifying" && needsImplementationEvidence && <div className="border-b border-gray-700 bg-gray-950/40 px-3 py-3"><div className="mb-2 text-xs font-medium text-gray-200">Complete this review</div><div className="grid gap-2 text-[10px] sm:grid-cols-3"><ReviewStep number={1} done={hasGitEvidence} label="Capture changes" detail={hasGitEvidence ? "Git evidence captured" : "Open Verification details and capture Git evidence"} /><ReviewStep number={2} done={hasPassingVerification} label="Verify independently" detail={hasPassingVerification ? "Verification passed" : "Run the project verification command"} /><ReviewStep number={3} done={criteriaResolved} label="Accept the outcome" detail={criteriaResolved ? "All criteria resolved" : `${criteria.filter((item) => !["passed", "waived"].includes(item.status)).length} criteria need review`} /></div></div>}
+      {session.status === "verifying" && <div className="flex flex-wrap items-end gap-2 border-b border-gray-700 bg-gray-900 px-3 py-2"><label className="min-w-52 flex-1 text-[10px] text-gray-500">Product evidence note <span className="text-gray-700">(optional)</span><input value={productEvidenceNote} onChange={(event) => setProductEvidenceNote(event.target.value)} placeholder="What does this screenshot or video demonstrate?" className="mt-1 w-full rounded border border-gray-600 bg-gray-950 px-2 py-1.5 text-[10px] text-gray-200" /></label><input ref={evidenceInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm,video/quicktime" className="hidden" onChange={(event) => { void attachProductEvidence(event.target.files?.[0]) }} /><button disabled={uploadingEvidence} onClick={() => evidenceInputRef.current?.click()} className="rounded border border-purple-600 px-3 py-1.5 text-[10px] text-purple-300 disabled:opacity-50">{uploadingEvidence ? "Uploading…" : "Attach screenshot or video"}</button></div>}
+      {["verifying", "completed", "done", "failed", "cancelled"].includes(session.status) && <div className="border-b border-gray-700 bg-gray-900 px-3 py-3"><label className="block text-[10px] font-medium uppercase tracking-wide text-gray-500">Tell the agent what to do next<div className="mt-2 flex gap-2"><textarea rows={2} value={nextInstruction} onChange={(event) => setNextInstruction(event.target.value)} placeholder="For example: Go ahead and commit these changes, then request approval before pushing." className="min-w-0 flex-1 resize-y rounded border border-gray-600 bg-gray-950 px-3 py-2 text-xs normal-case tracking-normal text-gray-200" /><button disabled={sendingInstruction || !nextInstruction.trim()} onClick={() => { void instructCurrentSession() }} className="self-end rounded bg-blue-600 px-3 py-2 text-xs text-white disabled:opacity-50">{sendingInstruction ? "Continuing…" : "Continue Session"}</button></div></label><p className="mt-1 text-[10px] text-gray-600">Keeps the same RDC Session, history, evidence, and goal. Provider context is reconstructed until native resume is available.</p></div>}
+      {session.status === "verifying" && !canComplete && <div className="border-b border-gray-700 bg-gray-950/30 px-3 py-2">{showAcceptanceOverride ? <div className="flex flex-wrap items-end gap-2"><label className="min-w-64 flex-1 text-[10px] text-yellow-300">Reason for accepting with missing review evidence<textarea autoFocus rows={2} value={acceptanceOverrideNote} onChange={(event) => setAcceptanceOverrideNote(event.target.value)} placeholder="Explain the known risk or why the existing evidence is sufficient…" className="mt-1 w-full resize-y rounded border border-yellow-800 bg-gray-950 px-2 py-1.5 text-xs text-gray-200" /></label><button onClick={() => setShowAcceptanceOverride(false)} className="px-2 py-1.5 text-[10px] text-gray-400">Cancel</button><button disabled={acceptingOverride || acceptanceOverrideNote.trim().length < 5} onClick={() => { void markDone(true) }} className="rounded bg-yellow-700 px-3 py-1.5 text-[10px] text-white disabled:opacity-40">{acceptingOverride ? "Accepting…" : "Accept with exception"}</button></div> : <div className="flex items-center justify-between gap-3 text-[10px]"><span className="text-gray-500">Checks and criteria are recommended, but you remain in control.</span><button onClick={() => setShowAcceptanceOverride(true)} className="text-yellow-400">Accept anyway…</button></div>}</div>}
+      {(criteria.length > 0 || session.status === "verifying" || (["completed", "done"].includes(session.status) && session.review_mode === "advisory")) && <div className="space-y-3 border-b border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-200">Review outcome</span><span className="rounded bg-gray-800 px-2 py-0.5 text-[10px] text-gray-400">{needsImplementationEvidence ? "Implementation" : "Analysis only"}</span>{needsImplementationEvidence && <span className="text-[10px] text-gray-500">{evidence.length} evidence item{evidence.length === 1 ? "" : "s"}</span>}{!needsImplementationEvidence && ["completed", "done"].includes(session.status) && (continuation ? <button onClick={() => useUIStore.getState().setViewingSessionId(continuation.id)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">View implementation · {statusLabel(continuation.status)}</button> : <button onClick={() => setShowContinue((value) => !value)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">Continue with implementation</button>)}{session.status === "verifying" && <button disabled={!canComplete} title={canComplete ? "Complete session" : needsImplementationEvidence ? "Capture Git evidence, pass verification, and resolve criteria first" : "Resolve acceptance criteria first"} onClick={markDone} className="rounded bg-green-600 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-40">{canComplete ? "Complete session" : criteriaResolved ? "Evidence required" : "Criteria required"}</button>}</div>{showContinue && !continuation && <div className="rounded-lg border border-blue-900 bg-blue-950/10 p-3"><label className="block text-[10px] font-medium uppercase tracking-wide text-gray-500">Next Session goal<textarea autoFocus rows={4} value={continuationGoal} onChange={(event) => setContinuationGoal(event.target.value)} className="mt-2 w-full resize-y rounded border border-gray-600 bg-gray-950 px-3 py-2 text-xs normal-case tracking-normal text-gray-200" /></label><div className="mt-2 flex items-center justify-between gap-3"><span className="text-[10px] text-gray-500">The prior goal, result, evidence references, project, and policy will be inherited.</span><button disabled={continuing || !continuationGoal.trim()} onClick={continueWithImplementation} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50">{continuing ? "Starting…" : "Start linked Session"}</button></div></div>}{criteria.map((criterion) => <div key={criterion.criterion_index} className="flex flex-wrap items-center gap-2 rounded border border-gray-700 px-2 py-1.5 text-[10px]"><span className="mr-auto text-gray-300">{criterion.criterion}</span><span className="text-gray-500">{criterion.status === "unevaluated" ? "Not reviewed" : criterion.status}</span>{criterion.status === "unevaluated" && <><button onClick={() => decideCriterion(criterion, "passed")} className="text-green-400">Pass</button><button onClick={() => decideCriterion(criterion, "failed")} className="text-red-400">Fail</button><button onClick={() => decideCriterion(criterion, "waived")} className="text-gray-400">Waive</button></>}</div>)}{needsImplementationEvidence && <details className="rounded border border-gray-700 bg-gray-950/40 p-2"><summary className="cursor-pointer text-[10px] text-gray-400">Run project checks</summary><div className="mt-2 space-y-2">{session.verification_command ? <div className="rounded bg-gray-900 px-2 py-1.5 text-[10px] text-gray-400">Project default: <code className="text-blue-300">{session.verification_command}</code></div> : <div className="rounded border border-yellow-900 bg-yellow-950/20 p-2 text-[10px] text-yellow-200">No project check is configured. Enter the exact command to run below, such as <code>pytest backend/tests/test_dashboard.py</code>.</div>}<label className="block text-[10px] text-gray-500">{session.verification_command ? "Optional command override" : "Command to run"}<input value={verificationCommand} onChange={(event) => { setVerificationCommand(event.target.value); setVerificationError(null) }} placeholder={session.verification_command ? "Leave empty to use the project default" : "e.g. pytest backend/tests/test_dashboard.py"} className="mt-1 w-full rounded border border-gray-600 bg-gray-950 px-2 py-1.5 text-[10px] text-gray-200" /></label><div className="flex items-center gap-2"><button onClick={captureGit} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Refresh Git evidence</button><button disabled={verifyingEvidence || !runnableVerificationCommand} onClick={verify} title={!runnableVerificationCommand ? "Enter a command before running checks" : undefined} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white disabled:cursor-not-allowed disabled:opacity-40">{verifyingEvidence ? "Running checks…" : "Run project checks"}</button></div>{verificationError && <div className="rounded border border-red-900 bg-red-950/20 p-2 text-[10px] text-red-300">{verificationError}</div>}</div></details>}</div>}
+      {["completed", "done"].includes(session.status) && needsImplementationEvidence && <div className="space-y-3 border-b border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-200">Implementation accepted</span>{continuation ? <button onClick={() => useUIStore.getState().setViewingSessionId(continuation.id)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">View next Session · {statusLabel(continuation.status)}</button> : <button onClick={() => { setContinuationGoal(defaultContinuationGoal); setShowContinue((value) => !value) }} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">Start next Session</button>}</div>{showContinue && !continuation && <div className="rounded-lg border border-blue-900 bg-blue-950/10 p-3"><label className="block text-[10px] font-medium uppercase tracking-wide text-gray-500">What should happen next?<textarea autoFocus rows={4} value={continuationGoal} onChange={(event) => setContinuationGoal(event.target.value)} placeholder="Describe the next outcome, such as fixing an issue, committing changes, opening a PR, or preparing a release." className="mt-2 w-full resize-y rounded border border-gray-600 bg-gray-950 px-3 py-2 text-xs normal-case tracking-normal text-gray-200" /></label><div className="mt-2 flex flex-wrap gap-2 text-[10px]"><button onClick={() => setContinuationGoal("Review the completed changes, create an appropriate commit, and request approval before pushing it.")} className="rounded border border-gray-700 px-2 py-1 text-gray-400">Commit changes</button><button onClick={() => setContinuationGoal("Prepare the completed changes for release. Review the diff, create an appropriate commit, and propose the target branch and production tag. Request approval before pushing the branch or tag.")} className="rounded border border-gray-700 px-2 py-1 text-gray-400">Prepare release</button></div><div className="mt-2 flex items-center justify-between gap-3"><span className="text-[10px] text-gray-500">The prior result, evidence, project, and policy will be inherited. This is execution work unless you explicitly ask only for analysis.</span><button disabled={continuing || !continuationGoal.trim()} onClick={continueWithImplementation} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50">{continuing ? "Starting…" : "Start linked Session"}</button></div></div>}</div>}
 
       {/* Main content: terminal (if active) or detail view */}
-      {isActive && terminalId ? (
+      {isExecuting && terminalId ? (
         <>
           {/* Terminal takes most of the space */}
           <div className="flex-1 min-h-0 flex flex-col">
@@ -157,35 +342,35 @@ export function SessionViewer({
               project={session.project}
               sessionId={terminalId}
               connected={connected}
-              onRestart={() => {}}
-              onDisconnect={() => {}}
-              onKill={() => {}}
-              onReset={() => {}}
+              onRestart={() => { void restartTerminal() }}
+              onDisconnect={onClose}
+              onKill={() => setConfirmCancel(true)}
+              onReset={() => redrawRef.current()}
               mode="embedded"
               onModeChange={() => {}}
             />
             <div className="flex-1 min-h-0">
               <TerminalView
-                key={terminalId}
+                key={`${terminalId}:${terminalGeneration}`}
                 sessionId={terminalId}
                 project={session.project}
                 fontSize={layout === "kiosk" ? 15 : 13}
                 onDisconnect={() => setConnected(false)}
                 onSendReady={() => setConnected(true)}
-                onRedrawReady={() => {}}
+                onRedrawReady={(redraw) => { redrawRef.current = redraw }}
               />
             </div>
           </div>
 
           {/* Compact detail strip below terminal */}
           <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800">
-            <SessionTabs tab={tab} setTab={setTab} events={events} log={log} session={session}
+            <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
               loadEvents={loadEvents} loadLog={loadLog} compact />
           </div>
         </>
       ) : (
         /* Done/failed: full detail view */
-        <SessionTabs tab={tab} setTab={setTab} events={events} log={log} session={session}
+        <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
           loadEvents={loadEvents} loadLog={loadLog} />
       )}
     </div>
@@ -195,13 +380,16 @@ export function SessionViewer({
 // ── Tabbed content (used both as compact strip and full view) ──
 
 function SessionTabs({
-  tab, setTab, events, log, session, loadEvents, loadLog, compact,
+  sessionId, tab, setTab, events, log, session, evidence, loadSupervision, loadEvents, loadLog, compact,
 }: {
+  sessionId: string
   tab: "summary" | "timeline" | "log"
   setTab: (t: "summary" | "timeline" | "log") => void
   events: SessionEvent[] | null
   log: string | null
   session: SessionData
+  evidence: SessionEvidence[]
+  loadSupervision: () => Promise<void>
   loadEvents: () => void
   loadLog: () => void
   compact?: boolean
@@ -222,7 +410,7 @@ function SessionTabs({
               tab === t ? "border-blue-500 text-white" : "border-transparent text-gray-500 hover:text-gray-300"
             }`}
           >
-            {t.charAt(0).toUpperCase() + t.slice(1)}
+            {t === "log" ? "Raw log" : t.charAt(0).toUpperCase() + t.slice(1)}
           </button>
         ))}
       </div>
@@ -230,8 +418,10 @@ function SessionTabs({
       {/* Content */}
       <div className={`overflow-y-auto px-3 py-2 ${compact ? "max-h-32" : "flex-1 min-h-0"}`}>
         {tab === "summary" && (
-          <div className="text-xs text-gray-400 whitespace-pre-wrap">
-            {session.output_summary || (["running", "waiting", "pending"].includes(session.status) ? "Session in progress..." : "No summary available.")}
+          <div className="mx-auto max-w-4xl space-y-5 py-2 text-xs">
+            <section><div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Requested outcome</div><div className="whitespace-pre-wrap text-gray-200">{session.goal || session.description}</div></section>
+            <section className="rounded-lg border border-gray-700 bg-gray-900 p-4"><div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-gray-500">Result</div><MarkdownText content={session.output_summary || (["running", "waiting", "pending"].includes(session.status) ? "Session in progress…" : "The agent did not record a concise outcome. Review the evidence below; use the raw log only for debugging.")} /></section>
+            <EvidenceSummary sessionId={sessionId} evidence={evidence} reviewMode={session.review_mode} onChanged={loadSupervision} />
           </div>
         )}
 
@@ -260,13 +450,72 @@ function SessionTabs({
         )}
 
         {tab === "log" && (
-          <pre className="text-[10px] text-gray-400 whitespace-pre-wrap font-mono bg-gray-950 rounded p-3">
-            {log === null ? "Loading..." : log}
-          </pre>
+          <div className="space-y-2"><p className="text-[10px] text-gray-500">Raw agent transcript for debugging. The readable outcome is under Summary.</p><pre className="whitespace-pre-wrap rounded bg-gray-950 p-3 font-mono text-[10px] text-gray-400">{log === null ? "Loading..." : log}</pre></div>
         )}
       </div>
     </div>
   )
+}
+
+function MarkdownText({ content }: { content: string }) {
+  return <div className="space-y-2 text-sm leading-6 text-gray-300"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+    h1: ({ children }) => <h3 className="text-base font-semibold text-gray-100">{children}</h3>,
+    h2: ({ children }) => <h3 className="text-sm font-semibold text-gray-100">{children}</h3>,
+    h3: ({ children }) => <h4 className="font-medium text-gray-100">{children}</h4>,
+    ul: ({ children }) => <ul className="ml-5 list-disc space-y-1">{children}</ul>,
+    ol: ({ children }) => <ol className="ml-5 list-decimal space-y-1">{children}</ol>,
+    pre: ({ children }) => <pre className="overflow-x-auto rounded bg-gray-950 p-3 text-xs">{children}</pre>,
+    code: ({ children }) => <code className="rounded bg-gray-950 px-1 py-0.5 font-mono text-xs text-gray-300">{children}</code>,
+    p: ({ children }) => <p>{children}</p>,
+  }}>{content}</ReactMarkdown></div>
+}
+
+function ReviewStep({ number, done, label, detail }: { number: number; done: boolean; label: string; detail: string }) {
+  return <div className={`rounded-lg border p-2 ${done ? "border-green-900 bg-green-950/20" : "border-gray-700 bg-gray-900"}`}><div className="flex items-center gap-2"><span className={`flex h-5 w-5 items-center justify-center rounded-full ${done ? "bg-green-700 text-white" : "bg-gray-700 text-gray-300"}`}>{done ? "✓" : number}</span><span className={done ? "text-green-300" : "text-gray-200"}>{label}</span></div><div className="mt-1 pl-7 text-gray-500">{detail}</div></div>
+}
+
+function EvidenceSummary({ sessionId, evidence, reviewMode, onChanged }: { sessionId: string; evidence: SessionEvidence[]; reviewMode: "advisory" | "implementation"; onChanged: () => Promise<void> }) {
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingTitle, setEditingTitle] = useState("")
+  const [editingDescription, setEditingDescription] = useState("")
+  if (reviewMode === "advisory") return <section className="rounded-lg border border-blue-900/60 bg-blue-950/10 p-4 text-gray-400"><div className="font-medium text-blue-300">Analysis-only outcome</div><div className="mt-1 text-[10px]">No files changed by this Session, so Git and test evidence are not required.</div></section>
+  if (evidence.length === 0) return <section className="rounded-lg border border-dashed border-gray-700 p-4 text-gray-500"><div className="font-medium text-gray-400">Independent evidence required</div><div className="mt-1 text-[10px]">Capture Git changes and run verification before completing this Session.</div></section>
+  return <section><div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-gray-500">Evidence</div><div className="grid gap-2 md:grid-cols-2">{evidence.map((item) => {
+    const isVerification = item.evidence_type === "verification"
+    const isMedia = item.evidence_type === "media"
+    const passed = isVerification && Number(item.data.exit_code) === 0
+    const detail = isVerification
+      ? `${String(item.data.command || "Verification")} · ${passed ? "Passed" : `Failed (exit ${String(item.data.exit_code)})`}`
+      : isMedia ? `${String(item.data.filename || "Product evidence")} · ${formatBytes(Number(item.data.size || 0))}`
+      : String(item.data.diff_stat || item.data.status || "Git working tree captured")
+    const openMedia = async () => { const blob = await BLOB(`/sessions/${sessionId}/evidence/${item.id}/file`); window.open(URL.createObjectURL(blob), "_blank", "noopener,noreferrer") }
+    const saveEvidence = async () => { if (!editingTitle.trim()) return; await PATCH(`/sessions/${sessionId}/evidence/${item.id}`, { title: editingTitle.trim(), note: editingDescription.trim() }); setEditingId(null); await onChanged() }
+    const remove = async () => { if (!window.confirm(`Delete evidence “${item.title}”?`)) return; await DELETE(`/sessions/${sessionId}/evidence/${item.id}`); await onChanged() }
+    return <div key={item.id} className="rounded-lg border border-gray-700 bg-gray-900 p-3">
+      {editingId === item.id ? (
+        <div className="space-y-2">
+          <label className="block text-[10px] text-gray-500">Display name<input autoFocus value={editingTitle} onChange={(event) => setEditingTitle(event.target.value)} className="mt-1 w-full rounded border border-gray-600 bg-gray-950 px-2 py-1 text-xs text-gray-200" /></label>
+          <label className="block text-[10px] text-gray-500">Description<textarea value={editingDescription} onChange={(event) => setEditingDescription(event.target.value)} placeholder="What does this evidence demonstrate?" rows={3} className="mt-1 w-full resize-y rounded border border-gray-600 bg-gray-950 px-2 py-1 text-xs text-gray-200" /></label>
+          <div className="flex justify-end gap-3"><button onClick={() => setEditingId(null)} className="text-[10px] text-gray-500">Cancel</button><button onClick={() => { void saveEvidence() }} className="text-[10px] text-green-400">Save evidence</button></div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${isVerification ? passed ? "bg-green-500" : "bg-red-500" : isMedia ? "bg-purple-500" : "bg-blue-500"}`} /><span className="font-medium text-gray-200">{item.title}</span>{isMedia && <button onClick={() => { void openMedia() }} className="ml-auto text-[10px] text-blue-400">Open</button>}{isMedia && <button onClick={() => { setEditingId(item.id); setEditingTitle(item.title); setEditingDescription(String(item.data.note || "")) }} className="text-[10px] text-gray-400">Edit</button>}<button onClick={() => { void remove() }} className={`${isMedia ? "" : "ml-auto"} text-[10px] text-red-500`}>Delete</button></div>
+      )}
+      {isMedia && editingId !== item.id && Boolean(item.data.note) && <p className="mt-2 whitespace-pre-wrap text-xs text-gray-400">{String(item.data.note)}</p>}
+      <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-gray-500">{detail}</pre>
+    </div>
+  })}</div></section>
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+function apiErrorDetail(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : String(error || "")
+  return message.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] || message.replace(/^API \d+:\s*/, "") || fallback
 }
 
 // ── Helpers ──
@@ -288,4 +537,8 @@ function formatDuration(start: Date, end: Date): string {
   const mins = Math.floor(secs / 60)
   if (mins < 60) return `${mins}m ${secs % 60}s`
   return `${Math.floor(mins / 60)}h ${mins % 60}m`
+}
+
+function statusLabel(status: SessionStatusValue): string {
+  return ({ pending: "Queued", running: "Working", waiting: "Needs you", verifying: "Ready for review", done: "Completed", completed: "Completed", failed: "Failed", cancelled: "Cancelled" })[status]
 }

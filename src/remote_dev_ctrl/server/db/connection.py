@@ -105,3 +105,5 @@ def close_databases():
     if _db_manager:
         _db_manager.close_all()
         _db_manager = None
+    from .repositories import reset_repository_singletons
+    reset_repository_singletons()

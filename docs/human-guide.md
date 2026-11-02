@@ -246,6 +246,13 @@ project settings
 2. **Server fallback** — Complex requests go to the AI orchestrator which can execute actions server-side
 3. **Action callbacks** — The orchestrator can trigger UI actions (open terminal, switch tabs, etc.)
 
+### HomeBase and Nodes
+
+- **HomeBase** is the machine running the RDC server (repos, agents, terminals).
+- **Nodes** are paired phones, tablets, or browsers that supervise HomeBase remotely.
+- Say or type **`Brief me`** for a deterministic status summary (running sessions, what needs you, recommended next step) without waiting on an LLM for exact phrases.
+- See [Hike Demo](hike-demo.md) for the full away-from-desk loop.
+
 ### Voice Control (Kiosk/Mobile)
 
 Tap the microphone button to dictate. Voice input is routed to:

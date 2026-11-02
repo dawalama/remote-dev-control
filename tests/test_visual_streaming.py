@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Test script for Visual Streaming / VNC feature."""
 
+__test__ = False  # Manual Docker smoke script, not a hermetic pytest module.
+
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from ai_knowledge.server.vnc import get_vnc_manager, VNCStatus
+from remote_dev_ctrl.server.vnc import get_vnc_manager, VNCStatus
 
 
 def test_vnc_manager():
@@ -76,7 +78,7 @@ def test_api_endpoints():
     print("\nTesting API endpoint registration...")
     
     try:
-        from ai_knowledge.server.app import app
+        from remote_dev_ctrl.server.app import app
         
         routes = [r.path for r in app.routes]
         
@@ -107,7 +109,7 @@ def test_dashboard_updates():
     """Test that dashboard includes VNC UI elements."""
     print("\nTesting dashboard UI updates...")
     
-    from ai_knowledge.server.dashboard import DASHBOARD_HTML
+    from remote_dev_ctrl.server.dashboard import DASHBOARD_HTML
     
     checks = [
         ("VNC modal", "vnc-modal" in DASHBOARD_HTML),

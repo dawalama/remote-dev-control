@@ -7,6 +7,9 @@ import { ToastContainer } from "@/components/toast"
 import { DesktopLayout } from "@/layouts/desktop"
 import { PairDeviceQR } from "@/features/modals/pair-device"
 import { PairApprovePage } from "@/features/auth/pair-approve"
+import { SessionsHub } from "@/features/sessions/sessions-hub"
+import { SessionWorkspace } from "@/features/sessions/session-workspace"
+import { HomeBaseVoicePanel } from "@/features/voice/homebase-voice-panel"
 
 const MobileLayout = lazy(() =>
   import("@/layouts/mobile").then((m) => ({ default: m.MobileLayout }))
@@ -103,9 +106,14 @@ function LoadingFallback() {
 /** Renders the correct layout based on the ui-store layout setting */
 function LayoutSwitch() {
   const layout = useUIStore((s) => s.layout)
-  if (layout === "mobile") return <MobileLayout />
-  if (layout === "kiosk") return <KioskLayout />
-  return <DesktopLayout />
+  return (
+    <>
+      {layout === "mobile" ? <MobileLayout /> : layout === "kiosk" ? <KioskLayout /> : <DesktopLayout />}
+      <SessionWorkspace />
+      <SessionsHub />
+      <HomeBaseVoicePanel />
+    </>
+  )
 }
 
 /** Router-aware app shell that handles pair-approve outside of AuthGuard */

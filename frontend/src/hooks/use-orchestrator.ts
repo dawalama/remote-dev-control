@@ -1,10 +1,11 @@
 import { useCallback } from "react"
-import { POST } from "@/lib/api"
+import { GET, POST } from "@/lib/api"
 import { getClientId, setClientName } from "@/lib/client-id"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useStateStore } from "@/stores/state-store"
 import { useChannelStore } from "@/stores/channel-store"
+import { briefWorkstreamFilter, orchestratorWorkstreamId, useChatScopeStore } from "@/stores/chat-scope-store"
 import type { TabId } from "@/types"
 
 interface OrchestratorAction {
@@ -29,6 +30,7 @@ interface OrchestratorResult {
   executed?: OrchestratorAction[]
   options?: unknown
   usage?: Record<string, unknown>
+  async?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +84,61 @@ const LAYOUT_ALIASES: Record<string, string> = {
 const THEME_ALIASES: Record<string, string> = {
   default: "default", modern: "modern", brutalist: "brutalist",
   dark: "default", "dark mode": "default",
+}
+
+/** Exact phrases handled by GET /homebase/brief without an LLM call. */
+const BRIEF_TRIGGERS = new Set([
+  "brief me",
+  "status",
+  "what's running",
+  "whats running",
+  "what is running",
+  "what needs me",
+  "what needs attention",
+  "homebase brief",
+  "home base brief",
+])
+
+function normalizeCommandText(input: string): string {
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[.!?,;:]+$/, "")
+    .trim()
+}
+
+async function fetchHomebaseBrief(scopeWorkstreamId?: string | null): Promise<OrchestratorResult> {
+  // Default: whole HomeBase. Only filter when chat scope is pinned (or explicit arg).
+  const filter = scopeWorkstreamId === undefined ? briefWorkstreamFilter() : scopeWorkstreamId
+  const qs = filter ? `?workstream_id=${encodeURIComponent(filter)}` : ""
+  try {
+    const brief = await GET<{
+      spoken_summary?: string
+      recommended_next?: { summary?: string; action?: string }
+      needs_you?: unknown[]
+      active_sessions?: unknown[]
+      scope?: string
+    }>(`/homebase/brief${qs}`)
+    const pinLabel = filter ? " (pinned workstream)" : " (all of HomeBase)"
+    return {
+      response: (brief.spoken_summary || "HomeBase brief unavailable.") + (brief.spoken_summary ? "" : pinLabel),
+      actions: [
+        {
+          action: "brief_homebase",
+          success: true,
+          scope: filter ? "pinned" : "homebase",
+          workstream_id: filter || undefined,
+          recommended_next: brief.recommended_next,
+          needs_you: brief.needs_you,
+          active_sessions: brief.active_sessions,
+        },
+      ],
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to load HomeBase brief"
+    return { response: message, actions: [{ action: "brief_homebase", success: false, error: message }] }
+  }
 }
 
 const COMMANDS: Command[] = [
@@ -280,11 +337,38 @@ const COMMANDS: Command[] = [
     },
   },
   {
+    id: "pin_workstream",
+    triggers: ["pin workstream", "pin this workstream", "pin here", "pin this", "focus workstream", "stay here"],
+    execute: (_rest, ctx) => {
+      const ok = useChatScopeStore.getState().pinActive()
+      if (!ok) {
+        return { response: "Select a workstream first, then say pin here.", actions: [] }
+      }
+      const id = useChatScopeStore.getState().pinnedWorkstreamId
+      const ch = useChannelStore.getState().channels.find((c) => c.id === id)
+      const name = ch?.name?.replace(/^#/, "") || "workstream"
+      ctx.toast(`Pinned: ${name}`, "success")
+      return { response: `Pinned chat scope to ${name}. Brief me and follow-ups prefer this workstream until you unpin.`, actions: [] }
+    },
+  },
+  {
+    id: "unpin_workstream",
+    triggers: [
+      "unpin", "unpin workstream", "unpin here", "homebase scope", "global scope",
+      "all of homebase", "back to homebase", "home base", "scope homebase",
+    ],
+    execute: (_rest, ctx) => {
+      useChatScopeStore.getState().setHomebase()
+      ctx.toast("Scope: HomeBase (all)", "success")
+      return { response: "Chat scope is HomeBase — whole machine. Say pin here to focus a workstream.", actions: [] }
+    },
+  },
+  {
     id: "help",
     triggers: ["help", "what can you do", "commands"],
     execute: (_rest, ctx) => {
       ctx.toast(
-        "Commands: show <tab>, open terminal, new task, open browser, activity, menu, refresh, select <project>",
+        "Commands: brief me, pin here, unpin, show <tab>, open terminal, new task, open browser, activity, menu, refresh",
         "info",
       )
       return { response: "Showing available commands", actions: [] }
@@ -333,6 +417,8 @@ function matchCommand(input: string): { command: Command; rest: string } | null 
  */
 export function useOrchestrator(opts: {
   channel: "desktop" | "mobile"
+  /** Wait for the real reply. Voice uses this so it does not speak the async placeholder. */
+  sync?: boolean
   onOpenTerminal?: (project: string) => void
   onOpenPreview?: (sessionId: string) => void
   onCreateTask?: () => void
@@ -606,6 +692,16 @@ export function useOrchestrator(opts: {
   }, [currentProject, selectProject, setTab, setLayout, setTheme, toggleSidebar, toggleChat, loadProjects, toast, opts])
 
   const send = useCallback(async (message: string, project?: string): Promise<OrchestratorResult | null> => {
+    // Deterministic HomeBase brief — no LLM (hike demo / Away mode)
+    if (BRIEF_TRIGGERS.has(normalizeCommandText(message))) {
+      sendEvent("client_action", {
+        action: "brief_homebase",
+        project: currentProject ?? undefined,
+        status: "ok",
+      })
+      return fetchHomebaseBrief()
+    }
+
     // Try local command parsing first for instant execution
     const localResult = tryLocalCommand(message)
     if (localResult) {
@@ -622,14 +718,14 @@ export function useOrchestrator(opts: {
     const proj = project || (currentProject ?? undefined)
 
     try {
-      const activeChannelId = useChannelStore.getState().activeChannelId
+      const scopeChannelId = orchestratorWorkstreamId(useChannelStore.getState().activeChannelId)
       const result = await POST<OrchestratorResult>("/orchestrator", {
         message,
         channel: opts.channel,
         project: proj,
         client_id: getClientId(),
-        channel_id: activeChannelId || undefined,
-        mode: activeChannelId ? "async" : "sync",
+        channel_id: scopeChannelId || undefined,
+        mode: opts.sync || !scopeChannelId ? "sync" : "async",
       })
 
       // Server returns executed actions in the flattened {action, tab, ...} format
@@ -649,7 +745,7 @@ export function useOrchestrator(opts: {
       toast("Failed to send", "error")
       return null
     }
-  }, [opts.channel, currentProject, executeAction, toast, tryLocalCommand, sendEvent])
+  }, [opts.channel, opts.sync, currentProject, executeAction, toast, tryLocalCommand, sendEvent])
 
   const clearHistory = useCallback(async () => {
     const proj = currentProject ?? undefined

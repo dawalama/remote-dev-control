@@ -5,7 +5,7 @@ import { useUIStore } from "@/stores/ui-store"
 import { AttentionCard } from "@/features/mobile/attention-card"
 import { TerminalsCard } from "@/features/mobile/terminals-card"
 import { ProcessesCard } from "@/features/mobile/processes-card"
-import { SessionsCard } from "@/features/sessions/sessions-card"
+import { SessionsNavButton } from "@/features/sessions/sessions-hub"
 import { ContextsCard } from "@/features/mobile/contexts-card"
 import { DictationCard } from "@/features/mobile/dictation-card"
 import { BrowserCard } from "@/features/mobile/browser-card"
@@ -26,7 +26,6 @@ import { ProjectSettingsModal } from "@/features/modals/project-settings"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { RecordingPlayer } from "@/features/browser/recording-player"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
-import { SessionViewer } from "@/features/sessions/session-viewer"
 import { useChannelStore } from "@/stores/channel-store"
 import { MobileChannelPanel } from "@/features/channels/mobile-channel-panel"
 import { WorkspaceSelectorSheet } from "@/features/channels/mobile-workspace-selector"
@@ -52,8 +51,6 @@ export function MobileLayout() {
   const terminals = useStateStore((s) => s.terminals)
   const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
-  const viewingSessionId = useUIStore((s) => s.viewingSessionId)
-  const setViewingSessionId = useUIStore((s) => s.setViewingSessionId)
 
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
 
@@ -245,6 +242,13 @@ export function MobileLayout() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <SessionsNavButton compact />
+          <span
+            className="text-[10px] text-gray-400 font-medium"
+            title={connected ? "This Node is connected to HomeBase" : "Disconnected from HomeBase"}
+          >
+            {connected ? "HomeBase" : "Offline"}
+          </span>
           <span className="text-[10px] text-gray-500 font-mono" title={getClientId()}>
             {getClientName() || getClientId().slice(0, 8)}
           </span>
@@ -290,7 +294,6 @@ export function MobileLayout() {
           }}
           onPlayRecording={(id) => setPlayingRecording(id)}
         />
-        <SessionsCard onOpenTerminal={(tid) => setTerminalOverlayId(tid)} />
         <ContextsCard />
         <PhoneDictation />
       </div>
@@ -482,15 +485,6 @@ export function MobileLayout() {
           onPlayRecording={(id) => { setBrowserFullscreen(false); setPlayingRecording(id) }}
         />
       )}
-      {viewingSessionId && (
-        <div className="fixed inset-0 z-[140] bg-gray-900 flex flex-col h-app">
-          <SessionViewer
-            sessionId={viewingSessionId}
-            onClose={() => setViewingSessionId(null)}
-          />
-        </div>
-      )}
-
       <FloatingAgentPanel channel="mobile" />
       <GlobalTextInput />
     </div>
