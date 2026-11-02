@@ -9487,11 +9487,18 @@ def _build_synthesized_session_artifact(session, evidence: list[dict], criteria:
     project_text = esc(session.project or "default")
 
     blocker_html = ""
-    if session.blocker:
+    detected_blocker = session.blocker
+    if not detected_blocker and session.output_summary:
+        for line in session.output_summary.splitlines():
+            s_line = line.strip()
+            if re.search(r"(?i)(commit and push are blocked|cannot write to `?\.git`?|blocked:|permission denied|operation not permitted)", s_line):
+                detected_blocker = s_line
+                break
+    if detected_blocker:
         blocker_html = f"""
         <div class="alert alert-danger">
-          <div class="alert-title">Blocker / Attention Required</div>
-          <div>{esc(session.blocker)}</div>
+          <div class="alert-title">Blocker / Action Required</div>
+          <div>{esc(detected_blocker)}</div>
         </div>
         """
 
@@ -9885,6 +9892,256 @@ async def capture_session_git_evidence(session_id: str):
     )
     db.commit()
     return {"id": evidence_id, "evidence_type": "git", "data": data}
+
+
+def _default_commit_message_for_session(session) -> str:
+    raw = (session.goal or session.description or "Update project files").strip().splitlines()[0].strip()
+    raw = re.sub(r"\s+", " ", raw).rstrip(".")
+    if len(raw) > 68:
+        raw = raw[:65].rstrip() + "..."
+    lower = raw.lower()
+    if lower.startswith(("fix", "feat", "chore", "refactor", "docs", "test")):
+        return raw
+    if "bug" in lower or "fix" in lower or "issue" in lower:
+        return f"fix: {raw[0].lower() + raw[1:]}" if raw else "fix: resolve session issues"
+    return f"feat: {raw[0].lower() + raw[1:]}" if raw else "feat: apply session changes"
+
+
+@app.get("/sessions/{session_id}/git-status")
+async def get_session_git_status(session_id: str):
+    """Return live Git status, remote presence, blocker detection, and contextual next-step actions."""
+    from .session_manager import get_session_manager
+
+    sm = get_session_manager()
+    session = sm.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        path = _session_project_path(session.project)
+    except HTTPException:
+        return {"has_git": False, "dirty": False, "changed_files": [], "has_remote": False}
+
+    def inspect_repo() -> dict:
+        if not (path / ".git").exists():
+            return {"has_git": False, "dirty": False, "changed_files": [], "has_remote": False}
+
+        def git(*args: str) -> str:
+            res = subprocess.run(["git", *args], cwd=path, text=True, capture_output=True, timeout=15, check=False)
+            return res.stdout.strip() if res.returncode == 0 else ""
+
+        status_short = git("status", "--short")
+        changed_files = []
+        for line in status_short.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                changed_files.append(parts[1].strip())
+        remotes = git("remote")
+        first_remote = remotes.splitlines()[0].strip() if remotes else ""
+        remote_url = git("remote", "get-url", first_remote) if first_remote else ""
+        # Scrub any embedded credentials from remote URL if present
+        remote_url = re.sub(r"://[^/@]+@", "://", remote_url)
+        branch = git("rev-parse", "--abbrev-ref", "HEAD") or "main"
+        head = git("rev-parse", "--short", "HEAD")
+        diff_stat = git("diff", "--stat", "HEAD")
+        return {
+            "has_git": True,
+            "branch": branch,
+            "head": head,
+            "dirty": bool(status_short),
+            "status": status_short,
+            "changed_files": changed_files,
+            "diff_stat": diff_stat,
+            "has_remote": bool(first_remote),
+            "remote_name": first_remote,
+            "remote_url": remote_url,
+        }
+
+    repo_state = await asyncio.to_thread(inspect_repo)
+    detected_blocker = session.blocker
+    if not detected_blocker and session.output_summary:
+        for line in session.output_summary.splitlines():
+            s_line = line.strip()
+            if re.search(r"(?i)(commit and push are blocked|cannot write to `?\.git`?|blocked:|permission denied|operation not permitted)", s_line):
+                detected_blocker = s_line
+                break
+
+    suggested_steps: list[dict[str, str]] = []
+    dirty = bool(repo_state.get("dirty"))
+    changed_count = len(repo_state.get("changed_files") or [])
+    if dirty:
+        suggested_steps.append({
+            "id": "host_commit",
+            "kind": "host_commit",
+            "label": f"Commit {changed_count} changed file{'s' if changed_count != 1 else ''}",
+            "detail": "Commits directly on the host (bypasses agent .git sandbox restriction)",
+        })
+    project_record = get_project_repo().get(session.project)
+    verif_cmd = ((project_record.config or {}).get("profile", {}) if project_record else {}).get("test_command")
+    if verif_cmd:
+        suggested_steps.append({
+            "id": "run_verify",
+            "kind": "host_verify",
+            "label": f"Run `{verif_cmd}`",
+            "detail": "Run independent verification and attach evidence",
+        })
+    suggested_steps.extend([
+        {
+            "id": "agent_tests",
+            "kind": "agent_prompt",
+            "label": "Add unit tests for fixes",
+            "prompt": "Add targeted unit tests covering the changes and bug fixes made in this session, then run the test suite to verify.",
+        },
+        {
+            "id": "agent_edge_cases",
+            "kind": "agent_prompt",
+            "label": "Audit remaining edge cases",
+            "prompt": "Audit the modified files for any remaining edge cases, regressions, or performance bottlenecks and fix them.",
+        },
+    ])
+
+    return {
+        **repo_state,
+        "suggested_commit_message": _default_commit_message_for_session(session),
+        "detected_blocker": detected_blocker,
+        "suggested_next_steps": suggested_steps,
+    }
+
+
+class SessionGitCommitRequest(BaseModel):
+    message: str | None = None
+    push: bool = False
+
+
+@app.post("/sessions/{session_id}/git-commit")
+async def commit_session_git_changes(session_id: str, body: SessionGitCommitRequest | None = None):
+    """Commit working tree changes for a session directly on the host and record Git evidence."""
+    from .session_manager import get_session_manager
+
+    sm = get_session_manager()
+    session = sm.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    path = _session_project_path(session.project)
+    if not (path / ".git").exists():
+        raise HTTPException(status_code=409, detail="Project is not a Git repository")
+
+    commit_msg = ((body.message if body else None) or "").strip() or _default_commit_message_for_session(session)
+    # Enforce no-coauthor-trailer rule
+    commit_msg = "\n".join(
+        line for line in commit_msg.splitlines() if not line.strip().lower().startswith("co-authored-by:")
+    ).strip()
+    want_push = bool(body and body.push)
+
+    def perform_commit() -> dict:
+        status_res = subprocess.run(
+            ["git", "status", "--short"], cwd=path, text=True, capture_output=True, timeout=15, check=False
+        )
+        if not status_res.stdout.strip():
+            raise ValueError("Working tree is already clean — nothing to commit")
+
+        changed_files = [
+            line.strip().split(None, 1)[1].strip()
+            for line in status_res.stdout.splitlines()
+            if len(line.strip().split(None, 1)) == 2
+        ]
+        diff_stat_res = subprocess.run(
+            ["git", "diff", "--stat", "HEAD"], cwd=path, text=True, capture_output=True, timeout=15, check=False
+        )
+
+        add_res = subprocess.run(
+            ["git", "add", "-A"], cwd=path, text=True, capture_output=True, timeout=30, check=False
+        )
+        if add_res.returncode != 0:
+            raise RuntimeError(add_res.stderr.strip() or "git add failed")
+
+        commit_res = subprocess.run(
+            ["git", "commit", "-m", commit_msg],
+            cwd=path, text=True, capture_output=True, timeout=30, check=False,
+        )
+        if commit_res.returncode != 0:
+            raise RuntimeError(commit_res.stderr.strip() or commit_res.stdout.strip() or "git commit failed")
+
+        head_res = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=path, text=True, capture_output=True, timeout=15, check=False
+        )
+        head_sha = head_res.stdout.strip()
+        branch_res = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=path, text=True, capture_output=True, timeout=15, check=False
+        )
+        branch = branch_res.stdout.strip() or "main"
+
+        pushed = False
+        push_detail = ""
+        if want_push:
+            remotes_res = subprocess.run(
+                ["git", "remote"], cwd=path, text=True, capture_output=True, timeout=10, check=False
+            )
+            remotes = [r.strip() for r in remotes_res.stdout.splitlines() if r.strip()]
+            if not remotes:
+                push_detail = "Committed locally (no git remote is configured on this repository)."
+            else:
+                push_res = subprocess.run(
+                    ["git", "push", remotes[0], branch],
+                    cwd=path, text=True, capture_output=True, timeout=60, check=False,
+                )
+                if push_res.returncode == 0:
+                    pushed = True
+                    push_detail = f"Pushed to {remotes[0]}/{branch}."
+                else:
+                    push_detail = f"Committed locally, but push failed: {(push_res.stderr or push_res.stdout).strip()[:240]}"
+
+        return {
+            "head": head_sha,
+            "short_head": head_sha[:8],
+            "branch": branch,
+            "message": commit_msg,
+            "changed_files": changed_files,
+            "diff_stat": diff_stat_res.stdout.strip() or f"{len(changed_files)} files committed",
+            "status": f"Committed {head_sha[:8]}: {commit_msg}",
+            "pushed": pushed,
+            "push_detail": push_detail,
+        }
+
+    try:
+        result = await asyncio.to_thread(perform_commit)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Automatically record Git evidence on the session
+    evidence_id = secrets.token_hex(16)
+    db = sm._db()
+    db.execute(
+        """INSERT INTO session_evidence
+           (id, session_id, evidence_type, title, data, source)
+           VALUES (?, ?, 'git', ?, ?, 'rdc')""",
+        (
+            evidence_id,
+            session_id,
+            f"Committed {result['short_head']} ({len(result['changed_files'])} files)",
+            json.dumps(result),
+        ),
+    )
+    db.commit()
+
+    # Clear any stale .git write blocker from output_summary and record the commit note
+    if session.output_summary:
+        cleaned_lines = [
+            line for line in session.output_summary.splitlines()
+            if not re.search(r"(?i)(commit and push are blocked|enable git write access)", line)
+        ]
+        commit_note = f"✓ Host commit `{result['short_head']}` on `{result['branch']}`: {commit_msg}"
+        if result.get("push_detail"):
+            commit_note += f" ({result['push_detail']})"
+        cleaned_lines.append("")
+        cleaned_lines.append(commit_note)
+        session.output_summary = "\n".join(cleaned_lines).strip()
+    session.blocker = None
+    sm._persist(session)
+    sm.log_event(session, "session.git_committed", {"head": result["short_head"], "message": commit_msg, "pushed": result["pushed"]})
+
+    return {"success": True, "evidence_id": evidence_id, **result}
 
 
 class VerificationRequest(BaseModel):

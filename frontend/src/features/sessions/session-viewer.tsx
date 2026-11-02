@@ -33,6 +33,30 @@ interface SessionEvidence { id: string; evidence_type: string; title: string; da
 interface SessionCriterion { criterion_index: number; criterion: string; status: "unevaluated" | "passed" | "failed" | "waived" }
 interface SessionApproval { id: string; summary: string; risk_level: string; status: "pending" | "approved" | "rejected" }
 
+interface SuggestedNextStep {
+  id: string
+  kind: "host_commit" | "host_verify" | "agent_prompt"
+  label: string
+  detail?: string
+  prompt?: string
+}
+
+interface SessionGitStatus {
+  has_git: boolean
+  branch?: string
+  head?: string
+  dirty: boolean
+  status?: string
+  changed_files: string[]
+  diff_stat?: string
+  has_remote: boolean
+  remote_name?: string
+  remote_url?: string
+  suggested_commit_message?: string
+  detected_blocker?: string | null
+  suggested_next_steps?: SuggestedNextStep[]
+}
+
 interface SessionEvent {
   id: string
   timestamp: string
@@ -41,8 +65,8 @@ interface SessionEvent {
 }
 
 /**
- * Full-width session viewer — replaces the terminal area in the main workspace.
- * Shows terminal (if active) + session details (summary, timeline, log).
+ * Full-width session viewer — Artifact-first layout with 1-click host Git/Verification actions
+ * and contextual next-step suggestions.
  */
 export function SessionViewer({
   sessionId,
@@ -54,6 +78,11 @@ export function SessionViewer({
   const [session, setSession] = useState<SessionData | null>(null)
   const [tab, setTab] = useState<"artifact" | "summary" | "timeline" | "log">("artifact")
   const [artifact, setArtifact] = useState<{ source: string; html: string } | null>(null)
+  const [gitStatus, setGitStatus] = useState<SessionGitStatus | null>(null)
+  const [showCommitBox, setShowCommitBox] = useState(false)
+  const [commitMessage, setCommitMessage] = useState("")
+  const [committingGit, setCommittingGit] = useState(false)
+  const [showReviewTools, setShowReviewTools] = useState(false)
   const [showTerminal, setShowTerminal] = useState(false)
   const [events, setEvents] = useState<SessionEvent[] | null>(null)
   const [log, setLog] = useState<string | null>(null)
@@ -91,9 +120,10 @@ export function SessionViewer({
   const layout = useUIStore((s) => s.layout)
 
   useMountEffect(() => {
-    loadSession()
-    loadSupervision()
-    loadArtifact()
+    void loadSession()
+    void loadSupervision()
+    void loadArtifact()
+    void loadGitStatus()
     void GET<{ providers: Array<{ id: string; label: string; ready: boolean }> }>("/settings/agent-providers")
       .then((res) => {
         if (res?.providers?.length) {
@@ -107,6 +137,7 @@ export function SessionViewer({
       void loadSession()
       void loadSupervision()
       void loadArtifact()
+      void loadGitStatus()
       void loadEvents()
       void loadLog()
     }, 5000)
@@ -117,6 +148,16 @@ export function SessionViewer({
     try {
       const data = await GET<{ source: string; html: string }>(`/sessions/${sessionId}/artifact`)
       if (data?.html) setArtifact(data)
+    } catch { /* ignore */ }
+  }
+
+  const loadGitStatus = async () => {
+    try {
+      const data = await GET<SessionGitStatus>(`/sessions/${sessionId}/git-status`)
+      if (data) {
+        setGitStatus(data)
+        setCommitMessage((prev) => prev || data.suggested_commit_message || "")
+      }
     } catch { /* ignore */ }
   }
 
@@ -156,15 +197,38 @@ export function SessionViewer({
     } catch { setLog("Failed to load log.") }
   }
 
+  const handleHostCommit = async (push = false) => {
+    setCommittingGit(true)
+    try {
+      const res = await POST<{ short_head: string; branch: string; pushed: boolean; push_detail?: string }>(
+        `/sessions/${sessionId}/git-commit`,
+        { message: commitMessage.trim() || gitStatus?.suggested_commit_message || undefined, push },
+      )
+      toast(
+        res?.push_detail
+          ? `Committed ${res.short_head} · ${res.push_detail}`
+          : `Committed ${res?.short_head || "changes"} on ${res?.branch || "branch"}`,
+        "success",
+      )
+      setShowCommitBox(false)
+      await Promise.all([loadSession(), loadSupervision(), loadArtifact(), loadGitStatus()])
+    } catch (error) {
+      toast(apiErrorDetail(error, "Host commit failed"), "error")
+    }
+    setCommittingGit(false)
+  }
+
   const markDone = async (overrideInput: unknown = false) => {
     const override = overrideInput === true
     if (override) setAcceptingOverride(true)
     try {
       await POST(`/sessions/${sessionId}/complete`, override ? { override: true, note: acceptanceOverrideNote.trim() } : undefined)
       toast(override ? "Session accepted with exception" : "Session completed", "success")
-      loadSession()
-      await loadSupervision()
-    } catch (error) { toast(error instanceof Error ? error.message : "Could not complete Session", "error") }
+      setShowAcceptanceOverride(false)
+      await Promise.all([loadSession(), loadSupervision(), loadArtifact()])
+    } catch (error) {
+      toast(apiErrorDetail(error, "Could not complete Session"), "error")
+    }
     if (override) setAcceptingOverride(false)
   }
 
@@ -172,13 +236,10 @@ export function SessionViewer({
     try {
       await POST(`/sessions/${sessionId}/retry`, { provider: retryProvider })
       toast(session?.status === "pending" ? "Session started" : "Session restarted", "success")
-      await loadSession()
-      await loadSupervision()
-      await loadArtifact()
+      await Promise.all([loadSession(), loadSupervision(), loadArtifact(), loadGitStatus()])
     } catch (error) {
       toast(apiErrorDetail(error, "Retry failed"), "error")
-      await loadSession()
-      await loadArtifact()
+      await Promise.all([loadSession(), loadArtifact()])
     }
   }
 
@@ -204,13 +265,16 @@ export function SessionViewer({
       await POST(`/sessions/${sessionId}/cancel`)
       setConfirmCancel(false)
       toast("Session cancelled", "success")
-      loadSession()
+      await loadSession()
     } catch { toast("Cancellation failed", "error") }
   }
 
   const captureGit = async () => {
-    try { await POST(`/sessions/${sessionId}/evidence/git`); await loadSupervision(); toast("Git evidence captured", "success") }
-    catch { toast("Git evidence failed", "error") }
+    try {
+      await POST(`/sessions/${sessionId}/evidence/git`)
+      await Promise.all([loadSupervision(), loadArtifact(), loadGitStatus()])
+      toast("Git evidence captured", "success")
+    } catch { toast("Git evidence failed", "error") }
   }
 
   const verify = async () => {
@@ -218,12 +282,12 @@ export function SessionViewer({
     setVerificationError(null)
     try {
       await POST(`/sessions/${sessionId}/evidence/verification`, { command: verificationCommand.trim() || undefined })
-      await loadSupervision()
+      await Promise.all([loadSupervision(), loadArtifact()])
       toast("Project checks recorded", "success")
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Project checks could not run"
-      const detail = message.match(/"detail"\s*:\s*"([^"]+)"/)?.[1]
-      setVerificationError(detail || message.replace(/^API \d+:\s*/, ""))
+      const detail = apiErrorDetail(error, "Project checks could not run")
+      setVerificationError(detail)
+      toast(detail, "error")
     }
     setVerifyingEvidence(false)
   }
@@ -237,7 +301,7 @@ export function SessionViewer({
       form.append("note", productEvidenceNote.trim())
       await api(`/sessions/${sessionId}/evidence/media`, { method: "POST", body: form })
       setProductEvidenceNote("")
-      await loadSupervision()
+      await Promise.all([loadSupervision(), loadArtifact()])
       toast("Product evidence attached", "success")
     } catch (error) { toast(error instanceof Error ? error.message : "Evidence upload failed", "error") }
     setUploadingEvidence(false)
@@ -247,7 +311,7 @@ export function SessionViewer({
   const decideCriterion = async (criterion: SessionCriterion, status: "passed" | "failed" | "waived") => {
     try {
       await PUT(`/sessions/${sessionId}/criteria/${criterion.criterion_index}`, { status, evidence_ids: evidence.map((item) => item.id) })
-      await loadSupervision()
+      await Promise.all([loadSupervision(), loadArtifact()])
     } catch { toast("Criterion update failed", "error") }
   }
 
@@ -287,19 +351,23 @@ export function SessionViewer({
     setContinuing(false)
   }
 
-  const instructCurrentSession = async () => {
-    if (!nextInstruction.trim()) return
+  const sendInstructionText = async (text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
     setSendingInstruction(true)
     try {
-      await POST(`/sessions/${sessionId}/instructions`, { instruction: nextInstruction.trim() })
+      await POST(`/sessions/${sessionId}/instructions`, { instruction: trimmed })
       setNextInstruction("")
-      toast("Instruction added; the agent is continuing in this Session", "success")
-      await loadSession()
-      await loadSupervision()
+      toast("Agent is continuing in this Session", "success")
+      await Promise.all([loadSession(), loadSupervision(), loadArtifact()])
     } catch (error) {
       toast(apiErrorDetail(error, "Could not continue this Session"), "error")
     }
     setSendingInstruction(false)
+  }
+
+  const instructCurrentSession = async () => {
+    await sendInstructionText(nextInstruction)
   }
 
   if (!session) {
@@ -318,7 +386,7 @@ export function SessionViewer({
     : session.status === "waiting" ? "bg-yellow-500 animate-pulse"
     : ["done", "completed"].includes(session.status) ? "bg-green-500"
     : session.status === "failed" ? "bg-red-500"
-    : "bg-gray-500"
+    : "bg-purple-400"
 
   const duration = session.completed_at
     ? formatDuration(new Date(session.created_at), new Date(session.completed_at))
@@ -329,21 +397,24 @@ export function SessionViewer({
   const needsImplementationEvidence = session.review_mode === "implementation"
   const canComplete = criteriaResolved && (!needsImplementationEvidence || (hasGitEvidence && hasPassingVerification))
   const canRestoreReview = session.status === "cancelled" && Boolean(session.output_summary)
-  const defaultContinuationGoal = needsImplementationEvidence
-    ? ""
-    : "Implement the approved outcome from this analysis. Make the changes, run relevant verification, and summarize the delivered result."
   const runnableVerificationCommand = verificationCommand.trim() || session.verification_command
+  const activeBlocker = session.blocker || gitStatus?.detected_blocker || null
+  const changedCount = gitStatus?.changed_files?.length ?? 0
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 rounded-lg overflow-hidden">
-      {/* Session header bar */}
+    <div className="flex-1 flex flex-col min-h-0 rounded-lg overflow-hidden bg-gray-950">
+      {/* 1. Compact Session Header Bar */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 border-b border-gray-700 flex-shrink-0">
         <button onClick={onClose} className="text-xs text-blue-400 hover:text-blue-300 flex-shrink-0">← Sessions</button>
         <span className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor}`} />
-        <span className="text-xs text-gray-200 truncate flex-1" title={session.description}>{shortDesc}</span>
-        <span className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] text-gray-300 flex-shrink-0">{statusLabel(session.status)}</span>
-        <span className="text-[10px] text-gray-500 flex-shrink-0">{session.project}</span>
-        <span className="text-[10px] text-gray-600 flex-shrink-0">{duration}</span>
+        <span className="text-xs font-medium text-gray-100 truncate flex-1" title={session.description}>{shortDesc}</span>
+        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium flex-shrink-0 ${
+          activeBlocker ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" : "bg-gray-700 text-gray-300"
+        }`}>
+          {activeBlocker && session.status === "verifying" ? "Needs action" : statusLabel(session.status)}
+        </span>
+        <span className="text-[10px] text-gray-400 flex-shrink-0">{session.project}</span>
+        <span className="text-[10px] text-gray-500 flex-shrink-0">{duration}</span>
         {terminalId && (
           <button
             onClick={() => setShowTerminal((v) => !v)}
@@ -357,27 +428,309 @@ export function SessionViewer({
             &gt;_ {showTerminal ? "Hide Terminal" : "Live Terminal"}
           </button>
         )}
-        {["running", "waiting"].includes(session.status) && session.control_owner !== "human" && <button onClick={takeControl} className="rounded bg-yellow-600/20 px-2 py-0.5 text-[10px] text-yellow-300">Take control</button>}
+        {["running", "waiting"].includes(session.status) && session.control_owner !== "human" && (
+          <button onClick={takeControl} className="rounded bg-yellow-600/20 px-2 py-0.5 text-[10px] text-yellow-300">Take control</button>
+        )}
         {session.status === "pending" && (
           <button onClick={retry} className="text-[10px] px-2 py-0.5 rounded bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/30 flex-shrink-0">
             Start
           </button>
         )}
-        {["failed", "cancelled"].includes(session.status) && (canRestoreReview ? <button onClick={restoreReview} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Restore review</button> : <><select value={retryProvider} onChange={(event) => setRetryProvider(event.target.value)} className="rounded border border-gray-600 bg-gray-900 px-2 py-1 text-[10px] text-gray-200"><option value="orchestrated">Configured preference</option>{providerOptions.map((p) => <option key={p.id} value={p.id}>{p.label}{p.ready === true ? " (Ready)" : p.ready === false ? " (Setup)" : ""}</option>)}</select><button onClick={retry} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Run again</button></>)}
-        <div className="relative"><button onClick={() => setShowMoreActions((value) => !value)} className="rounded px-2 py-1 text-sm text-gray-500 hover:bg-gray-700 hover:text-gray-200" aria-label="More session actions">•••</button>{showMoreActions && <div className="absolute right-0 top-full z-20 mt-1 min-w-32 rounded border border-gray-700 bg-gray-800 p-1 shadow-xl">{isOpen && <button onClick={() => { setShowMoreActions(false); setConfirmCancel(true) }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">{session.status === "pending" ? "Cancel session" : "Stop session"}</button>}{!isOpen && <button onClick={async () => { try { const { DELETE: DEL } = await import("@/lib/api"); await DEL(`/sessions/${sessionId}`); toast("Session deleted", "success"); onClose() } catch { toast("Delete failed", "error") } }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">Delete session</button>}</div>}</div>
+        {["failed", "cancelled"].includes(session.status) && (
+          canRestoreReview ? (
+            <button onClick={restoreReview} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Restore review</button>
+          ) : (
+            <>
+              <select value={retryProvider} onChange={(event) => setRetryProvider(event.target.value)} className="rounded border border-gray-600 bg-gray-900 px-2 py-1 text-[10px] text-gray-200">
+                <option value="orchestrated">Configured preference</option>
+                {providerOptions.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}{p.ready === true ? " (Ready)" : p.ready === false ? " (Setup)" : ""}</option>
+                ))}
+              </select>
+              <button onClick={retry} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Run again</button>
+            </>
+          )
+        )}
+        <div className="relative">
+          <button onClick={() => setShowMoreActions((value) => !value)} className="rounded px-2 py-1 text-sm text-gray-500 hover:bg-gray-700 hover:text-gray-200" aria-label="More session actions">•••</button>
+          {showMoreActions && (
+            <div className="absolute right-0 top-full z-20 mt-1 min-w-36 rounded border border-gray-700 bg-gray-800 p-1 shadow-xl">
+              {isOpen && (
+                <button onClick={() => { setShowMoreActions(false); setConfirmCancel(true) }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">
+                  {session.status === "pending" ? "Cancel session" : "Stop session"}
+                </button>
+              )}
+              {!isOpen && (
+                <button onClick={async () => { try { await DELETE(`/sessions/${sessionId}`); toast("Session deleted", "success"); onClose() } catch { toast("Delete failed", "error") } }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">
+                  Delete session
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
-      {confirmCancel && <div className="flex items-center justify-end gap-2 border-b border-red-900 bg-red-950/40 px-3 py-2 text-xs"><span className="mr-auto text-red-200">{session.status === "pending" ? "Cancel this queued session?" : "Stop this session? It cannot currently be resumed."}</span><button onClick={() => setConfirmCancel(false)} className="rounded border border-gray-600 px-2 py-1">Go back</button><button onClick={cancel} className="rounded bg-red-700 px-2 py-1 text-white">{session.status === "pending" ? "Cancel session" : "Stop session"}</button></div>}
-      {session.status === "failed" && <div className="border-b border-red-900 bg-red-950/20 px-3 py-2 text-xs"><span className="font-medium text-red-300">Session failed.</span><span className="ml-2 text-gray-400">{session.blocker || session.output_summary || "Open the log for details, then retry when ready."}</span></div>}
-      {isOpen && session.control_owner === "human" && <div className="flex items-center gap-2 border-b border-yellow-900 bg-yellow-950/30 px-3 py-2"><span className="text-[10px] text-yellow-200">You have control</span><input value={guidance} onChange={(event) => setGuidance(event.target.value)} placeholder="Optional guidance before returning control" className="min-w-52 flex-1 rounded border border-yellow-800 bg-gray-950 px-2 py-1 text-[10px]" /><button onClick={returnControl} className="rounded bg-green-700 px-2 py-1 text-[10px] text-white">Return control</button></div>}
-      {approvals.some((approval) => approval.status === "pending") && <div className="space-y-2 border-b border-yellow-900 bg-yellow-950/20 p-3"><div className="text-xs font-medium text-yellow-300">Needs your decision</div>{approvals.filter((approval) => approval.status === "pending").map((approval) => <div key={approval.id} className="flex items-center gap-2 rounded border border-yellow-800 p-2 text-xs"><span className="mr-auto text-gray-200">{approval.summary}</span><button onClick={() => decideApproval(approval, "approved")} className="rounded bg-green-700 px-2 py-1 text-[10px]">Approve</button><button onClick={() => decideApproval(approval, "rejected")} className="rounded bg-red-700 px-2 py-1 text-[10px]">Reject</button></div>)}</div>}
-      {session.status === "verifying" && needsImplementationEvidence && <div className="border-b border-gray-700 bg-gray-950/40 px-3 py-3"><div className="mb-2 text-xs font-medium text-gray-200">Complete this review</div><div className="grid gap-2 text-[10px] sm:grid-cols-3"><ReviewStep number={1} done={hasGitEvidence} label="Capture changes" detail={hasGitEvidence ? "Git evidence captured" : "Open Verification details and capture Git evidence"} /><ReviewStep number={2} done={hasPassingVerification} label="Verify independently" detail={hasPassingVerification ? "Verification passed" : "Run the project verification command"} /><ReviewStep number={3} done={criteriaResolved} label="Accept the outcome" detail={criteriaResolved ? "All criteria resolved" : `${criteria.filter((item) => !["passed", "waived"].includes(item.status)).length} criteria need review`} /></div></div>}
-      {session.status === "verifying" && <div className="flex flex-wrap items-end gap-2 border-b border-gray-700 bg-gray-900 px-3 py-2"><label className="min-w-52 flex-1 text-[10px] text-gray-500">Product evidence note <span className="text-gray-700">(optional)</span><input value={productEvidenceNote} onChange={(event) => setProductEvidenceNote(event.target.value)} placeholder="What does this screenshot or video demonstrate?" className="mt-1 w-full rounded border border-gray-600 bg-gray-950 px-2 py-1.5 text-[10px] text-gray-200" /></label><input ref={evidenceInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm,video/quicktime" className="hidden" onChange={(event) => { void attachProductEvidence(event.target.files?.[0]) }} /><button disabled={uploadingEvidence} onClick={() => evidenceInputRef.current?.click()} className="rounded border border-purple-600 px-3 py-1.5 text-[10px] text-purple-300 disabled:opacity-50">{uploadingEvidence ? "Uploading…" : "Attach screenshot or video"}</button></div>}
-      {["verifying", "completed", "done", "failed", "cancelled"].includes(session.status) && <div className="border-b border-gray-700 bg-gray-900 px-3 py-3"><label className="block text-[10px] font-medium uppercase tracking-wide text-gray-500">Tell the agent what to do next<div className="mt-2 flex gap-2"><textarea rows={2} value={nextInstruction} onChange={(event) => setNextInstruction(event.target.value)} placeholder="For example: Go ahead and commit these changes, then request approval before pushing." className="min-w-0 flex-1 resize-y rounded border border-gray-600 bg-gray-950 px-3 py-2 text-xs normal-case tracking-normal text-gray-200" /><button disabled={sendingInstruction || !nextInstruction.trim()} onClick={() => { void instructCurrentSession() }} className="self-end rounded bg-blue-600 px-3 py-2 text-xs text-white disabled:opacity-50">{sendingInstruction ? "Continuing…" : "Continue Session"}</button></div></label><p className="mt-1 text-[10px] text-gray-600">Keeps the same RDC Session, history, evidence, and goal. Provider context is reconstructed until native resume is available.</p></div>}
-      {session.status === "verifying" && !canComplete && <div className="border-b border-gray-700 bg-gray-950/30 px-3 py-2">{showAcceptanceOverride ? <div className="flex flex-wrap items-end gap-2"><label className="min-w-64 flex-1 text-[10px] text-yellow-300">Reason for accepting with missing review evidence<textarea autoFocus rows={2} value={acceptanceOverrideNote} onChange={(event) => setAcceptanceOverrideNote(event.target.value)} placeholder="Explain the known risk or why the existing evidence is sufficient…" className="mt-1 w-full resize-y rounded border border-yellow-800 bg-gray-950 px-2 py-1.5 text-xs text-gray-200" /></label><button onClick={() => setShowAcceptanceOverride(false)} className="px-2 py-1.5 text-[10px] text-gray-400">Cancel</button><button disabled={acceptingOverride || acceptanceOverrideNote.trim().length < 5} onClick={() => { void markDone(true) }} className="rounded bg-yellow-700 px-3 py-1.5 text-[10px] text-white disabled:opacity-40">{acceptingOverride ? "Accepting…" : "Accept with exception"}</button></div> : <div className="flex items-center justify-between gap-3 text-[10px]"><span className="text-gray-500">Checks and criteria are recommended, but you remain in control.</span><button onClick={() => setShowAcceptanceOverride(true)} className="text-yellow-400">Accept anyway…</button></div>}</div>}
-      {(criteria.length > 0 || session.status === "verifying" || (["completed", "done"].includes(session.status) && session.review_mode === "advisory")) && <div className="space-y-3 border-b border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-200">Review outcome</span><span className="rounded bg-gray-800 px-2 py-0.5 text-[10px] text-gray-400">{needsImplementationEvidence ? "Implementation" : "Analysis only"}</span>{needsImplementationEvidence && <span className="text-[10px] text-gray-500">{evidence.length} evidence item{evidence.length === 1 ? "" : "s"}</span>}{!needsImplementationEvidence && ["completed", "done"].includes(session.status) && (continuation ? <button onClick={() => useUIStore.getState().setViewingSessionId(continuation.id)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">View implementation · {statusLabel(continuation.status)}</button> : <button onClick={() => setShowContinue((value) => !value)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">Continue with implementation</button>)}{session.status === "verifying" && <button disabled={!canComplete} title={canComplete ? "Complete session" : needsImplementationEvidence ? "Capture Git evidence, pass verification, and resolve criteria first" : "Resolve acceptance criteria first"} onClick={markDone} className="rounded bg-green-600 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-40">{canComplete ? "Complete session" : criteriaResolved ? "Evidence required" : "Criteria required"}</button>}</div>{showContinue && !continuation && <div className="rounded-lg border border-blue-900 bg-blue-950/10 p-3"><label className="block text-[10px] font-medium uppercase tracking-wide text-gray-500">Next Session goal<textarea autoFocus rows={4} value={continuationGoal} onChange={(event) => setContinuationGoal(event.target.value)} className="mt-2 w-full resize-y rounded border border-gray-600 bg-gray-950 px-3 py-2 text-xs normal-case tracking-normal text-gray-200" /></label><div className="mt-2 flex items-center justify-between gap-3"><span className="text-[10px] text-gray-500">The prior goal, result, evidence references, project, and policy will be inherited.</span><button disabled={continuing || !continuationGoal.trim()} onClick={continueWithImplementation} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50">{continuing ? "Starting…" : "Start linked Session"}</button></div></div>}{criteria.map((criterion) => <div key={criterion.criterion_index} className="flex flex-wrap items-center gap-2 rounded border border-gray-700 px-2 py-1.5 text-[10px]"><span className="mr-auto text-gray-300">{criterion.criterion}</span><span className="text-gray-500">{criterion.status === "unevaluated" ? "Not reviewed" : criterion.status}</span>{criterion.status === "unevaluated" && <><button onClick={() => decideCriterion(criterion, "passed")} className="text-green-400">Pass</button><button onClick={() => decideCriterion(criterion, "failed")} className="text-red-400">Fail</button><button onClick={() => decideCriterion(criterion, "waived")} className="text-gray-400">Waive</button></>}</div>)}{needsImplementationEvidence && <details className="rounded border border-gray-700 bg-gray-950/40 p-2"><summary className="cursor-pointer text-[10px] text-gray-400">Run project checks</summary><div className="mt-2 space-y-2">{session.verification_command ? <div className="rounded bg-gray-900 px-2 py-1.5 text-[10px] text-gray-400">Project default: <code className="text-blue-300">{session.verification_command}</code></div> : <div className="rounded border border-yellow-900 bg-yellow-950/20 p-2 text-[10px] text-yellow-200">No project check is configured. Enter the exact command to run below, such as <code>pytest backend/tests/test_dashboard.py</code>.</div>}<label className="block text-[10px] text-gray-500">{session.verification_command ? "Optional command override" : "Command to run"}<input value={verificationCommand} onChange={(event) => { setVerificationCommand(event.target.value); setVerificationError(null) }} placeholder={session.verification_command ? "Leave empty to use the project default" : "e.g. pytest backend/tests/test_dashboard.py"} className="mt-1 w-full rounded border border-gray-600 bg-gray-950 px-2 py-1.5 text-[10px] text-gray-200" /></label><div className="flex items-center gap-2"><button onClick={captureGit} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Refresh Git evidence</button><button disabled={verifyingEvidence || !runnableVerificationCommand} onClick={verify} title={!runnableVerificationCommand ? "Enter a command before running checks" : undefined} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white disabled:cursor-not-allowed disabled:opacity-40">{verifyingEvidence ? "Running checks…" : "Run project checks"}</button></div>{verificationError && <div className="rounded border border-red-900 bg-red-950/20 p-2 text-[10px] text-red-300">{verificationError}</div>}</div></details>}</div>}
-      {["completed", "done"].includes(session.status) && needsImplementationEvidence && <div className="space-y-3 border-b border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-200">Implementation accepted</span>{continuation ? <button onClick={() => useUIStore.getState().setViewingSessionId(continuation.id)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">View next Session · {statusLabel(continuation.status)}</button> : <button onClick={() => { setContinuationGoal(defaultContinuationGoal); setShowContinue((value) => !value) }} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">Start next Session</button>}</div>{showContinue && !continuation && <div className="rounded-lg border border-blue-900 bg-blue-950/10 p-3"><label className="block text-[10px] font-medium uppercase tracking-wide text-gray-500">What should happen next?<textarea autoFocus rows={4} value={continuationGoal} onChange={(event) => setContinuationGoal(event.target.value)} placeholder="Describe the next outcome, such as fixing an issue, committing changes, opening a PR, or preparing a release." className="mt-2 w-full resize-y rounded border border-gray-600 bg-gray-950 px-3 py-2 text-xs normal-case tracking-normal text-gray-200" /></label><div className="mt-2 flex flex-wrap gap-2 text-[10px]"><button onClick={() => setContinuationGoal("Review the completed changes, create an appropriate commit, and request approval before pushing it.")} className="rounded border border-gray-700 px-2 py-1 text-gray-400">Commit changes</button><button onClick={() => setContinuationGoal("Prepare the completed changes for release. Review the diff, create an appropriate commit, and propose the target branch and production tag. Request approval before pushing the branch or tag.")} className="rounded border border-gray-700 px-2 py-1 text-gray-400">Prepare release</button></div><div className="mt-2 flex items-center justify-between gap-3"><span className="text-[10px] text-gray-500">The prior result, evidence, project, and policy will be inherited. This is execution work unless you explicitly ask only for analysis.</span><button disabled={continuing || !continuationGoal.trim()} onClick={continueWithImplementation} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50">{continuing ? "Starting…" : "Start linked Session"}</button></div></div>}</div>}
 
-      {/* Main content: Proof Artifact & Goal Loop primary, Live Terminal as inspect/fallback drawer */}
+      {/* Cancel confirmation */}
+      {confirmCancel && (
+        <div className="flex items-center justify-end gap-2 border-b border-red-900 bg-red-950/40 px-3 py-2 text-xs">
+          <span className="mr-auto text-red-200">{session.status === "pending" ? "Cancel this queued session?" : "Stop this session? It cannot currently be resumed."}</span>
+          <button onClick={() => setConfirmCancel(false)} className="rounded border border-gray-600 px-2 py-1">Go back</button>
+          <button onClick={cancel} className="rounded bg-red-700 px-2 py-1 text-white">{session.status === "pending" ? "Cancel session" : "Stop session"}</button>
+        </div>
+      )}
+
+      {/* Human control strip */}
+      {isOpen && session.control_owner === "human" && (
+        <div className="flex items-center gap-2 border-b border-yellow-900 bg-yellow-950/30 px-3 py-2">
+          <span className="text-[10px] text-yellow-200">You have control</span>
+          <input value={guidance} onChange={(event) => setGuidance(event.target.value)} placeholder="Optional guidance before returning control" className="min-w-52 flex-1 rounded border border-yellow-800 bg-gray-950 px-2 py-1 text-[10px]" />
+          <button onClick={returnControl} className="rounded bg-green-700 px-2 py-1 text-[10px] text-white">Return control</button>
+        </div>
+      )}
+
+      {/* Pending terminal approvals */}
+      {approvals.some((approval) => approval.status === "pending") && (
+        <div className="space-y-2 border-b border-yellow-900 bg-yellow-950/20 p-3">
+          <div className="text-xs font-medium text-yellow-300">Needs your decision</div>
+          {approvals.filter((approval) => approval.status === "pending").map((approval) => (
+            <div key={approval.id} className="flex items-center gap-2 rounded border border-yellow-800 p-2 text-xs">
+              <span className="mr-auto text-gray-200">{approval.summary}</span>
+              <button onClick={() => decideApproval(approval, "approved")} className="rounded bg-green-700 px-2 py-1 text-[10px]">Approve</button>
+              <button onClick={() => decideApproval(approval, "rejected")} className="rounded bg-red-700 px-2 py-1 text-[10px]">Reject</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 2. Prominent Blocker / Failed Callout Banner */}
+      {(session.status === "failed" || activeBlocker) && (
+        <div className={`flex flex-wrap items-center gap-3 border-b px-3 py-2 text-xs ${
+          session.status === "failed"
+            ? "border-red-900/80 bg-red-950/30 text-red-200"
+            : "border-amber-700/50 bg-amber-950/30 text-amber-200"
+        }`}>
+          <span className="font-semibold uppercase tracking-wide text-[10px]">
+            {session.status === "failed" ? "✕ Session Failed" : "⚠ Blocker Detected"}
+          </span>
+          <span className="flex-1 text-gray-200">
+            {activeBlocker || session.output_summary || "Open the raw log for details, then retry when ready."}
+          </span>
+          {gitStatus?.dirty && (
+            <button
+              onClick={() => setShowCommitBox(true)}
+              className="rounded bg-amber-500 px-2.5 py-1 text-[11px] font-semibold text-gray-950 hover:bg-amber-400"
+            >
+              Commit {changedCount} File{changedCount === 1 ? "" : "s"} on Host
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 3. Sleek 1-Click Host Action Bar (Git, Verification, Acceptance) */}
+      {["verifying", "completed", "done"].includes(session.status) && (
+        <div className="border-b border-gray-800 bg-gray-900/90 px-3 py-2 flex-shrink-0 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            {/* Live Git Status Pill */}
+            {gitStatus?.has_git && (
+              <div className="flex items-center gap-1.5 rounded border border-gray-700 bg-gray-950 px-2 py-1 text-[10px]">
+                <span className={`h-1.5 w-1.5 rounded-full ${gitStatus.dirty ? "bg-amber-400" : "bg-emerald-400"}`} />
+                <span className="font-mono text-gray-300">{gitStatus.branch || "main"}</span>
+                <span className="text-gray-600">·</span>
+                <span className={gitStatus.dirty ? "text-amber-300 font-medium" : "text-emerald-300"}>
+                  {gitStatus.dirty ? `${changedCount} uncommitted file${changedCount === 1 ? "" : "s"}` : `Committed (${gitStatus.head || "clean"})`}
+                </span>
+                <span className="text-gray-600">·</span>
+                <span className="text-gray-500" title={gitStatus.remote_url || "No git remote configured"}>
+                  {gitStatus.has_remote ? `Remote: ${gitStatus.remote_name}` : "Local repo only (no remote)"}
+                </span>
+              </div>
+            )}
+
+            <div className="ml-auto flex flex-wrap items-center gap-1.5">
+              {/* 1-Click Host Commit Button */}
+              {gitStatus?.dirty && (
+                <button
+                  onClick={() => setShowCommitBox((v) => !v)}
+                  className="rounded bg-blue-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-blue-500"
+                >
+                  ✓ Commit Changes ({changedCount})
+                </button>
+              )}
+
+              {/* 1-Click Run Project Checks */}
+              {needsImplementationEvidence && (
+                <button
+                  disabled={verifyingEvidence}
+                  onClick={() => {
+                    if (!runnableVerificationCommand) {
+                      setShowReviewTools(true)
+                      return
+                    }
+                    void verify()
+                  }}
+                  className={`rounded px-2.5 py-1 text-[11px] font-medium border transition-colors ${
+                    hasPassingVerification
+                      ? "border-emerald-700/60 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/40"
+                      : "border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700"
+                  }`}
+                >
+                  {verifyingEvidence ? "Running Checks…" : hasPassingVerification ? "✓ Checks Passed" : "▶ Run Checks"}
+                </button>
+              )}
+
+              {/* 1-Click Accept / Complete Outcome */}
+              {session.status === "verifying" && (
+                canComplete ? (
+                  <button
+                    onClick={() => { void markDone(false) }}
+                    className="rounded bg-emerald-600 px-3 py-1 text-[11px] font-semibold text-white hover:bg-emerald-500"
+                  >
+                    ✓ Accept &amp; Complete
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setShowAcceptanceOverride((v) => !v)}
+                    className="rounded border border-emerald-600/60 bg-emerald-950/30 px-2.5 py-1 text-[11px] font-medium text-emerald-300 hover:bg-emerald-900/40"
+                    title="Accept outcome now (or complete remaining checks)"
+                  >
+                    Accept Outcome…
+                  </button>
+                )
+              )}
+
+              {/* Toggle extra review tools (screenshots, custom check command, criteria) */}
+              <button
+                onClick={() => setShowReviewTools((v) => !v)}
+                className="rounded border border-gray-700 bg-gray-950 px-2 py-1 text-[10px] text-gray-400 hover:text-gray-200"
+              >
+                {showReviewTools ? "Hide Options ▴" : "Options ▾"}
+              </button>
+            </div>
+          </div>
+
+          {/* Inline 1-Click Host Commit Bar */}
+          {showCommitBox && gitStatus?.dirty && (
+            <div className="flex flex-wrap items-center gap-2 rounded border border-blue-800/60 bg-blue-950/20 p-2 text-xs">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-blue-300">Commit message</span>
+              <input
+                autoFocus
+                value={commitMessage}
+                onChange={(e) => setCommitMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !committingGit) {
+                    void handleHostCommit(false)
+                  }
+                }}
+                placeholder="feat: describe the changes..."
+                className="min-w-60 flex-1 rounded border border-gray-700 bg-gray-950 px-2.5 py-1 text-xs text-gray-100"
+              />
+              <button
+                disabled={committingGit}
+                onClick={() => { void handleHostCommit(false) }}
+                className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              >
+                {committingGit ? "Committing…" : "Commit on Host"}
+              </button>
+              {gitStatus.has_remote ? (
+                <button
+                  disabled={committingGit}
+                  onClick={() => { void handleHostCommit(true) }}
+                  className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+                >
+                  Commit &amp; Push
+                </button>
+              ) : (
+                <span className="text-[10px] text-gray-500">No remote configured (commits locally)</span>
+              )}
+              <button onClick={() => setShowCommitBox(false)} className="px-1.5 text-[10px] text-gray-400 hover:text-gray-200">Cancel</button>
+            </div>
+          )}
+
+          {/* Inline Acceptance Override Box */}
+          {showAcceptanceOverride && session.status === "verifying" && (
+            <div className="flex flex-wrap items-center gap-2 rounded border border-emerald-800/60 bg-emerald-950/20 p-2 text-xs">
+              <span className="text-[10px] text-emerald-300">Accept note:</span>
+              <input
+                autoFocus
+                value={acceptanceOverrideNote}
+                onChange={(event) => setAcceptanceOverrideNote(event.target.value)}
+                placeholder="e.g. Verified 141 passing tests in agent report"
+                className="min-w-60 flex-1 rounded border border-gray-700 bg-gray-950 px-2.5 py-1 text-xs text-gray-200"
+              />
+              <button
+                disabled={acceptingOverride}
+                onClick={() => {
+                  if (!acceptanceOverrideNote.trim() || acceptanceOverrideNote.trim().length < 5) {
+                    setAcceptanceOverrideNote("Accepted after reviewing proof artifact")
+                  }
+                  void POST(`/sessions/${sessionId}/complete`, {
+                    override: true,
+                    note: acceptanceOverrideNote.trim().length >= 5 ? acceptanceOverrideNote.trim() : "Accepted after reviewing proof artifact",
+                  }).then(async () => {
+                    toast("Session completed", "success")
+                    setShowAcceptanceOverride(false)
+                    await Promise.all([loadSession(), loadSupervision(), loadArtifact()])
+                  }).catch((err) => toast(apiErrorDetail(err, "Could not complete Session"), "error"))
+                }}
+                className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-40"
+              >
+                {acceptingOverride ? "Completing…" : "Confirm Complete"}
+              </button>
+              <button onClick={() => setShowAcceptanceOverride(false)} className="px-1.5 text-[10px] text-gray-400">Cancel</button>
+            </div>
+          )}
+
+          {/* Collapsible Options Drawer (Evidence upload, Custom check cmd, Criteria) */}
+          {showReviewTools && (
+            <div className="space-y-2 rounded border border-gray-800 bg-gray-950/80 p-2.5 text-[11px]">
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  value={verificationCommand}
+                  onChange={(event) => { setVerificationCommand(event.target.value); setVerificationError(null) }}
+                  placeholder={session.verification_command ? `Default check: ${session.verification_command}` : "Verification command (e.g. npm run verify or pytest)"}
+                  className="min-w-52 flex-1 rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200 font-mono"
+                />
+                <button disabled={verifyingEvidence || !runnableVerificationCommand} onClick={() => { void verify() }} className="rounded bg-blue-600 px-2.5 py-1 text-xs text-white disabled:opacity-40">
+                  {verifyingEvidence ? "Running…" : "Run Check"}
+                </button>
+                <button onClick={() => { void captureGit() }} className="rounded border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800">
+                  Snapshot Git Diff
+                </button>
+                <input
+                  ref={evidenceInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm,video/quicktime"
+                  className="hidden"
+                  onChange={(event) => { void attachProductEvidence(event.target.files?.[0]) }}
+                />
+                <button disabled={uploadingEvidence} onClick={() => evidenceInputRef.current?.click()} className="rounded border border-purple-600/60 px-2.5 py-1 text-xs text-purple-300 hover:bg-purple-950/30">
+                  {uploadingEvidence ? "Uploading…" : "+ Attach Screenshot/Video"}
+                </button>
+              </div>
+              {verificationError && <div className="rounded border border-red-900 bg-red-950/20 p-2 text-[10px] text-red-300">{verificationError}</div>}
+              {criteria.length > 0 && (
+                <div className="space-y-1 pt-1">
+                  {criteria.map((criterion) => (
+                    <div key={criterion.criterion_index} className="flex items-center gap-2 rounded border border-gray-800 px-2 py-1 text-[10px]">
+                      <span className="mr-auto text-gray-300">{criterion.criterion}</span>
+                      <span className="text-gray-500">{criterion.status}</span>
+                      {criterion.status === "unevaluated" && (
+                        <>
+                          <button onClick={() => decideCriterion(criterion, "passed")} className="text-green-400">Pass</button>
+                          <button onClick={() => decideCriterion(criterion, "failed")} className="text-red-400">Fail</button>
+                          <button onClick={() => decideCriterion(criterion, "waived")} className="text-gray-400">Waive</button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 4. Main Content: Proof Artifact Centerpiece (or Live Terminal when toggled) */}
       {(showTerminal || session.status === "waiting" || session.control_owner === "human") && terminalId ? (
         <>
           <div className="flex-1 min-h-0 flex flex-col">
@@ -405,7 +758,6 @@ export function SessionViewer({
             </div>
           </div>
 
-          {/* Compact detail strip below terminal */}
           <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800">
             <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} artifact={artifact} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
               loadEvents={loadEvents} loadLog={loadLog} compact />
@@ -414,6 +766,102 @@ export function SessionViewer({
       ) : (
         <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} artifact={artifact} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
           loadEvents={loadEvents} loadLog={loadLog} />
+      )}
+
+      {/* 5. Bottom Contextual Next Steps Dock (1-Click Chips + Compact Follow-up Input) */}
+      {["verifying", "completed", "done", "failed", "cancelled"].includes(session.status) && (
+        <div className="border-t border-gray-800 bg-gray-900/95 px-3 py-2 flex-shrink-0 space-y-2">
+          {/* 1-Click Suggested Next-Step Chips */}
+          {gitStatus?.suggested_next_steps && gitStatus.suggested_next_steps.length > 0 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+              <span className="text-[10px] font-medium uppercase tracking-wider text-gray-500 flex-shrink-0 mr-1">Next steps:</span>
+              {gitStatus.suggested_next_steps.map((step) => (
+                <button
+                  key={step.id}
+                  disabled={sendingInstruction || committingGit || verifyingEvidence}
+                  onClick={() => {
+                    if (step.kind === "host_commit") {
+                      setShowCommitBox(true)
+                    } else if (step.kind === "host_verify") {
+                      void verify()
+                    } else if (step.prompt) {
+                      void sendInstructionText(step.prompt)
+                    }
+                  }}
+                  title={step.detail || step.prompt}
+                  className={`flex-shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-medium transition-colors ${
+                    step.kind === "host_commit"
+                      ? "border-blue-500/40 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50"
+                      : step.kind === "host_verify"
+                        ? "border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/40"
+                        : "border-gray-700 bg-gray-800/80 text-gray-300 hover:border-gray-500 hover:text-white"
+                  }`}
+                >
+                  {step.kind === "host_commit" ? "⚡ " : step.kind === "host_verify" ? "▶ " : "↻ "}
+                  {step.label}
+                </button>
+              ))}
+              {["completed", "done"].includes(session.status) && (
+                continuation ? (
+                  <button
+                    onClick={() => useUIStore.getState().setViewingSessionId(continuation.id)}
+                    className="flex-shrink-0 rounded-full border border-purple-500/40 bg-purple-950/30 px-2.5 py-0.5 text-[10px] text-purple-300"
+                  >
+                    → View Next Session ({statusLabel(continuation.status)})
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setShowContinue((v) => !v)}
+                    className="flex-shrink-0 rounded-full border border-purple-500/40 bg-purple-950/30 px-2.5 py-0.5 text-[10px] text-purple-300 hover:bg-purple-900/40"
+                  >
+                    + New Linked Goal
+                  </button>
+                )
+              )}
+            </div>
+          )}
+
+          {/* Compact Single-Line Follow-Up Bar */}
+          <div className="flex items-center gap-2">
+            <input
+              value={nextInstruction}
+              onChange={(event) => setNextInstruction(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey && nextInstruction.trim() && !sendingInstruction) {
+                  event.preventDefault()
+                  void instructCurrentSession()
+                }
+              }}
+              placeholder="Ask the agent to iterate, refine code, or fix another issue in this session…"
+              className="min-w-0 flex-1 rounded border border-gray-700 bg-gray-950 px-3 py-1.5 text-xs text-gray-200 placeholder-gray-500 focus:border-blue-500 focus:outline-none"
+            />
+            <button
+              disabled={sendingInstruction || !nextInstruction.trim()}
+              onClick={() => { void instructCurrentSession() }}
+              className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-40"
+            >
+              {sendingInstruction ? "Running…" : "Send Follow-Up"}
+            </button>
+          </div>
+
+          {showContinue && !continuation && (
+            <div className="rounded-lg border border-blue-900 bg-blue-950/10 p-2.5 space-y-2">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-blue-300">Start Linked Follow-Up Session</div>
+              <div className="flex gap-2">
+                <input
+                  autoFocus
+                  value={continuationGoal}
+                  onChange={(event) => setContinuationGoal(event.target.value)}
+                  className="flex-1 rounded border border-gray-700 bg-gray-950 px-2.5 py-1 text-xs text-gray-200"
+                />
+                <button disabled={continuing || !continuationGoal.trim()} onClick={continueWithImplementation} className="rounded bg-blue-600 px-3 py-1 text-xs text-white disabled:opacity-50">
+                  {continuing ? "Starting…" : "Start"}
+                </button>
+                <button onClick={() => setShowContinue(false)} className="px-2 text-[10px] text-gray-400">Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   )
@@ -477,7 +925,7 @@ function SessionTabs({
               title={`Session ${sessionId} Proof Artifact`}
               sandbox="allow-scripts"
               srcDoc={artifact.html}
-              className={`w-full border-0 bg-gray-950 ${compact ? "h-32" : "flex-1 min-h-[360px]"}`}
+              className={`w-full border-0 bg-gray-950 ${compact ? "h-32" : "flex-1 min-h-[420px]"}`}
             />
           ) : (
             <div className="p-4 text-xs text-gray-500">Building proof artifact…</div>
@@ -535,10 +983,6 @@ function MarkdownText({ content }: { content: string }) {
     code: ({ children }) => <code className="rounded bg-gray-950 px-1 py-0.5 font-mono text-xs text-gray-300">{children}</code>,
     p: ({ children }) => <p>{children}</p>,
   }}>{content}</ReactMarkdown></div>
-}
-
-function ReviewStep({ number, done, label, detail }: { number: number; done: boolean; label: string; detail: string }) {
-  return <div className={`rounded-lg border p-2 ${done ? "border-green-900 bg-green-950/20" : "border-gray-700 bg-gray-900"}`}><div className="flex items-center gap-2"><span className={`flex h-5 w-5 items-center justify-center rounded-full ${done ? "bg-green-700 text-white" : "bg-gray-700 text-gray-300"}`}>{done ? "✓" : number}</span><span className={done ? "text-green-300" : "text-gray-200"}>{label}</span></div><div className="mt-1 pl-7 text-gray-500">{detail}</div></div>
 }
 
 function EvidenceSummary({ sessionId, evidence, reviewMode, onChanged }: { sessionId: string; evidence: SessionEvidence[]; reviewMode: "advisory" | "implementation"; onChanged: () => Promise<void> }) {

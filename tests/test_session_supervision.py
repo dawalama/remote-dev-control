@@ -409,3 +409,70 @@ def test_custom_wrapper_crud_in_agent_registry(monkeypatch, tmp_path):
     assert del_resp.status_code == 200
     assert "grok" not in [p["id"] for p in del_resp.json()["providers"]]
 
+
+def test_session_git_status_and_one_click_host_commit(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    sp.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+    sp.run(["git", "config", "user.email", "dev@example.com"], cwd=repo_dir, check=True)
+    sp.run(["git", "config", "user.name", "Dev"], cwd=repo_dir, check=True)
+    (repo_dir / "app.ts").write_text("export const x = 1\n")
+    sp.run(["git", "add", "."], cwd=repo_dir, check=True)
+    sp.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True, capture_output=True)
+
+    # Make uncommitted edit
+    (repo_dir / "app.ts").write_text("export const x = 2\n")
+
+    manager = get_session_manager()
+    session = manager.create_session(
+        "test-channel",
+        "test-project",
+        "Look for any bugs and performance issues in the codebase, and fix them",
+        metadata={"supervised": True},
+    )
+    session.status = SessionStatus.VERIFYING
+    session.output_summary = (
+        "`npm run verify` passes: 141 tests.\n\n"
+        "Commit and push are blocked: this session cannot write to `.git`, and no remote is configured."
+    )
+    manager._persist(session)
+
+    monkeypatch.setattr("remote_dev_ctrl.server.app._session_project_path", lambda _project: repo_dir)
+    token, _ = get_auth_manager().create_token("git-host-commit-test", Role.ADMIN)
+    client = TestClient(app)
+
+    status_resp = client.get(
+        f"/sessions/{session.id}/git-status",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert status_resp.status_code == 200
+    status_data = status_resp.json()
+    assert status_data["dirty"] is True
+    assert status_data["has_remote"] is False
+    assert "app.ts" in status_data["changed_files"]
+    assert "Commit and push are blocked" in (status_data["detected_blocker"] or "")
+    assert any(s["kind"] == "host_commit" for s in status_data["suggested_next_steps"])
+
+    commit_resp = client.post(
+        f"/sessions/{session.id}/git-commit",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"message": "fix: resolve bugs and performance issues\nCo-Authored-By: Someone <a@b.c>"},
+    )
+    assert commit_resp.status_code == 200
+    commit_data = commit_resp.json()
+    assert commit_data["success"] is True
+    assert "Co-Authored-By" not in commit_data["message"]
+
+    # Verify git evidence was auto-recorded and blocker was cleared
+    ev_resp = client.get(
+        f"/sessions/{session.id}/evidence",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert any(item["evidence_type"] == "git" for item in ev_resp.json())
+    updated_session = manager.get(session.id)
+    assert "Commit and push are blocked" not in (updated_session.output_summary or "")
+    assert "Host commit" in (updated_session.output_summary or "")
+
+
