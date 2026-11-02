@@ -210,6 +210,10 @@ def test_cursor_provider_readiness_is_checked_before_terminal_creation(monkeypat
     class Result:
         returncode = 1
 
+    monkeypatch.setattr(
+        "remote_dev_ctrl.server.session_manager.shutil.which",
+        lambda name: "/usr/bin/cursor-agent" if name == "cursor-agent" else None,
+    )
     monkeypatch.setattr("remote_dev_ctrl.server.session_manager.subprocess.run", lambda *args, **kwargs: Result())
     assert "not authenticated" in agent_provider_blocker("cursor")
     assert agent_provider_blocker("diagnostic") is None
