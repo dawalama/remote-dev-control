@@ -67,27 +67,10 @@ def _evidence_provider_refs(project: str) -> list[dict[str, Any]]:
 
 
 def _load_agent_provider_policy() -> dict[str, str]:
-    """Mirror app policy loader without importing app (circular)."""
-    import json
+    """Mirror app policy loader via unified agent registry."""
+    from .agent_registry import load_agent_provider_policy
 
-    from .config import get_rdc_home
-    from .session_manager import discover_agent_aliases
-
-    path = get_rdc_home() / "agent_provider_policy.json"
-    try:
-        policy = json.loads(path.read_text()) if path.exists() else {}
-    except (OSError, json.JSONDecodeError):
-        policy = {}
-    preferred = str(policy.get("preferred_provider") or "").strip()
-    valid_providers = {"codex", "claude", "cursor"} | set(discover_agent_aliases().keys())
-    if preferred not in valid_providers:
-        # Default to a codex alias if present (e.g. codex-quill), else codex
-        codex_aliases = sorted(k for k, v in discover_agent_aliases().items() if v.get("family") == "codex")
-        preferred = codex_aliases[0] if codex_aliases else "codex"
-    return {
-        "preferred_provider": preferred,
-        "fallback_policy": str(policy.get("fallback_policy") or "ask"),
-    }
+    return load_agent_provider_policy()
 
 
 def session_execution_prompt(session: Session) -> str:
@@ -258,7 +241,25 @@ def start_supervised_session(
             error=provider_blocker,
         )
 
-    command = build_agent_command(effective, session_execution_prompt(s))
+    full_prompt = session_execution_prompt(s)
+    followups = (s.metadata or {}).get("followup_instructions") or []
+    latest_instruction = (
+        str(followups[-1].get("instruction") or "").strip()
+        if continue_review and isinstance(followups, list) and followups and isinstance(followups[-1], dict)
+        else ""
+    )
+    if latest_instruction:
+        try:
+            command = build_agent_command(
+                effective,
+                latest_instruction,
+                resume=True,
+                fallback_description=full_prompt,
+            )
+        except TypeError:
+            command = build_agent_command(effective, full_prompt)
+    else:
+        command = build_agent_command(effective, full_prompt)
     s.metadata = {
         **(s.metadata or {}),
         "requested_provider": requested_provider,

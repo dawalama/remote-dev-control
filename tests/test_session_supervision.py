@@ -346,3 +346,66 @@ def test_operator_can_complete_with_audited_review_exception():
     restored = manager.get(session.id)
     assert restored.status == SessionStatus.COMPLETED
     assert "Verified manually" in restored.unresolved_risks[-1]
+
+
+def test_unified_driver_goal_run_and_native_resume_commands():
+    from remote_dev_ctrl.server.agent_registry import resolve_interactive_terminal_command
+
+    claude_run = build_agent_command("claude", "Audit the layout")
+    assert "claude -p" in claude_run
+    assert "__RDC_FINAL_BEGIN__" in claude_run
+
+    claude_resume = build_agent_command(
+        "claude",
+        "Now add tests",
+        resume=True,
+        fallback_description="Full reconstructed history: Audit the layout -> Now add tests",
+    )
+    assert "claude -p --continue" in claude_resume
+    assert "Full reconstructed history" in claude_resume
+
+    codex_resume = build_agent_command(
+        "codex",
+        "Now add tests",
+        resume=True,
+        fallback_description="Full reconstructed history",
+    )
+    assert "exec resume --last" in codex_resume
+    assert "exec --sandbox workspace-write" in codex_resume
+
+    term_cmd = resolve_interactive_terminal_command("rdc-launch cursor-agent", "/tmp", "demo", mode="resume:abc-123")
+    assert term_cmd == "cursor-agent --resume=abc-123"
+
+
+def test_custom_wrapper_crud_in_agent_registry(monkeypatch, tmp_path):
+    monkeypatch.setattr("remote_dev_ctrl.server.agent_registry.get_rdc_home", lambda: tmp_path)
+    token, _ = get_auth_manager().create_token("wrapper-crud-test", Role.ADMIN)
+    client = TestClient(app)
+
+    put_resp = client.put(
+        "/settings/agent-providers/wrappers/grok",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "label": "Grok CLI",
+            "driver": "grok",
+            "executable": "grok",
+            "terminal_command": "grok",
+            "supports_sessions": True,
+            "show_in_terminal_menu": True,
+        },
+    )
+    assert put_resp.status_code == 200
+    provider_ids = [p["id"] for p in put_resp.json()["providers"]]
+    assert "grok" in provider_ids
+
+    grok_cmd = build_agent_command("grok", "Optimize the query")
+    assert "grok -p 'Optimize the query'" in grok_cmd
+    assert "__RDC_FINAL_BEGIN__" in grok_cmd
+
+    del_resp = client.delete(
+        "/settings/agent-providers/wrappers/grok",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert del_resp.status_code == 200
+    assert "grok" not in [p["id"] for p in del_resp.json()["providers"]]
+

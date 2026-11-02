@@ -424,44 +424,19 @@ class TerminalManager:
             else:
                 command = os.environ.get("RDC_TERMINAL_CMD", os.environ.get("ADT_TERMINAL_CMD", os.environ.get("SHELL", "/bin/bash")))
 
-        # Apply launch mode: resume (specific session), or resume/continue.
-        # Skip if command uses rdc-launch (it handles resume logic itself).
-        if "rdc-launch" not in (command or ""):
-            _AGENT_CONTINUE_CMDS = ("cursor-agent", "claude")
-            if mode and mode.startswith("resume:"):
-                sid = mode.split(":", 1)[1]
-                command = f"{command} --resume={sid}"
-            elif mode in ("continue", None, "new") and "--resume" not in command and "--continue" not in command:
-                raw_base = ((command or "").strip().split() or [""])[0]
-                base_cmd = os.path.basename(raw_base) if raw_base else ""
-                if base_cmd not in _AGENT_CONTINUE_CMDS:
-                    base_cmd = ""
-                try:
-                    from .db.repositories import get_agent_session_repo, resolve_project_id
-                    project_id = resolve_project_id(project)
-                    if project_id and base_cmd:
-                        repo = get_agent_session_repo()
-                        latest = repo.get_latest(project_id)
-                        if latest and base_cmd == "cursor-agent":
-                            command = f"{command} --resume={latest.agent_session_id}"
-                        elif mode == "continue":
-                            command = f"{command} --continue"
-                except Exception as e:
-                    logger.debug(f"Could not attach resume/continue for {project}: {e}")
-                    if mode == "continue" and base_cmd:
-                        command = f"{command} --continue"
-
-        # Expand local shell aliases (e.g., claude-work, codex-quill) so /bin/sh PTY can execute them
+        # Resolve interactive agent wrapper, resume mode, and shell aliases via unified registry
         if command:
             try:
-                from .session_manager import discover_agent_aliases, _wrap_alias_invocation
-                aliases = discover_agent_aliases()
-                parts = command.strip().split(None, 1)
-                if parts and parts[0] in aliases:
-                    rest = parts[1] if len(parts) > 1 else ""
-                    command = _wrap_alias_invocation(aliases[parts[0]], parts[0], rest)
-            except Exception:
-                pass
+                from .agent_registry import resolve_interactive_terminal_command
+
+                command = resolve_interactive_terminal_command(
+                    command=command,
+                    cwd=cwd,
+                    project=project,
+                    mode=mode,
+                )
+            except Exception as e:
+                logger.debug(f"Could not resolve interactive terminal wrapper for {project}: {e}")
 
         relay_name = f"rdc-{session_id.removeprefix('term-')}"
 

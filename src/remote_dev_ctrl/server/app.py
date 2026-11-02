@@ -8274,8 +8274,8 @@ def _terminal_presets_path() -> Path:
 
 @app.get("/settings/terminal-presets")
 async def get_terminal_presets():
-    """Return terminal starter presets (launcher list). Stored in ~/.rdc/terminal_presets.json."""
-    from .session_manager import discover_agent_aliases
+    """Return terminal starter presets (launcher list) backed by unified agent registry + ~/.rdc/terminal_presets.json."""
+    from .agent_registry import list_registered_wrappers
 
     path = _terminal_presets_path()
     base_presets = list(_DEFAULT_TERMINAL_PRESETS)
@@ -8297,20 +8297,21 @@ async def get_terminal_presets():
 
     existing_ids = {str(p.get("id", "")) for p in base_presets}
     existing_cmds = {str(p.get("command", "")).strip() for p in base_presets}
-    alias_presets = []
-    icon_map = {"codex": "O", "claude": "A", "cursor": "C"}
-    for alias_id, info in sorted(discover_agent_aliases().items()):
-        if alias_id in existing_ids or alias_id in existing_cmds:
+    extra_presets = []
+    for spec in list_registered_wrappers():
+        if not spec.show_in_terminal_menu or spec.source == "builtin":
             continue
-        fam = info.get("family", "")
-        alias_presets.append({
-            "id": alias_id,
-            "label": alias_id,
-            "command": alias_id,
-            "icon": icon_map.get(fam, "•"),
-            "description": f"Local {fam} shell alias",
+        cmd = (spec.terminal_command or spec.executable or spec.id).strip()
+        if spec.id in existing_ids or cmd in existing_cmds:
+            continue
+        extra_presets.append({
+            "id": spec.id,
+            "label": spec.id if spec.source == "alias" else spec.label,
+            "command": cmd,
+            "icon": spec.icon or "•",
+            "description": spec.description,
         })
-    return alias_presets + base_presets
+    return extra_presets + base_presets
 
 
 @app.patch("/settings/terminal-presets")
@@ -9179,25 +9180,74 @@ def _load_agent_provider_policy() -> dict:
 
 @app.get("/settings/agent-providers")
 async def get_agent_provider_settings():
+    from .agent_registry import list_registered_wrappers
     from .session_manager import list_agent_provider_readiness
+
     providers = await asyncio.to_thread(list_agent_provider_readiness)
-    return {"policy": _load_agent_provider_policy(), "providers": providers}
+    wrappers = [w.model_dump() for w in list_registered_wrappers(include_disabled=True)]
+    return {"policy": _load_agent_provider_policy(), "providers": providers, "wrappers": wrappers}
 
 
 @app.patch("/settings/agent-providers")
 async def update_agent_provider_settings(body: AgentProviderPolicyRequest):
     if body.fallback_policy not in {"ask", "disabled"}:
         raise HTTPException(status_code=422, detail="Fallback policy must be ask or disabled")
+    from .agent_registry import list_registered_wrappers, save_agent_provider_policy
     from .session_manager import list_agent_provider_readiness
+
     providers = await asyncio.to_thread(list_agent_provider_readiness)
     valid_ids = {provider["id"] for provider in providers if provider["id"] != "diagnostic"}
     if body.preferred_provider not in valid_ids:
         raise HTTPException(status_code=422, detail="Unknown preferred provider")
-    policy = body.model_dump()
-    path = _agent_provider_policy_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(policy, indent=2) + "\n")
-    return {"policy": policy, "providers": providers}
+    policy = save_agent_provider_policy(body.preferred_provider, body.fallback_policy)
+    wrappers = [w.model_dump() for w in list_registered_wrappers(include_disabled=True)]
+    return {"policy": policy, "providers": providers, "wrappers": wrappers}
+
+
+class UpsertAgentWrapperRequest(BaseModel):
+    label: str
+    driver: str = "generic"
+    icon: str = "•"
+    description: str = ""
+    enabled: bool = True
+    executable: str | None = None
+    auth_check_args: list[str] = Field(default_factory=list)
+    setup_command: str | None = None
+    env_key: str | None = None
+    supports_sessions: bool = True
+    session_command_template: str | None = None
+    session_resume_template: str | None = None
+    show_in_terminal_menu: bool = True
+    terminal_command: str = ""
+    terminal_resume_command: str | None = None
+
+
+@app.put("/settings/agent-providers/wrappers/{wrapper_id}")
+async def upsert_agent_wrapper(wrapper_id: str, body: UpsertAgentWrapperRequest):
+    from .agent_registry import AgentWrapperSpec, list_registered_wrappers, upsert_wrapper_spec
+    from .session_manager import list_agent_provider_readiness
+
+    wid = wrapper_id.strip()
+    if not wid or wid.lower() == "gemini":
+        raise HTTPException(status_code=422, detail="Invalid or deprecated wrapper ID")
+    spec = AgentWrapperSpec(id=wid, **body.model_dump())
+    saved = upsert_wrapper_spec(spec)
+    providers = await asyncio.to_thread(list_agent_provider_readiness)
+    wrappers = [w.model_dump() for w in list_registered_wrappers(include_disabled=True)]
+    return {"wrapper": saved.model_dump(), "policy": _load_agent_provider_policy(), "providers": providers, "wrappers": wrappers}
+
+
+@app.delete("/settings/agent-providers/wrappers/{wrapper_id}")
+async def delete_agent_wrapper(wrapper_id: str):
+    from .agent_registry import list_registered_wrappers, remove_wrapper_spec
+    from .session_manager import list_agent_provider_readiness
+
+    removed = remove_wrapper_spec(wrapper_id.strip())
+    if not removed:
+        raise HTTPException(status_code=404, detail="Wrapper not found")
+    providers = await asyncio.to_thread(list_agent_provider_readiness)
+    wrappers = [w.model_dump() for w in list_registered_wrappers(include_disabled=True)]
+    return {"removed": wrapper_id.strip(), "policy": _load_agent_provider_policy(), "providers": providers, "wrappers": wrappers}
 
 
 @app.get("/settings/evidence-providers")
