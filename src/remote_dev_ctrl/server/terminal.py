@@ -451,6 +451,18 @@ class TerminalManager:
                     if mode == "continue" and base_cmd:
                         command = f"{command} --continue"
 
+        # Expand local shell aliases (e.g., claude-work, codex-quill) so /bin/sh PTY can execute them
+        if command:
+            try:
+                from .session_manager import discover_agent_aliases, _wrap_alias_invocation
+                aliases = discover_agent_aliases()
+                parts = command.strip().split(None, 1)
+                if parts and parts[0] in aliases:
+                    rest = parts[1] if len(parts) > 1 else ""
+                    command = _wrap_alias_invocation(aliases[parts[0]], parts[0], rest)
+            except Exception:
+                pass
+
         relay_name = f"rdc-{session_id.removeprefix('term-')}"
 
         # Check if a surviving relay exists and reconnect

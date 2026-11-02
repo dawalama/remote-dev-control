@@ -52,6 +52,12 @@ export function SessionsCard({
   const [creating, setCreating] = useState(false)
   const projects = useProjectStore((s) => s.projects)
   const [draft, setDraft] = useState({ project: "", goal: "", criteria: "", provider: "orchestrated" })
+  const [providerOptions, setProviderOptions] = useState<Array<{ id: string; label: string; ready?: boolean }>>([
+    { id: "codex", label: "Codex CLI" },
+    { id: "claude", label: "Claude Code" },
+    { id: "cursor", label: "Cursor Agent" },
+    { id: "diagnostic", label: "Diagnostic (no writes)" },
+  ])
   const openSessionFromHub = useUIStore((s) => s.openSessionFromHub)
   const toast = useUIStore((s) => s.toast)
   const activeChannel = channels.find((channel) => channel.id === activeChannelId)
@@ -80,7 +86,14 @@ export function SessionsCard({
     prevChannelRef.current = activeChannelId
     load()
   }
-  useMountEffect(() => { load() })
+  useMountEffect(() => {
+    load()
+    void GET<{ providers: Array<{ id: string; label: string; ready: boolean }> }>("/settings/agent-providers")
+      .then((res) => {
+        if (res?.providers?.length) setProviderOptions(res.providers)
+      })
+      .catch(() => {})
+  })
   useMountEffect(() => {
     const interval = window.setInterval(() => { void loadRef.current() }, 5000)
     return () => window.clearInterval(interval)
@@ -128,7 +141,7 @@ export function SessionsCard({
         {scope === "workstream" && <button onClick={() => setShowCreate((value) => !value)} className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white">New session</button>}
       </div>
 
-      {showCreate && <form onSubmit={(event) => { event.preventDefault(); void createSession() }} className="space-y-3 rounded-lg border border-blue-500/30 bg-gray-800 p-4"><label className="block"><span className="mb-1 block text-xs font-medium text-gray-300">What should be accomplished?</span><textarea autoFocus required rows={4} value={draft.goal} onChange={(event) => setDraft({ ...draft, goal: event.target.value })} placeholder="Describe the outcome you want…" className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-3 py-2 text-sm" /></label><button type="button" onClick={() => setShowOptions((value) => !value)} className="text-xs text-gray-400 hover:text-gray-200">{showOptions ? "Hide options" : "Options"}</button>{showOptions && <div className="space-y-2 border-t border-gray-700 pt-3">{(workstreamProjects.length !== 1 || !selectedProject) && <select required value={selectedProject} onChange={(event) => setDraft({ ...draft, project: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.name} value={project.name}>{project.name}</option>)}</select>}<textarea rows={3} value={draft.criteria} onChange={(event) => setDraft({ ...draft, criteria: event.target.value })} placeholder="Optional acceptance criteria — one per line" className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs" /><select value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="orchestrated">Orchestrated — use configured preference</option><option value="codex">Codex CLI</option><option value="claude">Claude Code</option><option value="cursor">Cursor Agent</option><option value="diagnostic">Diagnostic (no writes)</option></select><p className="text-[10px] text-gray-500">RDC will stop and guide setup if the selected provider is unavailable. It will not silently fall back.</p></div>}<div className="flex items-center justify-between gap-2"><span className="truncate text-[10px] text-gray-500">{selectedProject ? `Using ${selectedProject}` : "Select a project in Options"}</span><div className="flex gap-2"><button type="button" onClick={() => { setShowCreate(false); setShowOptions(false) }} className="px-3 py-1.5 text-xs text-gray-400">Cancel</button><button disabled={creating || !selectedProject || !draft.goal.trim()} className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{creating ? "Starting…" : "Start session"}</button></div></div></form>}
+      {showCreate && <form onSubmit={(event) => { event.preventDefault(); void createSession() }} className="space-y-3 rounded-lg border border-blue-500/30 bg-gray-800 p-4"><label className="block"><span className="mb-1 block text-xs font-medium text-gray-300">What should be accomplished?</span><textarea autoFocus required rows={4} value={draft.goal} onChange={(event) => setDraft({ ...draft, goal: event.target.value })} placeholder="Describe the outcome you want…" className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-3 py-2 text-sm" /></label><button type="button" onClick={() => setShowOptions((value) => !value)} className="text-xs text-gray-400 hover:text-gray-200">{showOptions ? "Hide options" : "Options"}</button>{showOptions && <div className="space-y-2 border-t border-gray-700 pt-3">{(workstreamProjects.length !== 1 || !selectedProject) && <select required value={selectedProject} onChange={(event) => setDraft({ ...draft, project: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.name} value={project.name}>{project.name}</option>)}</select>}<textarea rows={3} value={draft.criteria} onChange={(event) => setDraft({ ...draft, criteria: event.target.value })} placeholder="Optional acceptance criteria — one per line" className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs" /><select value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="orchestrated">Orchestrated — use configured preference</option>{providerOptions.map((p) => <option key={p.id} value={p.id}>{p.label}{p.ready === true ? " — Ready" : p.ready === false ? " — Setup required" : ""}</option>)}</select><p className="text-[10px] text-gray-500">RDC will stop and guide setup if the selected provider is unavailable. It will not silently fall back.</p></div>}<div className="flex items-center justify-between gap-2"><span className="truncate text-[10px] text-gray-500">{selectedProject ? `Using ${selectedProject}` : "Select a project in Options"}</span><div className="flex gap-2"><button type="button" onClick={() => { setShowCreate(false); setShowOptions(false) }} className="px-3 py-1.5 text-xs text-gray-400">Cancel</button><button disabled={creating || !selectedProject || !draft.goal.trim()} className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{creating ? "Starting…" : "Start session"}</button></div></div></form>}
 
       {loading && sessions.length === 0 && (
         <p className="text-xs text-gray-500 text-center py-4">Loading...</p>

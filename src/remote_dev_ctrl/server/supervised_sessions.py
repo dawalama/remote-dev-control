@@ -71,15 +71,19 @@ def _load_agent_provider_policy() -> dict[str, str]:
     import json
 
     from .config import get_rdc_home
+    from .session_manager import discover_agent_aliases
 
     path = get_rdc_home() / "agent_provider_policy.json"
     try:
         policy = json.loads(path.read_text()) if path.exists() else {}
     except (OSError, json.JSONDecodeError):
         policy = {}
-    preferred = str(policy.get("preferred_provider") or "codex")
-    if preferred not in {"codex", "claude", "cursor"}:
-        preferred = "codex"
+    preferred = str(policy.get("preferred_provider") or "").strip()
+    valid_providers = {"codex", "claude", "cursor"} | set(discover_agent_aliases().keys())
+    if preferred not in valid_providers:
+        # Default to a codex alias if present (e.g. codex-quill), else codex
+        codex_aliases = sorted(k for k, v in discover_agent_aliases().items() if v.get("family") == "codex")
+        preferred = codex_aliases[0] if codex_aliases else "codex"
     return {
         "preferred_provider": preferred,
         "fallback_policy": str(policy.get("fallback_policy") or "ask"),
@@ -229,6 +233,17 @@ def start_supervised_session(
         else requested_provider
     )
     provider_blocker = agent_provider_blocker(effective)
+    if provider_blocker and effective in {"claude", "codex", "cursor"}:
+        from .session_manager import discover_agent_aliases
+
+        same_family_aliases = [
+            alias_id
+            for alias_id, info in sorted(discover_agent_aliases().items())
+            if info.get("family") == effective and agent_provider_blocker(alias_id) is None
+        ]
+        if same_family_aliases:
+            effective = same_family_aliases[0]
+            provider_blocker = None
     if provider_blocker:
         if requested_provider == "orchestrated":
             provider_blocker = (

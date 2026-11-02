@@ -75,6 +75,11 @@ export function SessionViewer({
   const [showMoreActions, setShowMoreActions] = useState(false)
   const [terminalGeneration, setTerminalGeneration] = useState(0)
   const [retryProvider, setRetryProvider] = useState("orchestrated")
+  const [providerOptions, setProviderOptions] = useState<Array<{ id: string; label: string; ready?: boolean }>>([
+    { id: "codex", label: "Codex CLI" },
+    { id: "claude", label: "Claude Code" },
+    { id: "cursor", label: "Cursor Agent" },
+  ])
   const [showContinue, setShowContinue] = useState(false)
   const [continuationGoal, setContinuationGoal] = useState("Implement the approved outcome from this analysis. Make the changes, run relevant verification, and summarize the delivered result.")
   const [continuing, setContinuing] = useState(false)
@@ -89,6 +94,13 @@ export function SessionViewer({
     loadSession()
     loadSupervision()
     loadArtifact()
+    void GET<{ providers: Array<{ id: string; label: string; ready: boolean }> }>("/settings/agent-providers")
+      .then((res) => {
+        if (res?.providers?.length) {
+          setProviderOptions(res.providers.filter((p) => p.id !== "diagnostic"))
+        }
+      })
+      .catch(() => {})
   })
   useMountEffect(() => {
     const interval = window.setInterval(() => {
@@ -351,7 +363,7 @@ export function SessionViewer({
             Start
           </button>
         )}
-        {["failed", "cancelled"].includes(session.status) && (canRestoreReview ? <button onClick={restoreReview} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Restore review</button> : <><select value={retryProvider} onChange={(event) => setRetryProvider(event.target.value)} className="rounded border border-gray-600 bg-gray-900 px-2 py-1 text-[10px] text-gray-200"><option value="orchestrated">Configured preference</option><option value="codex">Codex CLI</option><option value="claude">Claude Code</option><option value="cursor">Cursor Agent</option></select><button onClick={retry} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Run again</button></>)}
+        {["failed", "cancelled"].includes(session.status) && (canRestoreReview ? <button onClick={restoreReview} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Restore review</button> : <><select value={retryProvider} onChange={(event) => setRetryProvider(event.target.value)} className="rounded border border-gray-600 bg-gray-900 px-2 py-1 text-[10px] text-gray-200"><option value="orchestrated">Configured preference</option>{providerOptions.map((p) => <option key={p.id} value={p.id}>{p.label}{p.ready === true ? " (Ready)" : p.ready === false ? " (Setup)" : ""}</option>)}</select><button onClick={retry} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Run again</button></>)}
         <div className="relative"><button onClick={() => setShowMoreActions((value) => !value)} className="rounded px-2 py-1 text-sm text-gray-500 hover:bg-gray-700 hover:text-gray-200" aria-label="More session actions">•••</button>{showMoreActions && <div className="absolute right-0 top-full z-20 mt-1 min-w-32 rounded border border-gray-700 bg-gray-800 p-1 shadow-xl">{isOpen && <button onClick={() => { setShowMoreActions(false); setConfirmCancel(true) }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">{session.status === "pending" ? "Cancel session" : "Stop session"}</button>}{!isOpen && <button onClick={async () => { try { const { DELETE: DEL } = await import("@/lib/api"); await DEL(`/sessions/${sessionId}`); toast("Session deleted", "success"); onClose() } catch { toast("Delete failed", "error") } }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">Delete session</button>}</div>}</div>
       </div>
       {confirmCancel && <div className="flex items-center justify-end gap-2 border-b border-red-900 bg-red-950/40 px-3 py-2 text-xs"><span className="mr-auto text-red-200">{session.status === "pending" ? "Cancel this queued session?" : "Stop this session? It cannot currently be resumed."}</span><button onClick={() => setConfirmCancel(false)} className="rounded border border-gray-600 px-2 py-1">Go back</button><button onClick={cancel} className="rounded bg-red-700 px-2 py-1 text-white">{session.status === "pending" ? "Cancel session" : "Stop session"}</button></div>}

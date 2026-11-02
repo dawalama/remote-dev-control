@@ -8275,7 +8275,10 @@ def _terminal_presets_path() -> Path:
 @app.get("/settings/terminal-presets")
 async def get_terminal_presets():
     """Return terminal starter presets (launcher list). Stored in ~/.rdc/terminal_presets.json."""
+    from .session_manager import discover_agent_aliases
+
     path = _terminal_presets_path()
+    base_presets = list(_DEFAULT_TERMINAL_PRESETS)
     if path.exists():
         try:
             data = json.loads(path.read_text())
@@ -8288,10 +8291,26 @@ async def get_terminal_presets():
                 ]
                 if len(cleaned) != len(data):
                     path.write_text(json.dumps(cleaned, indent=2))
-                return cleaned
+                base_presets = cleaned
         except (json.JSONDecodeError, OSError):
             pass
-    return _DEFAULT_TERMINAL_PRESETS
+
+    existing_ids = {str(p.get("id", "")) for p in base_presets}
+    existing_cmds = {str(p.get("command", "")).strip() for p in base_presets}
+    alias_presets = []
+    icon_map = {"codex": "O", "claude": "A", "cursor": "C"}
+    for alias_id, info in sorted(discover_agent_aliases().items()):
+        if alias_id in existing_ids or alias_id in existing_cmds:
+            continue
+        fam = info.get("family", "")
+        alias_presets.append({
+            "id": alias_id,
+            "label": alias_id,
+            "command": alias_id,
+            "icon": icon_map.get(fam, "•"),
+            "description": f"Local {fam} shell alias",
+        })
+    return alias_presets + base_presets
 
 
 @app.patch("/settings/terminal-presets")
@@ -9154,18 +9173,8 @@ def _agent_provider_policy_path() -> Path:
 
 
 def _load_agent_provider_policy() -> dict:
-    path = _agent_provider_policy_path()
-    try:
-        policy = json.loads(path.read_text()) if path.exists() else {}
-    except (OSError, json.JSONDecodeError):
-        policy = {}
-    preferred = str(policy.get("preferred_provider") or "codex")
-    if preferred not in {"codex", "claude", "cursor"}:
-        preferred = "codex"
-    return {
-        "preferred_provider": preferred,
-        "fallback_policy": str(policy.get("fallback_policy") or "ask"),
-    }
+    from .supervised_sessions import _load_agent_provider_policy as _load_policy
+    return _load_policy()
 
 
 @app.get("/settings/agent-providers")

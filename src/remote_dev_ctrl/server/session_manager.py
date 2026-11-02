@@ -69,12 +69,200 @@ _outbound_scrubber = SecretScrubber()
 WAITING_REASON = "Agent is waiting for input"
 
 
-def _resolve_codex_model_flag() -> str:
-    """Return a `-m <model>` flag if ~/.codex/config.toml specifies a retired model not in models_cache.json."""
+_ALIAS_LINE_RE = re.compile(r"^\s*alias\s+([A-Za-z0-9_.-]+)\s*=\s*(.+?)\s*$")
+_FUNC_START_RE = re.compile(r"^\s*(?:function\s+)?([A-Za-z0-9_.-]+)\s*\(\s*\)\s*\{")
+_SOURCE_LINE_RE = re.compile(r"^\s*(?:source|\.)\s+([^\s#;]+)")
+
+
+def _strip_shell_quotes(raw: str) -> str:
+    val = raw.strip()
+    if len(val) >= 2 and ((val[0] == "'" and val[-1] == "'") or (val[0] == '"' and val[-1] == '"')):
+        return val[1:-1].strip()
+    # Strip trailing inline comment if unquoted
+    val = re.split(r"\s+#", val, maxsplit=1)[0].strip()
+    if len(val) >= 2 and ((val[0] == "'" and val[-1] == "'") or (val[0] == '"' and val[-1] == '"')):
+        return val[1:-1].strip()
+    return val
+
+
+def _candidate_shell_rc_files() -> list[Path]:
+    home = Path.home()
+    roots = [
+        home / ".zshenv",
+        home / ".zprofile",
+        home / ".zshrc",
+        home / ".zsh_aliases",
+        home / ".aliases",
+        home / ".bashrc",
+        home / ".bash_profile",
+    ]
+    custom_dir = home / ".oh-my-zsh" / "custom"
+    if custom_dir.is_dir():
+        roots.extend(sorted(custom_dir.glob("*.zsh")))
+
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+
+    def _add(p: Path, follow_sources: bool = True) -> None:
+        try:
+            resolved = p.expanduser().resolve()
+        except Exception:
+            return
+        if resolved in seen or not resolved.is_file():
+            return
+        seen.add(resolved)
+        ordered.append(resolved)
+        if not follow_sources:
+            return
+        try:
+            for line in resolved.read_text(errors="replace").splitlines():
+                m = _SOURCE_LINE_RE.match(line)
+                if not m:
+                    continue
+                target = _strip_shell_quotes(m.group(1))
+                target = target.replace("$HOME", str(home)).replace("${HOME}", str(home))
+                if "$" in target:
+                    continue
+                _add(Path(target), follow_sources=False)
+        except Exception:
+            pass
+
+    for r in roots:
+        _add(r, follow_sources=True)
+    return ordered
+
+
+def _classify_agent_family(name: str, expansion: str) -> str | None:
+    name_l = name.lower()
+    exp_l = expansion.lower()
+    if name_l.startswith(("codex-", "codex_")) or re.search(r"\bcodex\b", name_l):
+        return "codex"
+    if name_l.startswith(("claude-", "claude_")) or re.search(r"\bclaude\b", name_l):
+        return "claude"
+    if name_l.startswith(("cursor-", "cursor_")) or re.search(r"\bcursor(?:-agent)?\b", name_l):
+        return "cursor"
+    if re.search(r"(?:^|\s|/)codex(?:\s|$)", exp_l):
+        return "codex"
+    if re.search(r"(?:^|\s|/)claude(?:\s|$)", exp_l):
+        return "claude"
+    if re.search(r"(?:^|\s|/)cursor-agent(?:\s|$)", exp_l):
+        return "cursor"
+    return None
+
+
+def discover_agent_aliases() -> dict[str, dict[str, str]]:
+    """Discover local shell aliases/functions for claude, codex, and cursor-agent.
+
+    Returns a mapping of alias_id -> {"id": alias_id, "family": family, "expansion": expansion, "kind": "alias"|"function"}.
+    Never log or return `expansion` in API responses as it may contain inline env vars.
+    """
+    raw_aliases: dict[str, str] = {}
+    raw_funcs: dict[str, str] = {}
+
+    for rc_path in _candidate_shell_rc_files():
+        try:
+            lines = rc_path.read_text(errors="replace").splitlines()
+        except Exception:
+            continue
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            m_alias = _ALIAS_LINE_RE.match(line)
+            if m_alias:
+                alias_name, alias_val = m_alias.group(1), _strip_shell_quotes(m_alias.group(2))
+                if alias_val:
+                    raw_aliases[alias_name] = alias_val
+                i += 1
+                continue
+            m_func = _FUNC_START_RE.match(line)
+            if m_func:
+                fname = m_func.group(1)
+                func_lines = [line]
+                brace_depth = line.count("{") - line.count("}")
+                i += 1
+                while i < len(lines) and brace_depth > 0:
+                    func_lines.append(lines[i])
+                    brace_depth += lines[i].count("{") - lines[i].count("}")
+                    i += 1
+                raw_funcs[fname] = "\n".join(func_lines)
+                continue
+            i += 1
+
+    # Resolve up to 3 levels of alias-to-alias references
+    def _expand_alias(val: str) -> str:
+        current = val
+        for _ in range(3):
+            parts = current.strip().split(None, 1)
+            if not parts:
+                break
+            first = parts[0]
+            if first in raw_aliases and raw_aliases[first] != current:
+                rest = f" {parts[1]}" if len(parts) > 1 else ""
+                current = f"{raw_aliases[first]}{rest}"
+            else:
+                break
+        return current
+
+    discovered: dict[str, dict[str, str]] = {}
+    for name, val in raw_aliases.items():
+        if name in {"claude", "codex", "cursor", "cursor-agent"}:
+            continue
+        expanded = _expand_alias(val)
+        expanded = re.sub(r"=~/", '="$HOME"/', expanded)
+        family = _classify_agent_family(name, expanded)
+        if family:
+            discovered[name] = {
+                "id": name,
+                "family": family,
+                "expansion": expanded,
+                "kind": "alias",
+            }
+
+    for fname, fbody in raw_funcs.items():
+        if fname in {"claude", "codex", "cursor", "cursor-agent"} or fname in discovered:
+            continue
+        family = _classify_agent_family(fname, fbody)
+        if family:
+            discovered[fname] = {
+                "id": fname,
+                "family": family,
+                "expansion": fbody,
+                "kind": "function",
+            }
+
+    return discovered
+
+
+def resolve_provider_spec(provider: str) -> tuple[str, str, dict[str, str] | None]:
+    """Return (family, invocation_prefix, alias_info) for a provider or alias."""
+    aliases = discover_agent_aliases()
+    if provider in aliases:
+        info = aliases[provider]
+        return info["family"], info["expansion"], info
+    if provider in {"codex", "claude", "cursor", "diagnostic", "shell"}:
+        default_cmd = {"codex": "codex", "claude": "claude", "cursor": "cursor-agent"}.get(provider, provider)
+        return provider, default_cmd, None
+    # Heuristic fallback if user typed a custom alias name like claude-work or codex-quill not yet in static parse
+    family = _classify_agent_family(provider, provider)
+    if family:
+        return family, provider, {"id": provider, "family": family, "expansion": provider, "kind": "zsh_dynamic"}
+    raise ValueError(f"Unsupported session provider: {provider}")
+
+
+def _resolve_codex_model_flag(invocation: str = "codex") -> str:
+    """Return a `-m <model>` flag if config.toml specifies a retired model not in models_cache.json."""
     try:
         codex_dir = Path.home() / ".codex"
+        m_home = re.search(r'CODEX_HOME=(?:["\']?)([^"\'\s]+)', invocation)
+        if m_home:
+            raw_dir = m_home.group(1).replace("$HOME", str(Path.home())).replace("~", str(Path.home()))
+            custom_dir = Path(raw_dir).expanduser()
+            if custom_dir.is_dir():
+                codex_dir = custom_dir
         config_path = codex_dir / "config.toml"
         cache_path = codex_dir / "models_cache.json"
+        if not cache_path.exists():
+            cache_path = Path.home() / ".codex" / "models_cache.json"
         if not config_path.exists() or not cache_path.exists():
             return ""
         m = re.search(r'(?m)^model\s*=\s*"([^"]+)"', config_path.read_text(errors="replace"))
@@ -91,58 +279,98 @@ def _resolve_codex_model_flag() -> str:
         return ""
 
 
+def _wrap_alias_invocation(alias_info: dict[str, str] | None, default_cmd: str, args_str: str) -> str:
+    if not alias_info:
+        return f"{default_cmd} {args_str}".strip()
+    kind = alias_info.get("kind")
+    expansion = alias_info.get("expansion", default_cmd)
+    alias_id = alias_info.get("id", default_cmd)
+    if kind == "function":
+        return f"{expansion}\n{alias_id} {args_str}".strip()
+    if kind == "zsh_dynamic":
+        inner = f"setopt aliases; [[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1; [[ -f ~/.zshrc ]] && source ~/.zshrc >/dev/null 2>&1; {alias_id} {args_str}"
+        return f"zsh -c {shlex.quote(inner)}"
+    return f"{expansion} {args_str}".strip()
+
+
 def build_agent_command(provider: str, description: str) -> str:
-    """Build the terminal command for the provider the user actually selected."""
+    """Build the terminal command for the provider or local alias the user selected."""
     prompt = shlex.quote(description[:4000])
-    codex_model_flag = _resolve_codex_model_flag() if provider == "codex" else ""
-    commands = {
-        "claude": f"claude {prompt}",
-        "codex": (
+    if provider == "shell":
+        return f"trap 'echo __RDC_EXIT:$?' EXIT; {description}"
+    if provider == "diagnostic":
+        return "trap 'echo __RDC_EXIT:$?' EXIT; printf 'RDC diagnostic session completed without project writes\\n'"
+
+    family, invocation, alias_info = resolve_provider_spec(provider)
+    if family == "claude":
+        inner = _wrap_alias_invocation(alias_info, "claude", prompt)
+    elif family == "codex":
+        codex_model_flag = _resolve_codex_model_flag(invocation)
+        codex_args = f"--ask-for-approval never exec --sandbox workspace-write{codex_model_flag} --output-last-message \"$rdc_final\" {prompt}"
+        codex_call = _wrap_alias_invocation(alias_info, "codex", codex_args)
+        inner = (
             "rdc_final=$(mktemp /tmp/rdc-codex-final.XXXXXX); "
-            f"codex --ask-for-approval never exec --sandbox workspace-write{codex_model_flag} --output-last-message \"$rdc_final\" {prompt}; "
+            f"{codex_call}; "
             "rdc_code=$?; printf '\\n__RDC_FINAL_BEGIN__\\n'; cat \"$rdc_final\"; "
             "printf '\\n__RDC_FINAL_END__\\n'; rm -f \"$rdc_final\"; exit $rdc_code"
-        ),
-        "cursor": f"cursor-agent -p --trust {prompt}",
-        "diagnostic": "printf 'RDC diagnostic session completed without project writes\\n'",
-    }
-    inner = description if provider == "shell" else commands.get(provider)
-    if inner is None:
+        )
+    elif family == "cursor":
+        inner = _wrap_alias_invocation(alias_info, "cursor-agent", f"-p --trust {prompt}")
+    else:
         raise ValueError(f"Unsupported session provider: {provider}")
     return f"trap 'echo __RDC_EXIT:$?' EXIT; {inner}"
 
 
 def agent_provider_blocker(provider: str) -> str | None:
-    """Return a user-facing blocker before creating a terminal for a provider."""
-    checks = {
-        "cursor": (["cursor-agent", "about"], "Cursor Agent", "cursor-agent login", "CURSOR_API_KEY"),
-        "codex": (["codex", "login", "status"], "Codex CLI", "codex login", "OPENAI_API_KEY"),
-        "claude": (["claude", "auth", "status"], "Claude Code", "claude auth login", "ANTHROPIC_API_KEY"),
-    }
+    """Return a user-facing blocker before creating a terminal for a provider or alias."""
     if provider == "diagnostic":
         return None
-    check = checks.get(provider)
+    try:
+        family, _invocation, alias_info = resolve_provider_spec(provider)
+    except ValueError:
+        return f"Unsupported session provider: {provider}"
+
+    checks = {
+        "cursor": ("cursor-agent", ["about"], "Cursor Agent", "cursor-agent login", "CURSOR_API_KEY"),
+        "codex": ("codex", ["login", "status"], "Codex CLI", "codex login", "OPENAI_API_KEY"),
+        "claude": ("claude", ["auth", "status"], "Claude Code", "claude auth login", "ANTHROPIC_API_KEY"),
+    }
+    check = checks.get(family)
     if not check:
         return f"Unsupported session provider: {provider}"
-    command, label, setup_command, key_name = check
-    if not shutil.which(command[0]):
+    base_bin, sub_args, base_label, setup_command, key_name = check
+    label = f"{provider} ({base_label})" if alias_info else base_label
+    if alias_info:
+        setup_command = f"{provider} {' '.join(sub_args[:-1])} login".strip() if family != "cursor" else f"{provider} login"
+
+    if not shutil.which(base_bin):
         return f"{label} is not installed on the RDC host."
     try:
-        # Long enough for a cold CLI auth check. The session start holds this call.
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            timeout=15,
-            check=False,
-        )
+        if alias_info:
+            shell_cmd = _wrap_alias_invocation(alias_info, base_bin, " ".join(sub_args))
+            result = subprocess.run(
+                ["zsh", "-c", shell_cmd],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=15,
+                check=False,
+            )
+        else:
+            result = subprocess.run(
+                [base_bin, *sub_args],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=15,
+                check=False,
+            )
     except FileNotFoundError:
         return f"{label} is not installed on the RDC host."
     except subprocess.TimeoutExpired:
         return f"{label} authentication check timed out. Run `{setup_command}` on the RDC host."
     stdout_lower = (getattr(result, "stdout", "") or "").lower()
-    if result.returncode != 0 or (provider == "cursor" and "not logged in" in stdout_lower):
+    if result.returncode != 0 or (family == "cursor" and "not logged in" in stdout_lower):
         return f"{label} is not authenticated for RDC. Run `{setup_command}` on the RDC host or configure {key_name}."
     return None
 
@@ -150,12 +378,31 @@ def agent_provider_blocker(provider: str) -> str | None:
 def list_agent_provider_readiness() -> list[dict[str, Any]]:
     from concurrent.futures import ThreadPoolExecutor
 
-    definitions = [
+    family_labels = {
+        "codex": "Codex CLI",
+        "claude": "Claude Code",
+        "cursor": "Cursor Agent",
+    }
+    family_bins = {
+        "codex": "codex",
+        "claude": "claude",
+        "cursor": "cursor-agent",
+    }
+    definitions: list[tuple[str, str, str | None, str | None]] = []
+    # Put discovered local aliases first so the user's primary workflow aliases stand out
+    aliases = discover_agent_aliases()
+    for alias_id, info in sorted(aliases.items()):
+        fam = info["family"]
+        base_bin = family_bins.get(fam, fam)
+        setup_cmd = f"{alias_id} login" if fam != "claude" else f"{alias_id} auth login"
+        definitions.append((alias_id, f"{alias_id} ({family_labels.get(fam, fam)})", base_bin, setup_cmd))
+
+    definitions.extend([
         ("codex", "Codex CLI", "codex", "codex login"),
         ("claude", "Claude Code", "claude", "claude auth login"),
         ("cursor", "Cursor Agent", "cursor-agent", "cursor-agent login"),
         ("diagnostic", "Diagnostic", None, None),
-    ]
+    ])
 
     def _probe(defn: tuple[str, str, str | None, str | None]) -> dict[str, Any]:
         provider_id, label, executable, setup_command = defn
@@ -172,7 +419,7 @@ def list_agent_provider_readiness() -> list[dict[str, Any]]:
             "capabilities": ["plan", "write", "verify"] if provider_id != "diagnostic" else ["verify"],
         }
 
-    with ThreadPoolExecutor(max_workers=len(definitions)) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, len(definitions))) as pool:
         return list(pool.map(_probe, definitions))
 
 # Patterns that indicate the agent is waiting for user input
