@@ -97,14 +97,22 @@ export function SessionsCard({
         acceptance_criteria: draft.criteria.split("\n").map((item) => item.trim()).filter(Boolean),
         provider: draft.provider,
       })
-      await POST(`/sessions/${created.id}/retry`)
       setDraft((value) => ({ ...value, goal: "", criteria: "" }))
       setShowCreate(false)
       setShowOptions(false)
+      try {
+        await POST(`/sessions/${created.id}/retry`)
+      } catch (startErr) {
+        const msg = startErr instanceof Error ? startErr.message : String(startErr || "")
+        const detail = msg.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] || msg.replace(/^API \d+:\s*/, "") || "Session created, but agent could not start"
+        toast(detail, "error")
+      }
       await load()
       openSession(created.id)
-    } catch {
-      toast("Could not start the session", "error")
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err || "")
+      const detail = msg.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] || msg.replace(/^API \d+:\s*/, "") || "Could not create the session"
+      toast(detail, "error")
     } finally { setCreating(false) }
   }
 

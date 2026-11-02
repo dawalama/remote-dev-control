@@ -69,14 +69,37 @@ _outbound_scrubber = SecretScrubber()
 WAITING_REASON = "Agent is waiting for input"
 
 
+def _resolve_codex_model_flag() -> str:
+    """Return a `-m <model>` flag if ~/.codex/config.toml specifies a retired model not in models_cache.json."""
+    try:
+        codex_dir = Path.home() / ".codex"
+        config_path = codex_dir / "config.toml"
+        cache_path = codex_dir / "models_cache.json"
+        if not config_path.exists() or not cache_path.exists():
+            return ""
+        m = re.search(r'(?m)^model\s*=\s*"([^"]+)"', config_path.read_text(errors="replace"))
+        if not m:
+            return ""
+        configured_model = m.group(1).strip()
+        cache_data = json.loads(cache_path.read_text(errors="replace"))
+        models = cache_data.get("models", []) if isinstance(cache_data, dict) else []
+        slugs = [item.get("slug") for item in models if isinstance(item, dict) and item.get("slug")]
+        if not slugs or configured_model in slugs:
+            return ""
+        return f" -m {shlex.quote(slugs[0])}"
+    except Exception:
+        return ""
+
+
 def build_agent_command(provider: str, description: str) -> str:
     """Build the terminal command for the provider the user actually selected."""
     prompt = shlex.quote(description[:4000])
+    codex_model_flag = _resolve_codex_model_flag() if provider == "codex" else ""
     commands = {
         "claude": f"claude {prompt}",
         "codex": (
             "rdc_final=$(mktemp /tmp/rdc-codex-final.XXXXXX); "
-            f"codex --ask-for-approval never exec --sandbox workspace-write --output-last-message \"$rdc_final\" {prompt}; "
+            f"codex --ask-for-approval never exec --sandbox workspace-write{codex_model_flag} --output-last-message \"$rdc_final\" {prompt}; "
             "rdc_code=$?; printf '\\n__RDC_FINAL_BEGIN__\\n'; cat \"$rdc_final\"; "
             "printf '\\n__RDC_FINAL_END__\\n'; rm -f \"$rdc_final\"; exit $rdc_code"
         ),
@@ -176,15 +199,26 @@ def extract_agent_report(transcript: str, provider: str | None) -> str:
     cleaned = strip_ansi(transcript).replace("\r\n", "\n")
     final_match = re.search(r"\n__RDC_FINAL_BEGIN__\n(.*?)\n__RDC_FINAL_END__", cleaned, re.DOTALL)
     if final_match:
-        return final_match.group(1).strip()
+        final_text = final_match.group(1).strip()
+        if final_text:
+            return final_text
     # Codex prints this stable role marker even when RDC recorded the provider
     # as "orchestrated". Inspect the transcript instead of trusting that alias.
     marker = "codex\n"
     marker_index = cleaned.rfind(marker)
     if marker_index >= 0:
         report = cleaned[marker_index + len(marker):]
-        report = re.split(r"\ntokens used\n|\n__RDC_EXIT:\d+", report, maxsplit=1)[0]
-        return report.strip()
+        report = re.split(r"\ntokens used\n|\n__RDC_FINAL_BEGIN__|\n__RDC_EXIT:\d+", report, maxsplit=1)[0]
+        if report.strip():
+            return report.strip()
+    error_lines = [
+        line.strip()
+        for line in cleaned.splitlines()
+        if line.strip().lower().startswith(("error:", "fatal:"))
+    ]
+    if error_lines:
+        deduped = list(dict.fromkeys(error_lines))
+        return _outbound_scrubber.scrub("\n".join(deduped[-3:]))
     return ""
 
 
@@ -548,7 +582,12 @@ class SessionManager:
             except Exception:
                 logger.exception("Terminal monitor failed: %s/%s", session.id, terminal_id)
 
-        self._monitors[monitor_key] = asyncio.create_task(_monitor())
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("No running event loop for terminal monitor %s", monitor_key)
+            return
+        self._monitors[monitor_key] = loop.create_task(_monitor())
 
     async def _monitor_terminal(self, session: Session, terminal_id: str):
         """Monitor a single terminal's output for a session."""

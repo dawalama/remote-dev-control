@@ -160,8 +160,14 @@ export function SessionViewer({
     try {
       await POST(`/sessions/${sessionId}/retry`, { provider: retryProvider })
       toast(session?.status === "pending" ? "Session started" : "Session restarted", "success")
-      loadSession()
-    } catch { toast("Retry failed", "error") }
+      await loadSession()
+      await loadSupervision()
+      await loadArtifact()
+    } catch (error) {
+      toast(apiErrorDetail(error, "Retry failed"), "error")
+      await loadSession()
+      await loadArtifact()
+    }
   }
 
   const restoreReview = async () => {

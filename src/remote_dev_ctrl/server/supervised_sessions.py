@@ -239,7 +239,7 @@ def start_supervised_session(
             sm,
             s,
             previous,
-            summary="The selected agent is not ready.",
+            summary=provider_blocker,
             error=provider_blocker,
         )
 
