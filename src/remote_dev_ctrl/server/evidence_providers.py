@@ -90,7 +90,7 @@ def enable_entire(project_path: Path, agent: str) -> dict[str, Any]:
     executable = shutil.which("entire")
     if not executable:
         raise RuntimeError("Entire CLI is not installed")
-    agent_names = {"claude": "claude-code", "gwd": "gemini"}
+    agent_names = {"claude": "claude-code"}
     entire_agent = agent_names.get(agent, agent)
     result = subprocess.run(
         [

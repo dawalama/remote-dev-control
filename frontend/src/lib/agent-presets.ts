@@ -1,5 +1,5 @@
 /**
- * Terminal starter list: agents (Cursor, Claude, Gemini) and shell.
+ * Terminal starter list: agents (Cursor, Claude) and shell.
  * This is the list shown in the "+" launcher and empty-state launcher.
  * Project settings only configure the *default* (one command); the list itself is here.
  */
@@ -19,13 +19,6 @@ export const AGENT_PRESETS: AgentPreset[] = [
     command: "rdc-launch cursor-agent",
     icon: "C",
     description: "Cursor AI agent",
-  },
-  {
-    id: "gemini",
-    label: "Gemini",
-    command: "rdc-launch gemini",
-    icon: "G",
-    description: "Google Gemini CLI",
   },
   {
     id: "claude",

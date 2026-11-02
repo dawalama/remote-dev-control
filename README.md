@@ -2,7 +2,7 @@
 
 **Monitor and control your AI coding agents from anywhere - phone, tablet, or browser.**
 
-RDC is an open-source command center for developers running multiple AI agents (Claude Code, Cursor, Gemini CLI) across multiple projects. One dashboard, all your terminals, accessible from any device.
+RDC is an open-source command center for developers running multiple AI agents (Claude Code, Codex, Cursor) across multiple projects. Your workstation is **HomeBase**; phones and other browsers are **Nodes**. Brief agents, supervise sessions, and intervene when needed — including by voice/text (`Brief me`).
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
@@ -70,7 +70,7 @@ npm install -g pnpm
 
 ### Terminal Management
 
-- Spawn Claude Code, Cursor, Gemini CLI, or plain shell per project
+- Spawn Claude Code, Codex, Cursor, or plain shell per project
 - WebSocket streaming with auto-reconnect and snapshot-based session restore
 - Terminal switcher: tap title or long-press Back to switch between terminals
 - Virtual keyboard with arrow keys, Ctrl-C, Tab, Enter for mobile

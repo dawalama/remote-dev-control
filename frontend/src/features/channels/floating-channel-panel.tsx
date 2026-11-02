@@ -6,6 +6,7 @@ import { useChannelSend } from "@/hooks/use-channel-send"
 import { useFileUpload } from "@/hooks/use-file-upload"
 import { ChannelSettings } from "./channel-settings"
 import { MessageRenderer } from "./message-renderer"
+import { ChatScopeChip } from "@/components/chat-scope-chip"
 
 type PanelSize = "half" | "expanded"
 
@@ -76,8 +77,14 @@ export function FloatingChannelPanel({
 
   if (!activeChannelId || !channel) {
     return (
-      <div className="fixed bottom-20 right-6 z-[110] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl px-4 py-3 w-96">
-        <div className="text-center text-xs text-gray-600">Select a workstream to start</div>
+      <div className="fixed bottom-20 right-6 z-[110] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl px-4 py-3 w-96 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <ChatScopeChip />
+          <button type="button" onClick={toggleChat} className="text-gray-500 hover:text-gray-300 text-xs px-1" title="Close">✕</button>
+        </div>
+        <p className="text-center text-xs text-gray-500">
+          HomeBase chat is ready. Select a workstream for history, or type <span className="text-gray-300">Brief me</span> in the voice bar for whole-machine status.
+        </p>
       </div>
     )
   }
@@ -98,6 +105,7 @@ export function FloatingChannelPanel({
       <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files?.length) uploadMultiple(e.target.files); e.target.value = "" }} />
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800 flex-shrink-0">
+        <ChatScopeChip compact />
         <span className="text-xs font-medium text-gray-300 truncate">{channel.name.replace(/^#/, "")}</span>
         {projectName && (
           <span className="text-[10px] text-gray-600">{projectName}</span>

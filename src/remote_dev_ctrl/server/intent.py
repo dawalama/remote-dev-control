@@ -421,14 +421,31 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "spawn_agent",
-            "description": "Launch a CLI coding agent (Claude Code) in a terminal to DO actual work on an EXISTING project: implement a feature, refactor code, fix a multi-file bug, write tests. Prefer this when work would take >5 tool calls or touches >2-3 files. Do NOT use for simply recording a task (use create_task) or for creating a new project (use create_project).",
+            "description": "Launch a supervised work session with a CLI coding agent on an EXISTING project: implement a feature, refactor code, fix a multi-file bug, write tests. Creates the same durable Sessions Hub session as the UI. Prefer when work would take >5 tool calls or touches >2-3 files. Do NOT use for simply recording a task (use create_task) or for creating a new project (use create_project).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "project": {"type": "string", "description": "Project name"},
-                    "task": {"type": "string", "description": "Task description for the agent"},
+                    "task": {"type": "string", "description": "Task description / goal for the agent"},
+                    "provider": {"type": "string", "description": "Optional agent provider (orchestrated, claude, codex, cursor). Default orchestrated uses HomeBase preferred provider."},
                 },
                 "required": ["project", "task"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "brief_homebase",
+            "description": "Get a deterministic HomeBase status brief across the whole machine: active supervised sessions, what needs the user (approvals/blockers), and a recommended next step. Default is ALL workstreams/projects. Only pass workstream_id when the user explicitly asks about one workstream/project. Do NOT invent status via run_command when this tool is available.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "workstream_id": {
+                        "type": "string",
+                        "description": "Optional. Only set when the user explicitly scopes the brief to one workstream/channel.",
+                    },
+                },
             },
         },
     },
@@ -891,7 +908,7 @@ ORCHESTRATOR_TOOLS = [
 _LOCAL_TOOL_NAMES = {
     "navigate", "select_project", "show_tab", "open_terminal",
     "start_action", "stop_action", "execute_action", "create_task", "create_project",
-    "spawn_agent", "present_options", "present_ui", "select_collection",
+    "spawn_agent", "brief_homebase", "present_options", "present_ui", "select_collection",
     "set_layout", "set_theme", "restart_server", "restart_action",
     "kill_terminal", "restart_terminal", "toggle_sidebar", "toggle_chat",
     "run_command", "read_file", "fetch_url", "write_file", "edit_file",
@@ -904,7 +921,8 @@ ORCHESTRATOR_TOOLS_LOCAL = [t for t in ORCHESTRATOR_TOOLS if t["function"]["name
 TOOLS_WITH_OUTPUT = {
     "run_command", "read_file", "write_file", "edit_file", "fetch_url",
     "list_workstreams", "browser_snapshot", "browser_text",
-    "browser_tabs", "browser_find", "server_status",
+    "browser_tabs", "browser_find", "server_status", "brief_homebase",
+    "spawn_agent",
 }
 
 # ---------------------------------------------------------------------------
@@ -1018,6 +1036,7 @@ _validate_tool_scopes()
 class ToolCall:
     name: str
     params: dict
+    result: dict | None = None
 
 
 @dataclass
@@ -1723,14 +1742,20 @@ def build_system_prompt(
         "- User explicitly asks to 'build', 'implement', 'create a feature', 'refactor', or 'write tests for all'",
         "- The work would take you more than 5 tool calls to complete",
         "When in doubt between tool loop and spawn_agent, prefer spawn_agent for anything non-trivial.",
-        "spawn_agent launches a Claude Code agent that can handle complex multi-file work autonomously.",
+        "spawn_agent starts a supervised session with the HomeBase preferred provider, or the provider argument.",
+        "After spawn_agent returns, tell the user whether the session started. Include the session id on success.",
+        "If spawn_agent fails, say that it failed and include the error. Do not say it started.",
         "",
         "DO NOT use UI navigation tools (show_tab, open_terminal, navigate, focus_terminal) unless the user is "
         "on a phone call or explicitly asks to navigate. The user has buttons for those — they want you to "
         "DO the work or ANALYZE something, not click buttons for them.",
         "",
-        "When the user asks to 'review changes', 'check status', 'what's running', etc., use run_command "
-        "to gather information and respond with a clear summary. Don't just open a terminal.",
+        "When the user asks for HomeBase status, what's running, what needs them, or a brief — "
+        "call brief_homebase (deterministic). Do NOT invent session status via run_command. "
+        "Exact phrases like 'brief me' may already be handled client-side without calling you.",
+        "",
+        "When the user asks to 'review changes' or inspect git, use run_command to gather information "
+        "and respond with a clear summary. Don't just open a terminal.",
         "",
         "IMPORTANT: When you offer choices or ask for approval, ALWAYS use the present_ui tool instead of "
         "writing 'Would you like me to...' as text. The user should be able to CLICK their choice, not type it.",
@@ -2252,6 +2277,7 @@ class IntentEngine:
                 if tc.function.name in TOOLS_WITH_OUTPUT:
                     has_output_tools = True
                     result = await executor.execute(action.name, action.params, ctx)
+                    action.result = result if isinstance(result, dict) else {"output": str(result)}
                     result_text = _json_mod.dumps(result, default=str)[:3000]
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
                 else:
@@ -2284,6 +2310,7 @@ class IntentEngine:
 
         if not response_text and all_actions:
             response_text = _auto_confirm(all_actions)
+        response_text = _prefer_spawn_result(response_text, all_actions)
         if not response_text and ui_components:
             # LLM returned only UI components with no text — that's fine
             response_text = ""
@@ -2297,6 +2324,28 @@ class IntentEngine:
         }
 
         return IntentResult(response=response_text, actions=all_actions, options=options, ui_components=ui_components, usage=usage)
+
+
+def _prefer_spawn_result(response_text: str, actions: list[ToolCall]) -> str:
+    """Keep a spoken reply from claiming a session started when the tool failed."""
+    notes: list[str] = []
+    failed = False
+    for action in actions:
+        if action.name != "spawn_agent" or not action.result:
+            continue
+        output = action.result.get("output")
+        if output:
+            notes.append(str(output))
+        if action.result.get("success") is False:
+            failed = True
+    if not notes:
+        return response_text
+    stripped = (response_text or "").strip().lower().rstrip(".")
+    if failed and "fail" not in (response_text or "").lower():
+        return " ".join(notes)
+    if stripped in {"", "done", "ok", "started"}:
+        return " ".join(notes)
+    return response_text
 
 
 def _auto_confirm(actions: list[ToolCall]) -> str:
@@ -2331,8 +2380,8 @@ def _auto_confirm(actions: list[ToolCall]) -> str:
                 parts.append("Here's the activity log")
             case "show_screenshots":
                 parts.append("Here are the screenshots")
-            case "spawn_agent":
-                parts.append(f"Spawning an agent for {a.params.get('project', 'the project')}")
+            case "brief_homebase":
+                parts.append("Here's your HomeBase brief")
             case "search_projects":
                 parts.append("Here's the project search")
             case "add_project":
@@ -2392,6 +2441,9 @@ def _auto_confirm(actions: list[ToolCall]) -> str:
                 parts.append("Archived the workstream")
             case "delete_workstream":
                 parts.append("Deleted the workstream")
+            case "spawn_agent":
+                output = (a.result or {}).get("output")
+                parts.append(str(output) if output else "Starting a supervised session")
             case _:
                 parts.append(f"Done — {a.name.replace('_', ' ')}")
     return ". ".join(parts) + "." if parts else "Done."
@@ -2639,72 +2691,76 @@ class ActionExecutor:
                     project = fuzzy_match(params.get("project", ""), ctx.projects) or params.get("project", "") or ctx.project
                     return {"action": "take_screenshot", "project": project, "type": "client"}
 
+                case "brief_homebase":
+                    from .brief import build_homebase_brief
+
+                    # Whole HomeBase by default. Only filter when the caller
+                    # explicitly passes workstream_id (user asked for a scope).
+                    workstream_id = params.get("workstream_id") or None
+                    if isinstance(workstream_id, str) and not workstream_id.strip():
+                        workstream_id = None
+                    brief = build_homebase_brief(workstream_id=workstream_id)
+                    return {
+                        "action": "brief_homebase",
+                        "success": True,
+                        "type": "server",
+                        "scope": "pinned" if workstream_id else "homebase",
+                        "workstream_id": workstream_id,
+                        "spoken_summary": brief.get("spoken_summary"),
+                        "recommended_next": brief.get("recommended_next"),
+                        "needs_you": brief.get("needs_you"),
+                        "active_sessions": brief.get("active_sessions"),
+                        "brief": brief,
+                        "output": brief.get("spoken_summary") or "",
+                    }
+
                 case "spawn_agent":
                     project = fuzzy_match(params.get("project", ""), ctx.projects) or params.get("project", "") or ctx.project
                     task_desc = params.get("task", "")
                     if not project:
                         return {"action": "spawn_agent", "error": "No project specified", "success": False, "type": "server"}
+                    if not task_desc:
+                        return {"action": "spawn_agent", "error": "No task/goal specified", "success": False, "type": "server"}
 
                     channel_id = ctx.active_workstream_id
                     if not channel_id:
                         return {"action": "spawn_agent", "error": "No active workstream", "success": False, "type": "server"}
 
-                    # Create session
-                    from .session_manager import build_agent_command, get_session_manager
-                    sm = get_session_manager()
-                    session = sm.create_session(
-                        channel_id=channel_id,
-                        project=project,
-                        description=task_desc,
-                        agent_provider=params.get("provider", "claude"),
-                    )
+                    from .supervised_sessions import create_and_start_supervised_session
 
-                    # Spawn a terminal for the agent
-                    terminal_id = None
                     try:
-                        from .terminal import get_terminal_manager
-                        tm = get_terminal_manager()
-                        provider = params.get("provider", "claude")
-                        command = build_agent_command(provider, task_desc)
-                        term = tm.create(project=project, command=command)
-                        terminal_id = term.id
-                        sm.link_terminal(session.id, terminal_id)
-                    except Exception as e:
-                        logger.warning("Failed to spawn terminal for session %s: %s", session.id, e)
-                        sm.update_status(session.id, "failed")
-
-                    # Post session-started message to channel
-                    try:
-                        from .channel_manager import get_channel_manager
-                        cm = get_channel_manager()
-                        cm.post_message(
-                            channel_id,
-                            role="system",
-                            content=f"Session started: {task_desc[:200]}",
-                            metadata={"type": "a2ui", "components": [
-                                {"type": "task_card", "title": task_desc[:80], "status": "running", "project": project, "description": f"Session {session.id}"},
-                                {"type": "progress", "steps": [
-                                    {"label": "Session created", "status": "done"},
-                                    {"label": "Agent started", "status": "running" if terminal_id else "failed"},
-                                    {"label": "Executing task", "status": "pending"},
-                                    {"label": "Verification", "status": "pending"},
-                                ]},
-                            ]},
+                        started = create_and_start_supervised_session(
+                            channel_id=channel_id,
+                            project=project,
+                            goal=task_desc,
+                            provider=params.get("provider") or "orchestrated",
                         )
-                        cm.emit_event("session.started", channel_id=channel_id, project_id=project, data={
-                            "session_id": session.id, "description": task_desc[:200], "terminal_id": terminal_id,
-                        })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("spawn_agent supervised start failed: %s", type(e).__name__)
+                        message = str(e) or "Could not start the agent."
+                        return {
+                            "action": "spawn_agent",
+                            "project": project,
+                            "task": task_desc,
+                            "error": message,
+                            "success": False,
+                            "type": "server",
+                            "output": f"Failed to start the session on {project}: {message}",
+                        }
 
                     return {
                         "action": "spawn_agent",
                         "project": project,
-                        "session_id": session.id,
-                        "terminal_id": terminal_id,
+                        "session_id": started["session_id"],
+                        "terminal_id": started.get("terminal_id"),
                         "task": task_desc,
+                        "provider": started.get("provider"),
                         "success": True,
                         "type": "server",
+                        "output": (
+                            f"Started session {started['session_id']} on {project} "
+                            f"with {started.get('provider') or 'the selected provider'}."
+                        ),
                     }
 
                 case "end_phone_call":

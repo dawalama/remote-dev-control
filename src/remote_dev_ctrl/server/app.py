@@ -375,14 +375,17 @@ async def lifespan(app: FastAPI):
 
                     result = await engine.process(message, orch_ctx)
 
-                    # Execute actions the engine didn't already run (create_task,
-                    # create_project, spawn_agent, etc. are not in TOOLS_WITH_OUTPUT
-                    # and otherwise silently no-op).
+                    # Execute actions the engine didn't already run inside the tool loop.
                     task_id = None
                     resolved_project = project
                     for action in result.actions:
                         if action.name in TOOLS_WITH_OUTPUT:
-                            outcome = {"action": action.name, "success": True, "type": "server", **action.params}
+                            outcome = action.result or {
+                                "action": action.name,
+                                "success": True,
+                                "type": "server",
+                                **action.params,
+                            }
                         else:
                             outcome = await executor.execute(action.name, action.params, orch_ctx)
                         if outcome.get("action") == "create_task" and outcome.get("task_id"):
@@ -4740,7 +4743,12 @@ async def orchestrator_endpoint(
         executed = []
         for action in result.actions:
             if action.name in _ALREADY_EXECUTED:
-                executed.append({"action": action.name, "success": True, "type": "server", **action.params})
+                executed.append(action.result or {
+                    "action": action.name,
+                    "success": True,
+                    "type": "server",
+                    **action.params,
+                })
             else:
                 outcome = await executor.execute(action.name, action.params, ctx)
                 executed.append(outcome)
@@ -7814,11 +7822,19 @@ async def create_project(req: CreateProjectRequest):
     description = req.description
     tag_list = req.tags
 
-    # Auto-infer details and generate rdc.yaml if not provided
+    # Auto-infer details and generate rdc.yaml if not provided.
+    # Skip heavy LLM analysis for empty/bootstrap dirs when name+description exist.
     from ..llm import analyze_existing_project
     from ..scaffold import create_imported_project_rdc_yaml
 
-    if not description or not project_name:
+    try:
+        non_dot = [p for p in project_path.iterdir() if not p.name.startswith(".")]
+    except OSError:
+        non_dot = []
+    is_nearly_empty = len(non_dot) <= 1  # empty or only rdc.yaml from scaffold
+
+    inferred: dict = {}
+    if (not description or not project_name) and not is_nearly_empty:
         inferred = analyze_existing_project(project_path)
         if not project_name:
             project_name = inferred.get("name", project_path.name)
@@ -7828,6 +7844,11 @@ async def create_project(req: CreateProjectRequest):
             tag_list = [inferred.get("type")] + inferred.get("features", [])
             tag_list = [t for t in tag_list if t]
 
+    if not project_name:
+        project_name = project_path.name
+    if not description:
+        description = f"Project {project_name}"
+
     # Always try to generate rdc.yaml if it doesn't exist (check both extensions)
     rdc_yaml = project_path / "rdc.yaml"
     rdc_yml = project_path / "rdc.yml"
@@ -7835,12 +7856,10 @@ async def create_project(req: CreateProjectRequest):
         rdc_yaml = rdc_yml  # Use existing .yml
     if not rdc_yaml.exists():
         try:
-            # Re-infer if we didn't do it above
-            if 'inferred' not in locals():
+            if not inferred and not is_nearly_empty:
                 inferred = analyze_existing_project(project_path)
-            
             create_imported_project_rdc_yaml(project_path, project_name, {
-                **inferred,
+                **(inferred or {"type": "backend", "stack": {}, "features": []}),
                 "description": description,
             })
         except Exception:
@@ -8046,30 +8065,76 @@ class BootstrapProjectRequest(BaseModel):
     description: str
     path: str | None = None
     collection_id: str | None = None
+    # When true: OpenRouter/general LLM + templates scaffold structure (NOT coding agents).
+    scaffold: bool = True
 
 
 @app.post("/projects/bootstrap")
 async def bootstrap_empty_project(req: BootstrapProjectRequest):
-    """Create an empty project directory, register it, and create its workstream."""
+    """Create a project directory, optionally scaffold with general intelligence, register it.
+
+    Scaffolding uses RDC's general LLM path (OpenRouter/cloud via ``llm_generate``)
+    plus deterministic templates — not Codex/Claude coding-agent sessions.
+    """
     from pathlib import Path as _Path
     if not req.name.strip() or "/" in req.name or "\\" in req.name:
         raise HTTPException(status_code=422, detail="Use a simple project name without path separators")
+    name = req.name.strip()
+    description = req.description.strip()
     if req.path:
         project_path = _Path(req.path).expanduser().resolve()
     else:
         from .config import Config
         loaded_config = Config.load()
         projects_dir = loaded_config.projects_dir or os.environ.get("RDC_PROJECTS_DIR") or str(_Path.home() / "projects")
-        project_path = (_Path(projects_dir) / req.name).resolve()
+        project_path = (_Path(projects_dir) / name).resolve()
     if project_path.exists() and any(project_path.iterdir()):
         raise HTTPException(status_code=400, detail=f"Directory is not empty: {project_path}")
     project_path.mkdir(parents=True, exist_ok=True)
-    return await create_project(CreateProjectRequest(
+
+    scaffold_meta: dict = {"scaffolded": False, "intelligence": None}
+    if req.scaffold:
+        from ..llm import analyze_project_description
+        from ..scaffold import create_project as scaffold_project
+
+        # General intelligence (OpenRouter/cloud) — not coding CLI agents.
+        inferred = await asyncio.to_thread(analyze_project_description, description)
+        if not isinstance(inferred, dict):
+            inferred = {
+                "type": "fullstack",
+                "stack": {"backend": "fastapi", "frontend": "react"},
+                "database": "sqlite",
+                "deployment": "docker",
+                "features": [],
+            }
+        inferred["description"] = description
+        await asyncio.to_thread(
+            scaffold_project,
+            project_path,
+            name,
+            inferred,
+            False,  # register handled below
+            False,  # never install deps during bootstrap (host freeze risk)
+        )
+        scaffold_meta = {
+            "scaffolded": True,
+            "intelligence": "openrouter_or_cloud_llm",
+            "inferred": {
+                "type": inferred.get("type"),
+                "stack": inferred.get("stack"),
+                "database": inferred.get("database"),
+            },
+        }
+
+    created = await create_project(CreateProjectRequest(
         path=str(project_path),
-        name=req.name.strip(),
-        description=req.description.strip(),
+        name=name,
+        description=description,
         collection_id=req.collection_id,
     ))
+    if isinstance(created, dict):
+        created["scaffold"] = scaffold_meta
+    return created
 
 
 @app.post("/projects/scaffold")
@@ -8106,12 +8171,14 @@ async def scaffold_new_project(req: ScaffoldProjectRequest):
     if req.database: inferred["database"] = req.database
     if req.deployment: inferred["deployment"] = req.deployment
 
-    # Scaffold
+    # Scaffold via templates + general LLM inference (not coding-agent CLIs).
+    # Skip dep install here — callers can install later to avoid host freezes.
     result = scaffold_project(
         path=project_path,
         name=req.name,
         config=inferred,
-        register=False  # We'll register it below with collection_id
+        register=False,  # We'll register it below with collection_id
+        install_deps=False,
     )
 
     # Register
@@ -8195,7 +8262,6 @@ async def update_project_config(name: str, config: dict):
 
 _DEFAULT_TERMINAL_PRESETS = [
     {"id": "cursor", "label": "Cursor", "command": "cursor-agent", "icon": "C", "description": "Cursor AI agent"},
-    {"id": "gemini", "label": "Gemini", "command": "gemini", "icon": "G", "description": "Google Gemini CLI"},
     {"id": "claude", "label": "Claude", "command": "claude --continue", "icon": "A", "description": "Anthropic Claude Code"},
     {"id": "shell", "label": "Shell", "command": "", "icon": "$", "description": "Plain login shell"},
 ]
@@ -9000,13 +9066,9 @@ async def get_channel_context(channel_id: str, project: str | None = None):
 
 
 def _session_git_snapshot(project: str) -> dict[str, str]:
-    try:
-        path = _session_project_path(project)
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=path, text=True, capture_output=True, timeout=10, check=False)
-        status = subprocess.run(["git", "status", "--short"], cwd=path, text=True, capture_output=True, timeout=10, check=False)
-        return {"head": head.stdout.strip() if head.returncode == 0 else "", "status": status.stdout.strip() if status.returncode == 0 else ""}
-    except Exception:
-        return {"head": "", "status": ""}
+    from .supervised_sessions import session_git_snapshot
+
+    return session_git_snapshot(project)
 
 
 def _session_review_mode(session) -> str:
@@ -9088,8 +9150,11 @@ def _load_agent_provider_policy() -> dict:
         policy = json.loads(path.read_text()) if path.exists() else {}
     except (OSError, json.JSONDecodeError):
         policy = {}
+    preferred = str(policy.get("preferred_provider") or "codex")
+    if preferred not in {"codex", "claude", "cursor"}:
+        preferred = "codex"
     return {
-        "preferred_provider": str(policy.get("preferred_provider") or "codex"),
+        "preferred_provider": preferred,
         "fallback_policy": str(policy.get("fallback_policy") or "ask"),
     }
 
@@ -9151,23 +9216,20 @@ async def enable_entire_evidence_provider(body: EnableEvidenceProviderRequest):
 @app.post("/sessions")
 async def create_supervised_session(body: CreateSupervisedSessionRequest):
     """Create a goal-centered session using the current session aggregate."""
-    if not resolve_project_id(body.project):
-        raise HTTPException(status_code=404, detail="Project not found")
-    from .session_manager import get_session_manager
-    from .evidence_providers import active_evidence_provider_refs
-    project_record = get_project_repo().get(body.project)
-    project_path = Path(project_record.path) if project_record and project_record.path else None
-    evidence_providers = await asyncio.to_thread(active_evidence_provider_refs, project_path)
-    session = get_session_manager().create_session(
-        channel_id=body.channel_id,
-        project=body.project,
-        description=body.goal,
-        agent_provider=body.provider,
-        metadata={"supervised": True, "git_baseline": _session_git_snapshot(body.project), "evidence_providers": evidence_providers},
-        acceptance_criteria=[item.strip() for item in body.acceptance_criteria if item.strip()],
-        policy=body.policy,
-        budget=body.budget,
-    )
+    from .supervised_sessions import create_supervised_session as create_supervised
+
+    try:
+        session = create_supervised(
+            channel_id=body.channel_id,
+            project=body.project,
+            goal=body.goal,
+            provider=body.provider,
+            acceptance_criteria=body.acceptance_criteria,
+            policy=body.policy,
+            budget=body.budget,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     return _session_response(session)
 
 
@@ -9234,6 +9296,14 @@ async def list_supervised_sessions(channel_id: str | None = None):
     manager = get_session_manager()
     sessions = manager.list_for_channel(channel_id) if channel_id else manager.list_all()
     return [_session_response(session) for session in sessions]
+
+
+@app.get("/homebase/brief")
+async def homebase_brief(workstream_id: str | None = None):
+    """Deterministic HomeBase status brief (no LLM). For voice/text "brief me"."""
+    from .brief import build_homebase_brief
+
+    return build_homebase_brief(workstream_id=workstream_id)
 
 
 @app.get("/channels/{channel_id}/sessions")
@@ -9582,9 +9652,10 @@ async def decide_session_approval(
     if terminal_id:
         from .terminal import get_terminal_manager
         get_terminal_manager().write(terminal_id, b"y\n" if body.decision == "approved" else b"n\n")
-    session.status = SessionStatus.RUNNING
     session.control_owner = "agent"
+    session.blocker = None
     manager._persist(session)
+    manager.update_status(session.id, SessionStatus.RUNNING)
     manager.log_event(session, "session.approval_decided", {"approval_id": approval_id, "decision": body.decision})
     updated = manager._db().execute("SELECT * FROM session_approvals WHERE id = ?", (approval_id,)).fetchone()
     return _decode_session_row(updated)
@@ -9626,7 +9697,9 @@ async def return_session_control(session_id: str, body: SessionGuidanceRequest):
         get_terminal_manager().write(session.terminal_ids[0], f"{guidance}\n".encode())
     session.control_owner = "agent"
     session.status = SessionStatus.RUNNING
+    session.blocker = None
     manager._persist(session)
+    manager.resolve_terminal_approvals(session.id, decided_by="return-control")
     manager.log_event(session, "session.control_returned", {"guidance": guidance})
     return _session_response(session)
 
@@ -9810,104 +9883,29 @@ class RetrySessionRequest(BaseModel):
 
 
 def _session_execution_prompt(session) -> str:
-    inherited = (session.metadata or {}).get("inherited_context")
-    followups = (session.metadata or {}).get("followup_instructions") or []
-    followup_context = ""
-    if isinstance(followups, list) and followups:
-        turns = []
-        for item in followups[-10:]:
-            if not isinstance(item, dict):
-                continue
-            prior = str(item.get("prior_result") or "").strip()
-            instruction = str(item.get("instruction") or "").strip()
-            turns.append(f"Prior agent outcome:\n{prior[:8000]}\n\nUser follow-up:\n{instruction[:4000]}")
-        if turns:
-            followup_context = (
-                "\n\nThis is a continued conversation within the same RDC Session. Native provider resume was not available, "
-                "so RDC reconstructed the durable conversation below. Inspect the repository to confirm current state, "
-                "then carry out the latest user instruction.\n\n" + "\n\n---\n\n".join(turns)
-            )
-    if not isinstance(inherited, dict):
-        return session.description + followup_context
-    evidence = inherited.get("evidence") or []
-    evidence_summary = "\n".join(
-        f"- {item.get('title', item.get('type', 'Evidence'))} ({item.get('id', 'unknown')})"
-        for item in evidence if isinstance(item, dict)
-    ) or "- No independent evidence was attached."
-    return (
-        f"{session.description}\n\n"
-        "This Session continues approved work from a parent Session. Use the handoff below as durable context; "
-        "inspect the repository and verify assumptions before changing files.\n\n"
-        f"Parent goal:\n{str(inherited.get('parent_goal') or '')[:4000]}\n\n"
-        f"Parent result / artifact:\n{str(inherited.get('parent_result') or '')[:12000]}\n\n"
-        f"Inherited evidence references:\n{evidence_summary}{followup_context}"
-    )
+    from .supervised_sessions import session_execution_prompt
+
+    return session_execution_prompt(session)
 
 
 @app.post("/sessions/{session_id}/retry")
 async def retry_session(session_id: str, body: RetrySessionRequest | None = None):
     """Start or run a failed/cancelled session again with a fresh terminal."""
-    from .session_manager import SessionStatus, agent_provider_blocker, build_agent_command, get_session_manager
-    from .terminal import get_terminal_manager
-    from .channel_manager import get_channel_manager
-
-    sm = get_session_manager()
-    s = sm.get(session_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if s.status not in ("pending", "failed", "cancelled"):
-        raise HTTPException(status_code=400, detail=f"Cannot retry session in status: {s.status}")
-    if body and body.provider:
-        s.agent_provider = body.provider
-        sm._persist(s)
-
-    tm = get_terminal_manager()
-    if s.status in {SessionStatus.FAILED, SessionStatus.CANCELLED}:
-        sm.stop_monitor(s.id)
-        for terminal_id in s.terminal_ids:
-            tm.destroy(terminal_id)
-        sm._db().execute("DELETE FROM session_terminals WHERE session_id = ?", (s.id,))
-        sm._db().commit()
-        s.terminal_ids = []
-        s.status = SessionStatus.PENDING
-        s.completed_at = None
-        s.control_owner = "none"
-        s.blocker = None
-        sm._persist(s)
-        sm.log_event(s, "session.run_again", {})
-    requested_provider = s.agent_provider or "orchestrated"
-    provider = _load_agent_provider_policy()["preferred_provider"] if requested_provider == "orchestrated" else requested_provider
-    provider_blocker = agent_provider_blocker(provider)
-    if provider_blocker:
-        if requested_provider == "orchestrated":
-            provider_blocker = f"Preferred provider {provider} is not ready. {provider_blocker} Configure it or explicitly choose another provider."
-        s.blocker = provider_blocker
-        sm._persist(s)
-        sm.update_status(s.id, SessionStatus.FAILED, output_summary="The selected agent is not ready.")
-        raise HTTPException(status_code=409, detail=provider_blocker)
-    command = build_agent_command(provider, _session_execution_prompt(s))
-    s.metadata = {**(s.metadata or {}), "requested_provider": requested_provider, "effective_provider": provider}
-    sm._persist(s)
+    from .supervised_sessions import start_supervised_session
 
     try:
-        term = tm.create(project=s.project, command=command)
-        sm.link_terminal(s.id, term.id)
-
-        cm = get_channel_manager()
-        cm.post_message(
-            s.channel_id,
-            role="system",
-            content=f"Session retried — agent restarted.",
-            metadata={"type": "a2ui", "components": [
-                {"type": "task_card", "title": s.description[:80], "status": "running", "project": s.project},
-            ]},
+        return start_supervised_session(
+            session_id,
+            provider=body.provider if body else None,
         )
-        return {"success": True, "session_id": s.id, "terminal_id": term.id}
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except Exception as e:
-        s.blocker = str(e)
-        sm._persist(s)
-        sm.update_status(s.id, SessionStatus.FAILED, output_summary="Could not start the agent.")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 class SessionInstructionRequest(BaseModel):
@@ -9935,12 +9933,28 @@ async def instruct_session(session_id: str, body: SessionInstructionRequest):
         "prior_result": session.output_summary or "No prior outcome was recorded.",
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
+    prior_metadata = dict(session.metadata or {})
     session.metadata = {**(session.metadata or {}), "followup_instructions": followups, "review_mode": "implementation"}
-    session.status = SessionStatus.CANCELLED
-    session.completed_at = None
     sm._persist(session)
     sm.log_event(session, "session.instruction_added", {"instruction": instruction, "context_mode": "reconstructed"})
-    result = await retry_session(session_id, RetrySessionRequest(provider=session.agent_provider))
+    from .supervised_sessions import start_supervised_session
+
+    try:
+        result = start_supervised_session(
+            session_id,
+            provider=session.agent_provider,
+            continue_review=True,
+        )
+    except Exception as e:
+        session.metadata = prior_metadata
+        sm._persist(session)
+        if isinstance(e, LookupError):
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        if isinstance(e, ValueError):
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if isinstance(e, RuntimeError):
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Could not continue the session") from e
     return {**result, "context_mode": "reconstructed", "instruction": instruction}
 
 

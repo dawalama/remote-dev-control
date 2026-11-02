@@ -1,5 +1,6 @@
 """Regression tests for extending the current session aggregate."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from remote_dev_ctrl.server.app import app
@@ -110,6 +111,38 @@ def test_continuation_inherits_parent_context_and_lineage():
     assert repeated.json()["id"] == child.id
 
 
+def test_instruction_failure_keeps_the_review(monkeypatch):
+    manager = get_session_manager()
+    session = manager.create_session(
+        channel_id="instruct-channel",
+        project="instruct-project",
+        description="Review the homepage",
+        agent_provider="diagnostic",
+        metadata={"supervised": True},
+    )
+    manager.update_status(session.id, SessionStatus.VERIFYING, output_summary="Ready for review")
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("not ready")
+
+    monkeypatch.setattr(
+        "remote_dev_ctrl.server.supervised_sessions.start_supervised_session",
+        boom,
+    )
+    token, _ = get_auth_manager().create_token("instruct-fail", Role.ADMIN)
+    response = TestClient(app).post(
+        f"/sessions/{session.id}/instructions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"instruction": "Also fix the footer"},
+    )
+    assert response.status_code == 409
+    fresh = manager.get(session.id)
+    assert fresh is not None
+    assert fresh.status == SessionStatus.VERIFYING
+    assert fresh.output_summary == "Ready for review"
+    assert "followup_instructions" not in (fresh.metadata or {})
+
+
 def test_execution_prompt_reconstructs_same_session_followups():
     from remote_dev_ctrl.server.app import _session_execution_prompt
 
@@ -166,10 +199,11 @@ def test_provider_selection_builds_the_selected_agent_command():
     cursor_command = build_agent_command("cursor", "Fix the homepage")
     assert "cursor-agent -p --trust" in cursor_command
     assert "claude" not in cursor_command
-    assert "gemini --prompt-interactive" in build_agent_command("gemini", "Review data")
     assert "diagnostic session" in build_agent_command("diagnostic", "No writes")
     codex_command = build_agent_command("codex", "Fix the homepage")
     assert "codex --ask-for-approval never exec --sandbox workspace-write" in codex_command
+    with pytest.raises(ValueError, match="Unsupported session provider: gemini"):
+        build_agent_command("gemini", "Review data")
 
 
 def test_cursor_provider_readiness_is_checked_before_terminal_creation(monkeypatch):

@@ -243,6 +243,12 @@ export function MobileLayout() {
         </div>
         <div className="flex items-center gap-2">
           <SessionsNavButton compact />
+          <span
+            className="text-[10px] text-gray-400 font-medium"
+            title={connected ? "This Node is connected to HomeBase" : "Disconnected from HomeBase"}
+          >
+            {connected ? "HomeBase" : "Offline"}
+          </span>
           <span className="text-[10px] text-gray-500 font-mono" title={getClientId()}>
             {getClientName() || getClientId().slice(0, 8)}
           </span>

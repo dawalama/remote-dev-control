@@ -229,6 +229,7 @@ def get_required_permission(method: str, path: str) -> Optional[Permission]:
         "config": (Permission.SETTINGS_READ, Permission.CONFIG_WRITE),
         "settings": (Permission.SETTINGS_READ, Permission.CONFIG_WRITE),
         "sessions": (Permission.SESSIONS_READ, Permission.SESSIONS_CONTROL),
+        "homebase": (Permission.SESSIONS_READ, Permission.SESSIONS_CONTROL),
         "channels": (Permission.SESSIONS_READ, Permission.SESSIONS_CONTROL),
         "chat": (Permission.SESSIONS_READ, Permission.SESSIONS_CONTROL),
         "conversation": (Permission.SESSIONS_READ, Permission.SESSIONS_CONTROL),

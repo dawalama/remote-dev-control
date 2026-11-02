@@ -10,6 +10,39 @@ Execution plan: [RDC Founder-User Implementation Plan](rdc-implementation-plan.m
 
 RDC lets developers delegate work to agents running on their own machines, supervise that work remotely, and take direct terminal or browser control when human intervention is needed.
 
+## Topology naming
+
+RDC is a multi-device control plane around one primary machine. Use consistent product language:
+
+| Term | Meaning | Default audience |
+|---|---|---|
+| **HomeBase** | The always-on (or primary) machine where RDC runs and real work executes — repos, agents, terminals, browsers, processes | Personal and founder-user default |
+| **Node** | A companion device that connects to HomeBase — phone, tablet, laptop, or another browser session | All |
+| **HQ** | Interchangeable synonym for HomeBase | Enterprise packaging, ops, and power-user alternate |
+
+### Usage rules
+
+1. **Primary product voice is HomeBase.** Onboarding, mobile, voice, and personal docs should say HomeBase, not HQ.
+2. **HQ is an allowed alias**, not a second concept. Same machine role; different register (more formal / enterprise).
+3. **UI may show both later** (e.g. settings: “Role: HomeBase”, enterprise label “HQ”), but the data model should treat them as one role.
+4. **Nodes supervise and intervene; HomeBase executes.** Voice, phone, and remote clients talk to HomeBase — they are not a second workspace of truth.
+
+### Example copy
+
+- “Make this computer your **HomeBase**.”
+- “From your phone, supervise agents on HomeBase.”
+- “You’re connected to HomeBase.”
+- Enterprise later: “Deploy a shared HomeBase (HQ runner).”
+
+### HomeBase Control Room
+
+The primary desk UI is the **HomeBase Control Room** (formerly framed only as “Control room”):
+
+- **Default chat scope is HomeBase** (whole machine): Brief me, needs-you, and routing see all workstreams/projects.
+- **Pin** is opt-in focus on a workstream; unpin returns to HomeBase.
+- **Workstreams** remain where durable sessions and history are filed — not the only front door to the AI.
+- **Sessions hub** is supervision inventory; it should offer Brief me / return to HomeBase without trapping the user away from chat/voice.
+
 ## Strategic thesis
 
 RDC should not compete primarily as a remote terminal, remote desktop, cloud IDE, or another general-purpose coding agent. Its strongest position is as a local control plane for human-supervised development agents.

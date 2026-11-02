@@ -24,6 +24,7 @@ interface UIState {
   returnToSessionsHub: boolean
   sessionsHubOpen: boolean
   sessionsHubScope: "workstream" | "all"
+  voicePanelOpen: boolean
   projectSettingsOpen: boolean
   systemSettingsOpen: boolean
 
@@ -58,6 +59,8 @@ interface UIState {
   closeSessionViewer: () => void
   setSessionsHubOpen: (open: boolean) => void
   setSessionsHubScope: (scope: "workstream" | "all") => void
+  setVoicePanelOpen: (open: boolean) => void
+  toggleVoicePanel: () => void
   setProjectSettingsOpen: (open: boolean) => void
   setSystemSettingsOpen: (open: boolean) => void
   openTextInput: (callback: (text: string) => void, label?: string, initialValue?: string, keepOpen?: boolean, targetEl?: HTMLElement | null) => void
@@ -84,6 +87,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   returnToSessionsHub: false,
   sessionsHubOpen: true,
   sessionsHubScope: "workstream",
+  voicePanelOpen: false,
   projectSettingsOpen: false,
   systemSettingsOpen: false,
   textInputOpen: false,
@@ -150,6 +154,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   closeSessionViewer: () => set((state) => ({ viewingSessionId: null, sessionsHubOpen: state.returnToSessionsHub, returnToSessionsHub: false })),
   setSessionsHubOpen: (open) => set({ sessionsHubOpen: open }),
   setSessionsHubScope: (scope) => set({ sessionsHubScope: scope }),
+  setVoicePanelOpen: (open) => set({ voicePanelOpen: open }),
+  toggleVoicePanel: () => set((s) => ({ voicePanelOpen: !s.voicePanelOpen })),
   setProjectSettingsOpen: (open) => set({ projectSettingsOpen: open }),
   setSystemSettingsOpen: (open) => set({ systemSettingsOpen: open }),
 

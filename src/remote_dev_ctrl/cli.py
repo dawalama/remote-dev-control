@@ -175,6 +175,7 @@ def init(
         name=project_name,
         config=inferred,
         register=not no_register,
+        install_deps=True,
     )
     
     for f in result["created_files"]:
@@ -953,7 +954,7 @@ def setup():
     if presets_path.exists():
         rprint(f"  [green]Terminal presets already configured[/green]")
     else:
-        rprint("  Default presets: Claude Code, Cursor, Gemini CLI, Shell")
+        rprint("  Default presets: Claude Code, Cursor, Shell")
         customize = console.input("  Customize terminal presets? [y/N]: ").strip().lower()
         if customize == "y":
             rprint("  [dim]Edit presets later: rdc config edit-presets[/dim]")

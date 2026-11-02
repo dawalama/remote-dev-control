@@ -23,6 +23,7 @@ import { AddProjectModal } from "@/components/project-bar"
 import { FloatingChannelPanel } from "@/features/channels/floating-channel-panel"
 import { SessionsNavButton } from "@/features/sessions/sessions-hub"
 
+
 const LAYOUTS = [
   { id: "desktop", label: "Desktop", short: "D" },
   { id: "mobile", label: "Mobile", short: "M" },
@@ -162,6 +163,12 @@ export function DesktopLayout() {
         <div className="flex items-center gap-2">
           <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${connected ? "bg-green-500" : "bg-red-500"}`} />
           <h1 className="text-lg font-bold tracking-tight">REMOTE CTRL</h1>
+          <span
+            className="text-[10px] uppercase tracking-wider text-gray-400 self-end mb-0.5"
+            title={connected ? "This machine is HomeBase" : "HomeBase disconnected"}
+          >
+            HomeBase
+          </span>
           <span className="text-[10px] text-gray-500 font-mono self-end mb-0.5">v0.1.0</span>
         </div>
         <div className="flex items-center gap-3">
