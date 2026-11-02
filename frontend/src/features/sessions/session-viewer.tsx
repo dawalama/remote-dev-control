@@ -52,7 +52,9 @@ export function SessionViewer({
   onClose: () => void
 }) {
   const [session, setSession] = useState<SessionData | null>(null)
-  const [tab, setTab] = useState<"summary" | "timeline" | "log">("summary")
+  const [tab, setTab] = useState<"artifact" | "summary" | "timeline" | "log">("artifact")
+  const [artifact, setArtifact] = useState<{ source: string; html: string } | null>(null)
+  const [showTerminal, setShowTerminal] = useState(false)
   const [events, setEvents] = useState<SessionEvent[] | null>(null)
   const [log, setLog] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
@@ -86,16 +88,25 @@ export function SessionViewer({
   useMountEffect(() => {
     loadSession()
     loadSupervision()
+    loadArtifact()
   })
   useMountEffect(() => {
     const interval = window.setInterval(() => {
       void loadSession()
       void loadSupervision()
+      void loadArtifact()
       void loadEvents()
       void loadLog()
     }, 5000)
     return () => window.clearInterval(interval)
   })
+
+  const loadArtifact = async () => {
+    try {
+      const data = await GET<{ source: string; html: string }>(`/sessions/${sessionId}/artifact`)
+      if (data?.html) setArtifact(data)
+    } catch { /* ignore */ }
+  }
 
   const loadSupervision = async () => {
     try {
@@ -228,8 +239,11 @@ export function SessionViewer({
   }
 
   const takeControl = async () => {
-    try { await POST(`/sessions/${sessionId}/take-control`); await loadSession() }
-    catch { toast("Could not take control", "error") }
+    try {
+      await POST(`/sessions/${sessionId}/take-control`)
+      setShowTerminal(true)
+      await loadSession()
+    } catch { toast("Could not take control", "error") }
   }
 
   const returnControl = async () => {
@@ -278,7 +292,6 @@ export function SessionViewer({
     )
   }
 
-  const isExecuting = ["pending", "running", "waiting"].includes(session.status)
   const isOpen = ["pending", "running", "waiting"].includes(session.status)
   const terminalId = session.terminal_ids[0] || null
   const shortDesc = session.description.split(/[.\n]/)[0].slice(0, 120) || "Untitled"
@@ -313,6 +326,19 @@ export function SessionViewer({
         <span className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] text-gray-300 flex-shrink-0">{statusLabel(session.status)}</span>
         <span className="text-[10px] text-gray-500 flex-shrink-0">{session.project}</span>
         <span className="text-[10px] text-gray-600 flex-shrink-0">{duration}</span>
+        {terminalId && (
+          <button
+            onClick={() => setShowTerminal((v) => !v)}
+            className={`rounded px-2 py-0.5 text-[10px] font-mono transition-colors ${
+              showTerminal || session.status === "waiting" || session.control_owner === "human"
+                ? "bg-blue-600 text-white"
+                : "border border-gray-600 bg-gray-900 text-gray-300 hover:bg-gray-700"
+            }`}
+            title="Toggle Live PTY Terminal fallback"
+          >
+            &gt;_ {showTerminal ? "Hide Terminal" : "Live Terminal"}
+          </button>
+        )}
         {["running", "waiting"].includes(session.status) && session.control_owner !== "human" && <button onClick={takeControl} className="rounded bg-yellow-600/20 px-2 py-0.5 text-[10px] text-yellow-300">Take control</button>}
         {session.status === "pending" && (
           <button onClick={retry} className="text-[10px] px-2 py-0.5 rounded bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/30 flex-shrink-0">
@@ -333,17 +359,16 @@ export function SessionViewer({
       {(criteria.length > 0 || session.status === "verifying" || (["completed", "done"].includes(session.status) && session.review_mode === "advisory")) && <div className="space-y-3 border-b border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-200">Review outcome</span><span className="rounded bg-gray-800 px-2 py-0.5 text-[10px] text-gray-400">{needsImplementationEvidence ? "Implementation" : "Analysis only"}</span>{needsImplementationEvidence && <span className="text-[10px] text-gray-500">{evidence.length} evidence item{evidence.length === 1 ? "" : "s"}</span>}{!needsImplementationEvidence && ["completed", "done"].includes(session.status) && (continuation ? <button onClick={() => useUIStore.getState().setViewingSessionId(continuation.id)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">View implementation · {statusLabel(continuation.status)}</button> : <button onClick={() => setShowContinue((value) => !value)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">Continue with implementation</button>)}{session.status === "verifying" && <button disabled={!canComplete} title={canComplete ? "Complete session" : needsImplementationEvidence ? "Capture Git evidence, pass verification, and resolve criteria first" : "Resolve acceptance criteria first"} onClick={markDone} className="rounded bg-green-600 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-40">{canComplete ? "Complete session" : criteriaResolved ? "Evidence required" : "Criteria required"}</button>}</div>{showContinue && !continuation && <div className="rounded-lg border border-blue-900 bg-blue-950/10 p-3"><label className="block text-[10px] font-medium uppercase tracking-wide text-gray-500">Next Session goal<textarea autoFocus rows={4} value={continuationGoal} onChange={(event) => setContinuationGoal(event.target.value)} className="mt-2 w-full resize-y rounded border border-gray-600 bg-gray-950 px-3 py-2 text-xs normal-case tracking-normal text-gray-200" /></label><div className="mt-2 flex items-center justify-between gap-3"><span className="text-[10px] text-gray-500">The prior goal, result, evidence references, project, and policy will be inherited.</span><button disabled={continuing || !continuationGoal.trim()} onClick={continueWithImplementation} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50">{continuing ? "Starting…" : "Start linked Session"}</button></div></div>}{criteria.map((criterion) => <div key={criterion.criterion_index} className="flex flex-wrap items-center gap-2 rounded border border-gray-700 px-2 py-1.5 text-[10px]"><span className="mr-auto text-gray-300">{criterion.criterion}</span><span className="text-gray-500">{criterion.status === "unevaluated" ? "Not reviewed" : criterion.status}</span>{criterion.status === "unevaluated" && <><button onClick={() => decideCriterion(criterion, "passed")} className="text-green-400">Pass</button><button onClick={() => decideCriterion(criterion, "failed")} className="text-red-400">Fail</button><button onClick={() => decideCriterion(criterion, "waived")} className="text-gray-400">Waive</button></>}</div>)}{needsImplementationEvidence && <details className="rounded border border-gray-700 bg-gray-950/40 p-2"><summary className="cursor-pointer text-[10px] text-gray-400">Run project checks</summary><div className="mt-2 space-y-2">{session.verification_command ? <div className="rounded bg-gray-900 px-2 py-1.5 text-[10px] text-gray-400">Project default: <code className="text-blue-300">{session.verification_command}</code></div> : <div className="rounded border border-yellow-900 bg-yellow-950/20 p-2 text-[10px] text-yellow-200">No project check is configured. Enter the exact command to run below, such as <code>pytest backend/tests/test_dashboard.py</code>.</div>}<label className="block text-[10px] text-gray-500">{session.verification_command ? "Optional command override" : "Command to run"}<input value={verificationCommand} onChange={(event) => { setVerificationCommand(event.target.value); setVerificationError(null) }} placeholder={session.verification_command ? "Leave empty to use the project default" : "e.g. pytest backend/tests/test_dashboard.py"} className="mt-1 w-full rounded border border-gray-600 bg-gray-950 px-2 py-1.5 text-[10px] text-gray-200" /></label><div className="flex items-center gap-2"><button onClick={captureGit} className="rounded border border-gray-600 px-2 py-1 text-[10px]">Refresh Git evidence</button><button disabled={verifyingEvidence || !runnableVerificationCommand} onClick={verify} title={!runnableVerificationCommand ? "Enter a command before running checks" : undefined} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white disabled:cursor-not-allowed disabled:opacity-40">{verifyingEvidence ? "Running checks…" : "Run project checks"}</button></div>{verificationError && <div className="rounded border border-red-900 bg-red-950/20 p-2 text-[10px] text-red-300">{verificationError}</div>}</div></details>}</div>}
       {["completed", "done"].includes(session.status) && needsImplementationEvidence && <div className="space-y-3 border-b border-gray-700 bg-gray-900 p-3"><div className="flex items-center gap-2"><span className="mr-auto text-xs font-medium text-gray-200">Implementation accepted</span>{continuation ? <button onClick={() => useUIStore.getState().setViewingSessionId(continuation.id)} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">View next Session · {statusLabel(continuation.status)}</button> : <button onClick={() => { setContinuationGoal(defaultContinuationGoal); setShowContinue((value) => !value) }} className="rounded border border-blue-500 px-3 py-1 text-xs text-blue-300">Start next Session</button>}</div>{showContinue && !continuation && <div className="rounded-lg border border-blue-900 bg-blue-950/10 p-3"><label className="block text-[10px] font-medium uppercase tracking-wide text-gray-500">What should happen next?<textarea autoFocus rows={4} value={continuationGoal} onChange={(event) => setContinuationGoal(event.target.value)} placeholder="Describe the next outcome, such as fixing an issue, committing changes, opening a PR, or preparing a release." className="mt-2 w-full resize-y rounded border border-gray-600 bg-gray-950 px-3 py-2 text-xs normal-case tracking-normal text-gray-200" /></label><div className="mt-2 flex flex-wrap gap-2 text-[10px]"><button onClick={() => setContinuationGoal("Review the completed changes, create an appropriate commit, and request approval before pushing it.")} className="rounded border border-gray-700 px-2 py-1 text-gray-400">Commit changes</button><button onClick={() => setContinuationGoal("Prepare the completed changes for release. Review the diff, create an appropriate commit, and propose the target branch and production tag. Request approval before pushing the branch or tag.")} className="rounded border border-gray-700 px-2 py-1 text-gray-400">Prepare release</button></div><div className="mt-2 flex items-center justify-between gap-3"><span className="text-[10px] text-gray-500">The prior result, evidence, project, and policy will be inherited. This is execution work unless you explicitly ask only for analysis.</span><button disabled={continuing || !continuationGoal.trim()} onClick={continueWithImplementation} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50">{continuing ? "Starting…" : "Start linked Session"}</button></div></div>}</div>}
 
-      {/* Main content: terminal (if active) or detail view */}
-      {isExecuting && terminalId ? (
+      {/* Main content: Proof Artifact & Goal Loop primary, Live Terminal as inspect/fallback drawer */}
+      {(showTerminal || session.status === "waiting" || session.control_owner === "human") && terminalId ? (
         <>
-          {/* Terminal takes most of the space */}
           <div className="flex-1 min-h-0 flex flex-col">
             <TerminalToolbar
               project={session.project}
               sessionId={terminalId}
               connected={connected}
               onRestart={() => { void restartTerminal() }}
-              onDisconnect={onClose}
+              onDisconnect={() => setShowTerminal(false)}
               onKill={() => setConfirmCancel(true)}
               onReset={() => redrawRef.current()}
               mode="embedded"
@@ -364,13 +389,12 @@ export function SessionViewer({
 
           {/* Compact detail strip below terminal */}
           <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800">
-            <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
+            <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} artifact={artifact} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
               loadEvents={loadEvents} loadLog={loadLog} compact />
           </div>
         </>
       ) : (
-        /* Done/failed: full detail view */
-        <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
+        <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} artifact={artifact} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
           loadEvents={loadEvents} loadLog={loadLog} />
       )}
     </div>
@@ -380,11 +404,12 @@ export function SessionViewer({
 // ── Tabbed content (used both as compact strip and full view) ──
 
 function SessionTabs({
-  sessionId, tab, setTab, events, log, session, evidence, loadSupervision, loadEvents, loadLog, compact,
+  sessionId, tab, setTab, artifact, events, log, session, evidence, loadSupervision, loadEvents, loadLog, compact,
 }: {
   sessionId: string
-  tab: "summary" | "timeline" | "log"
-  setTab: (t: "summary" | "timeline" | "log") => void
+  tab: "artifact" | "summary" | "timeline" | "log"
+  setTab: (t: "artifact" | "summary" | "timeline" | "log") => void
+  artifact: { source: string; html: string } | null
   events: SessionEvent[] | null
   log: string | null
   session: SessionData
@@ -397,8 +422,8 @@ function SessionTabs({
   return (
     <div className={compact ? "" : "flex-1 flex flex-col min-h-0"}>
       {/* Tab bar */}
-      <div className="flex gap-0.5 px-3 pt-1 flex-shrink-0">
-        {(["summary", "timeline", "log"] as const).map((t) => (
+      <div className="flex items-center gap-1 px-3 pt-1 flex-shrink-0 border-b border-gray-800">
+        {(["artifact", "summary", "timeline", "log"] as const).map((t) => (
           <button
             key={t}
             onClick={() => {
@@ -406,17 +431,41 @@ function SessionTabs({
               if (t === "timeline" && events === null) loadEvents()
               if (t === "log" && log === null) loadLog()
             }}
-            className={`px-2.5 py-1 text-[10px] border-b-2 ${
+            className={`px-2.5 py-1.5 text-[11px] font-medium border-b-2 transition-colors ${
               tab === t ? "border-blue-500 text-white" : "border-transparent text-gray-500 hover:text-gray-300"
             }`}
           >
-            {t === "log" ? "Raw log" : t.charAt(0).toUpperCase() + t.slice(1)}
+            {t === "artifact"
+              ? "Proof Artifact"
+              : t === "summary"
+                ? "Details & Evidence"
+                : t === "log"
+                  ? "Raw log"
+                  : "Timeline"}
           </button>
         ))}
+        {artifact?.source === "custom" && (
+          <span className="ml-auto rounded bg-purple-500/20 px-2 py-0.5 text-[10px] text-purple-300">
+            Custom Agent Artifact
+          </span>
+        )}
       </div>
 
       {/* Content */}
-      <div className={`overflow-y-auto px-3 py-2 ${compact ? "max-h-32" : "flex-1 min-h-0"}`}>
+      <div className={`overflow-y-auto ${tab === "artifact" && !compact ? "flex-1 min-h-0 flex flex-col" : `px-3 py-2 ${compact ? "max-h-36" : "flex-1 min-h-0"}`}`}>
+        {tab === "artifact" && (
+          artifact?.html ? (
+            <iframe
+              title={`Session ${sessionId} Proof Artifact`}
+              sandbox="allow-scripts"
+              srcDoc={artifact.html}
+              className={`w-full border-0 bg-gray-950 ${compact ? "h-32" : "flex-1 min-h-[360px]"}`}
+            />
+          ) : (
+            <div className="p-4 text-xs text-gray-500">Building proof artifact…</div>
+          )
+        )}
+
         {tab === "summary" && (
           <div className="mx-auto max-w-4xl space-y-5 py-2 text-xs">
             <section><div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Requested outcome</div><div className="whitespace-pre-wrap text-gray-200">{session.goal || session.description}</div></section>

@@ -150,13 +150,13 @@ export function SystemSettingsModal({ onClose }: { onClose: () => void }) {
   const sections: { id: Section; label: string }[] = [
     { id: "voice", label: "Voice & TTS" },
     { id: "terminal", label: "Terminal" },
-    { id: "nanobot", label: "Agent Config" },
+    { id: "nanobot", label: "Orchestrator LLM" },
     { id: "pinchtab", label: "PinchTab" },
     { id: "phone", label: "Phone" },
     { id: "email", label: "Email" },
     { id: "caddy", label: "Caddy Proxy" },
     { id: "keys", label: "API Keys" },
-    { id: "sessions", label: "Sessions" },
+    { id: "sessions", label: "Paired Devices" },
     { id: "info", label: "Server Info" },
   ]
 

@@ -324,17 +324,17 @@ export function MobileLayout() {
       {/* Fixed bottom action bar */}
       <div className="flex-shrink-0 border-t border-gray-800 bg-gray-900 px-3 py-2">
         <div className="flex gap-2">
-          <button className="flex-1 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white" onClick={() => setCreateTaskOpen(true)}>
-            + Task
+          <button className="flex-1 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white" onClick={() => useUIStore.getState().setSessionsHubOpen(true)}>
+            + Goal
           </button>
           <button
-            className="flex-1 py-2 text-sm font-medium rounded-lg border border-gray-600 text-gray-300"
+            className="flex-1 py-2 text-sm font-mono rounded-lg border border-gray-600 text-gray-300"
             onClick={() => {
               if (!currentProject) { toast("Select a project first", "warning"); return }
-              setAgentPickerOpen(true)
+              void handleSpawnTerminal("")
             }}
           >
-            + Terminal
+            &gt;_ Shell
           </button>
           <button className="flex-1 py-2 text-sm font-medium rounded-lg border border-gray-600 text-gray-300" onClick={() => setBrowserUrlOpen(true)}>
             Browser

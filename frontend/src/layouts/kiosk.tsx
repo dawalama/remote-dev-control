@@ -279,10 +279,10 @@ export function KioskLayout() {
       )}
 
       <KioskActionBar
-        onCreateTask={() => setCreateTaskOpen(true)}
+        onCreateTask={() => useUIStore.getState().setSessionsHubOpen(true)}
         onSpawnTerminal={() => {
           if (!currentProject) { toast("Select a project first", "warning"); return }
-          setAgentPickerOpen(true)
+          void handleSpawnTerminal("")
         }}
         onOpenBrowser={() => setBrowserUrlOpen(true)}
         onOpenActivity={() => setActivityOpen(true)}
@@ -562,10 +562,10 @@ function KioskActionBar({
       <div className="max-w-6xl mx-auto px-3 py-2">
         <div className="flex gap-2">
           <button className="flex-1 py-2 text-sm rounded-lg bg-blue-600 text-white font-medium" onClick={onCreateTask}>
-            New Task
+            + Goal Loop
           </button>
-          <button className="flex-1 py-2 text-sm rounded-lg bg-gray-700 text-gray-200 font-medium" onClick={onSpawnTerminal}>
-            Terminal
+          <button className="flex-1 py-2 text-sm rounded-lg bg-gray-700 text-gray-200 font-mono" onClick={onSpawnTerminal}>
+            &gt;_ Shell
           </button>
           <button className="flex-1 py-2 text-sm rounded-lg bg-gray-700 text-gray-200 font-medium" onClick={onOpenBrowser}>
             Browser

@@ -8261,8 +8261,9 @@ async def update_project_config(name: str, config: dict):
 # =============================================================================
 
 _DEFAULT_TERMINAL_PRESETS = [
-    {"id": "cursor", "label": "Cursor", "command": "cursor-agent", "icon": "C", "description": "Cursor AI agent"},
-    {"id": "claude", "label": "Claude", "command": "claude --continue", "icon": "A", "description": "Anthropic Claude Code"},
+    {"id": "codex", "label": "Codex", "command": "rdc-launch codex", "icon": "O", "description": "OpenAI Codex CLI"},
+    {"id": "claude", "label": "Claude", "command": "rdc-launch claude --resume", "icon": "A", "description": "Anthropic Claude Code"},
+    {"id": "cursor", "label": "Cursor", "command": "rdc-launch cursor-agent", "icon": "C", "description": "Cursor AI agent"},
     {"id": "shell", "label": "Shell", "command": "", "icon": "$", "description": "Plain login shell"},
 ]
 
@@ -8279,7 +8280,15 @@ async def get_terminal_presets():
         try:
             data = json.loads(path.read_text())
             if isinstance(data, list):
-                return data
+                cleaned = [
+                    p for p in data
+                    if isinstance(p, dict)
+                    and str(p.get("id", "")).lower() != "gemini"
+                    and "gemini" not in str(p.get("command", "")).lower()
+                ]
+                if len(cleaned) != len(data):
+                    path.write_text(json.dumps(cleaned, indent=2))
+                return cleaned
         except (json.JSONDecodeError, OSError):
             pass
     return _DEFAULT_TERMINAL_PRESETS
@@ -9391,6 +9400,289 @@ async def list_session_evidence(session_id: str):
         "SELECT * FROM session_evidence WHERE session_id = ? ORDER BY observed_at", (session_id,)
     ).fetchall()
     return [_decode_session_row(row) for row in rows]
+
+
+class SessionArtifactPayload(BaseModel):
+    html: str
+    title: str | None = None
+
+
+def _build_synthesized_session_artifact(session, evidence: list[dict], criteria: list[dict]) -> str:
+    import html as html_lib
+
+    esc = html_lib.escape
+    status_val = session.status.value if hasattr(session.status, "value") else str(session.status)
+    status_labels = {
+        "pending": ("Queued", "#94a3b8", "rgba(148,163,184,0.14)"),
+        "running": ("Working", "#38bdf8", "rgba(56,189,248,0.14)"),
+        "waiting": ("Needs You", "#fbbf24", "rgba(251,191,36,0.16)"),
+        "verifying": ("Ready for Review", "#a78bfa", "rgba(167,139,250,0.16)"),
+        "done": ("Completed", "#34d399", "rgba(52,211,153,0.14)"),
+        "completed": ("Completed", "#34d399", "rgba(52,211,153,0.14)"),
+        "failed": ("Failed", "#fb7185", "rgba(251,113,133,0.16)"),
+        "cancelled": ("Cancelled", "#94a3b8", "rgba(148,163,184,0.14)"),
+    }
+    s_label, s_color, s_bg = status_labels.get(status_val, (status_val, "#94a3b8", "rgba(148,163,184,0.14)"))
+    goal_text = esc(session.goal or session.description or "Untitled Goal")
+    provider_text = esc(session.agent_provider or "orchestrated")
+    project_text = esc(session.project or "default")
+
+    blocker_html = ""
+    if session.blocker:
+        blocker_html = f"""
+        <div class="alert alert-danger">
+          <div class="alert-title">Blocker / Attention Required</div>
+          <div>{esc(session.blocker)}</div>
+        </div>
+        """
+
+    # Outcome / summary
+    raw_summary = (session.output_summary or "").strip()
+    if not raw_summary:
+        if status_val in ("pending", "running", "waiting"):
+            raw_summary = "Agent loop is currently executing this goal. Live terminal output is available in the Terminal drawer."
+        else:
+            raw_summary = "No concise text report was recorded by the agent. Inspect the verification and git changes below."
+    summary_html = f'<div class="prose">{esc(raw_summary)}</div>'
+
+    # Acceptance Criteria
+    criteria_rows = ""
+    if criteria:
+        items = []
+        for c in criteria:
+            c_status = str(c.get("status") or "unevaluated")
+            c_color = "#34d399" if c_status == "passed" else ("#fb7185" if c_status == "failed" else ("#94a3b8" if c_status == "waived" else "#fbbf24"))
+            items.append(
+                f'<div class="crit-row">'
+                f'<span class="crit-dot" style="background:{c_color}"></span>'
+                f'<span class="crit-text">{esc(str(c.get("criterion") or ""))}</span>'
+                f'<span class="crit-badge" style="color:{c_color}">{esc(c_status.upper())}</span>'
+                f'</div>'
+            )
+        criteria_rows = f'<section class="card"><div class="card-label">Acceptance Criteria ({len(criteria)})</div><div class="crit-list">{"".join(items)}</div></section>'
+
+    # Evidence cards (Verification + Git + Media)
+    verif_cards = []
+    git_cards = []
+    for ev in evidence:
+        ev_type = ev.get("evidence_type")
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if ev_type == "verification":
+            code = data.get("exit_code")
+            passed = code == 0
+            v_color = "#34d399" if passed else "#fb7185"
+            cmd = esc(str(data.get("command") or "verification"))
+            dur = data.get("duration_seconds")
+            dur_str = f" · {dur}s" if dur is not None else ""
+            out_tail = esc(str(data.get("stdout") or data.get("stderr") or "").strip()[-2000:])
+            verif_cards.append(
+                f'<div class="ev-box">'
+                f'<div class="ev-head"><span style="color:{v_color};font-weight:600">{"✓ PASSED" if passed else f"✕ FAILED (exit {code})"}</span>'
+                f'<code>{cmd}</code><span class="muted">{esc(dur_str)}</span></div>'
+                + (f'<pre>{out_tail}</pre>' if out_tail else '')
+                + '</div>'
+            )
+        elif ev_type == "git":
+            diff_stat = esc(str(data.get("diff_stat") or data.get("status") or "Working tree clean"))
+            files = data.get("changed_files") or []
+            chips = "".join(f'<span class="file-chip">{esc(str(f))}</span>' for f in files[:24])
+            git_cards.append(
+                f'<div class="ev-box">'
+                f'<div class="ev-head"><strong>Git Working Tree Snapshot</strong><span class="muted">HEAD {esc(str(data.get("head") or "")[:8])}</span></div>'
+                + (f'<div class="chip-wrap">{chips}</div>' if chips else '')
+                + f'<pre>{diff_stat}</pre>'
+                + '</div>'
+            )
+
+    # If no explicit git evidence was captured yet, include a live lightweight git diff stat
+    if not git_cards:
+        try:
+            proj_path = _session_project_path(session.project)
+            diff_res = subprocess.run(
+                ["git", "diff", "--stat", "HEAD"],
+                cwd=proj_path, text=True, capture_output=True, timeout=4, check=False
+            )
+            status_res = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=proj_path, text=True, capture_output=True, timeout=4, check=False
+            )
+            stat_text = (diff_res.stdout.strip() or status_res.stdout.strip())
+            if stat_text:
+                git_cards.append(
+                    f'<div class="ev-box"><div class="ev-head"><strong>Live Working Tree Changes</strong></div><pre>{esc(stat_text)}</pre></div>'
+                )
+        except Exception:
+            pass
+
+    proof_section = ""
+    if verif_cards or git_cards:
+        proof_section = (
+            '<section class="card"><div class="card-label">Verification &amp; Code Proof</div>'
+            + "".join(verif_cards)
+            + "".join(git_cards)
+            + "</section>"
+        )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {{
+    color-scheme: dark;
+    --bg: #0b0f17;
+    --card: #111827;
+    --border: #1e293b;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; padding: 18px 20px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    font-size: 13.5px; line-height: 1.55;
+  }}
+  .top {{
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+    padding-bottom: 14px; border-bottom: 1px solid var(--border); margin-bottom: 16px;
+  }}
+  .goal-title {{ font-size: 16px; font-weight: 600; color: #f8fafc; margin: 0 0 6px; }}
+  .meta {{ display: flex; flex-wrap: wrap; gap: 8px; font-size: 11.5px; color: var(--muted); }}
+  .pill {{
+    display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; white-space: nowrap;
+  }}
+  .alert {{
+    border-radius: 10px; padding: 12px 14px; margin-bottom: 16px;
+    border: 1px solid rgba(251,113,133,0.35); background: rgba(251,113,133,0.1); color: #fecdd3;
+  }}
+  .alert-title {{ font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; color: #fb7185; }}
+  .card {{
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 14px;
+  }}
+  .card-label {{
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); margin-bottom: 10px;
+  }}
+  .prose {{ white-space: pre-wrap; color: #e2e8f0; font-size: 13.5px; }}
+  .crit-list {{ display: flex; flex-direction: column; gap: 6px; }}
+  .crit-row {{
+    display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+    background: rgba(15,23,42,0.65); border: 1px solid var(--border); border-radius: 8px;
+  }}
+  .crit-dot {{ width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0; }}
+  .crit-text {{ flex: 1; font-size: 13px; }}
+  .crit-badge {{ font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; }}
+  .ev-box {{
+    background: rgba(9,13,20,0.7); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; margin-top: 8px;
+  }}
+  .ev-head {{ display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 12.5px; }}
+  .muted {{ color: var(--muted); font-size: 11.5px; }}
+  .chip-wrap {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }}
+  .file-chip {{
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+    background: rgba(56,189,248,0.1); color: #7dd3fc; border: 1px solid rgba(56,189,248,0.25);
+    padding: 2px 7px; border-radius: 5px;
+  }}
+  code {{
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    background: rgba(30,41,59,0.7); padding: 2px 6px; border-radius: 4px; color: #bae6fd;
+  }}
+  pre {{
+    margin: 8px 0 0; padding: 10px; border-radius: 6px; background: #070a10;
+    border: 1px solid var(--border); overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: #cbd5e1;
+    white-space: pre-wrap;
+  }}
+</style>
+</head>
+<body>
+  <div class="top">
+    <div>
+      <h1 class="goal-title">{goal_text}</h1>
+      <div class="meta">
+        <span>Project: <strong>{project_text}</strong></span>
+        <span>·</span>
+        <span>Agent: <strong>{provider_text}</strong></span>
+        <span>·</span>
+        <span>Session: <code>{esc(session.id)}</code></span>
+      </div>
+    </div>
+    <span class="pill" style="color:{s_color};background:{s_bg};border:1px solid {s_color}44">{esc(s_label)}</span>
+  </div>
+  {blocker_html}
+  <section class="card">
+    <div class="card-label">Outcome &amp; Summary</div>
+    {summary_html}
+  </section>
+  {criteria_rows}
+  {proof_section}
+</body>
+</html>"""
+
+
+@app.get("/sessions/{session_id}/artifact")
+async def get_session_artifact(session_id: str):
+    """Return a rich HTML Proof Artifact for a session (custom agent HTML if written, else synthesized)."""
+    from .session_manager import get_session_manager
+    manager = get_session_manager()
+    session = manager.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    custom_paths = [
+        get_rdc_home() / "sessions" / f"{session_id}.artifact.html",
+    ]
+    try:
+        proj_path = _session_project_path(session.project)
+        custom_paths.append(proj_path / ".rdc" / "sessions" / f"{session_id}.html")
+        custom_paths.append(proj_path / ".rdc" / "artifact.html")
+    except Exception:
+        pass
+
+    for cpath in custom_paths:
+        if cpath.exists():
+            try:
+                return {
+                    "session_id": session_id,
+                    "source": "custom",
+                    "html": cpath.read_text(errors="replace"),
+                }
+            except OSError:
+                pass
+
+    db = manager._db()
+    ev_rows = db.execute(
+        "SELECT * FROM session_evidence WHERE session_id = ? ORDER BY observed_at", (session_id,)
+    ).fetchall()
+    crit_rows = db.execute(
+        "SELECT * FROM session_criteria WHERE session_id = ? ORDER BY criterion_index", (session_id,)
+    ).fetchall()
+    evidence = [_decode_session_row(r) for r in ev_rows]
+    criteria = [_decode_session_row(r) for r in crit_rows]
+    return {
+        "session_id": session_id,
+        "source": "synthesized",
+        "html": _build_synthesized_session_artifact(session, evidence, criteria),
+    }
+
+
+@app.put("/sessions/{session_id}/artifact")
+async def put_session_artifact(session_id: str, body: SessionArtifactPayload):
+    """Attach or update a custom HTML Proof Artifact for a session."""
+    from .session_manager import get_session_manager
+    manager = get_session_manager()
+    session = manager.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    artifact_dir = get_rdc_home() / "sessions"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_file = artifact_dir / f"{session_id}.artifact.html"
+    artifact_file.write_text(body.html)
+    return {"session_id": session_id, "source": "custom", "saved": True}
 
 
 @app.post("/sessions/{session_id}/evidence/media")

@@ -47,6 +47,7 @@ export function CommandBar() {
   const voice = useVoice({ channel: "desktop", onFinal: handleVoiceFinal })
   const setVoicePanelOpen = useUIStore((s) => s.setVoicePanelOpen)
   const voicePanelOpen = useUIStore((s) => s.voicePanelOpen)
+  const chatOpen = useUIStore((s) => s.chatOpen)
 
   const handlePhone = async () => {
     if (phone?.active) {
@@ -66,9 +67,9 @@ export function CommandBar() {
 
   return (
     <div className="fixed bottom-0 left-0 right-0 h-[48px] bg-gray-800 border-t border-gray-700 z-40 flex items-center px-4 gap-2">
-      {/* Left: logs pill */}
+      {/* Left: logs pill + scope chip (only when floating chat drawer is closed) */}
       <LogsPill />
-      <ChatScopeChip compact />
+      {!chatOpen && <ChatScopeChip compact />}
 
       {/* Spacer */}
       <div className="flex-1" />

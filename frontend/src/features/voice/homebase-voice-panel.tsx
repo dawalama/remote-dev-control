@@ -356,10 +356,11 @@ export function HomeBaseVoicePanel() {
             className="text-[11px] text-gray-500 hover:text-gray-300"
             onClick={() => {
               closePanel()
+              useUIStore.getState().setWorkspaceMode("goals")
               setSessionsHubOpen(true)
             }}
           >
-            Sessions
+            Goals &amp; Review
           </button>
           <button
             type="button"
@@ -367,9 +368,11 @@ export function HomeBaseVoicePanel() {
             onClick={() => {
               closePanel()
               setSessionsHubOpen(false)
+              useUIStore.getState().setViewingSessionId(null)
+              useUIStore.getState().setWorkspaceMode("terminal")
             }}
           >
-            HomeBase desk
+            Terminal desk
           </button>
         </footer>
       </section>

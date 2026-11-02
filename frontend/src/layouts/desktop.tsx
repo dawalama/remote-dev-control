@@ -1,17 +1,14 @@
-import { useEffect, useCallback, useState } from "react"
+import { useCallback, useRef, useState } from "react"
 import type { TabId } from "@/types"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useAuthStore } from "@/stores/auth-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useTerminalStore } from "@/stores/terminal-store"
-import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
-import { POST } from "@/lib/api"
 import { getClientId, getClientName } from "@/lib/client-id"
-import { CommandPalette } from "@/components/project-bar"
+import { CommandPalette, AddProjectModal } from "@/components/project-bar"
 import { EmbeddedTerminal } from "@/features/terminal/embedded-terminal"
 import { RightTabs } from "@/features/right-tabs/right-tabs"
-// ChatFAB replaced by ChannelPanel in v2
 import { CommandBar } from "@/features/command-bar/command-bar"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
 import { ProjectSettingsModal } from "@/features/modals/project-settings"
@@ -19,10 +16,9 @@ import { GlobalTextInput } from "@/components/global-text-input"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
 import { useChannelStore } from "@/stores/channel-store"
 import { ChannelSidebar } from "@/features/channels/channel-sidebar"
-import { AddProjectModal } from "@/components/project-bar"
 import { FloatingChannelPanel } from "@/features/channels/floating-channel-panel"
-import { SessionsNavButton } from "@/features/sessions/sessions-hub"
-
+import { SessionsNavButton, WorkstreamGoalsWorkspace } from "@/features/sessions/sessions-hub"
+import { useMountEffect } from "@/hooks/use-mount-effect"
 
 const LAYOUTS = [
   { id: "desktop", label: "Desktop", short: "D" },
@@ -39,40 +35,29 @@ export function DesktopLayout() {
   const connect = useStateStore((s) => s.connect)
   const disconnect = useStateStore((s) => s.disconnect)
   const connected = useStateStore((s) => s.connected)
-  const tasks = useStateStore((s) => s.tasks)
   const toast = useUIStore((s) => s.toast)
   const toggleCommandPalette = useUIStore((s) => s.toggleCommandPalette)
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen)
   const layout = useUIStore((s) => s.layout)
   const setTab = useUIStore((s) => s.setTab)
   const setLayout = useUIStore((s) => s.setLayout)
+  const workspaceMode = useUIStore((s) => s.workspaceMode)
+  const setWorkspaceMode = useUIStore((s) => s.setWorkspaceMode)
   const spawnTerminal = useTerminalStore((s) => s.spawnTerminal)
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
   const systemSettingsOpen = useUIStore((s) => s.systemSettingsOpen)
   const setSystemSettingsOpen = useUIStore((s) => s.setSystemSettingsOpen)
   const projectSettingsOpen = useUIStore((s) => s.projectSettingsOpen)
   const setProjectSettingsOpen = useUIStore((s) => s.setProjectSettingsOpen)
-  const [agentPickerOpen, setAgentPickerOpen] = useState(false)
-  // channelPanelOpen removed — FloatingChannelPanel manages its own state
   const [addProjectOpen, setAddProjectOpen] = useState(false)
-  const presets = useTerminalPresetsStore((s) => s.presets)
-  const loadPresets = useTerminalPresetsStore((s) => s.load)
 
-  useEffect(() => {
-    loadPresets()
-  }, [loadPresets])
-
-  useEffect(() => {
+  useMountEffect(() => {
     loadProjects()
     loadCollections()
-  }, [loadProjects, loadCollections])
-
-  useEffect(() => {
     connect()
     return () => disconnect()
-  }, [connect, disconnect])
+  })
 
-  // Global keyboard shortcuts
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey
@@ -84,13 +69,22 @@ export function DesktopLayout() {
         return
       }
 
-      // ⌘T — new terminal for current project (show preset picker)
+      // ⌘J — toggle Goals & Review vs Raw Terminal
+      if (meta && e.key === "j") {
+        e.preventDefault()
+        const current = useUIStore.getState().workspaceMode
+        setWorkspaceMode(current === "goals" ? "terminal" : "goals")
+        return
+      }
+
+      // ⌘T — open raw shell terminal in current project
       if (meta && e.key === "t") {
         e.preventDefault()
         if (!currentProject) {
           toast("Select a project first", "warning")
         } else {
-          setAgentPickerOpen(true)
+          setWorkspaceMode("terminal")
+          void spawnTerminal(currentProject, "", useChannelStore.getState().activeChannelId || undefined)
         }
         return
       }
@@ -102,74 +96,51 @@ export function DesktopLayout() {
         return
       }
 
-      // Ctrl+] — next active project
+      // Ctrl+] / Ctrl+[ — cycle active project
       if (meta && e.key === "]") {
         e.preventDefault()
         cycleActiveProject(1)
         return
       }
-
-      // Ctrl+[ — previous active project
       if (meta && e.key === "[") {
         e.preventDefault()
         cycleActiveProject(-1)
         return
       }
 
-      // Escape — close command palette / agent picker
       if (e.key === "Escape") {
         setCommandPaletteOpen(false)
-        setAgentPickerOpen(false)
       }
     },
-    [currentProject, toggleCommandPalette, setCommandPaletteOpen, spawnTerminal, toast, cycleActiveProject, setAgentPickerOpen]
+    [currentProject, toggleCommandPalette, setCommandPaletteOpen, spawnTerminal, toast, cycleActiveProject, setWorkspaceMode]
   )
 
-  useEffect(() => {
-    window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [handleKeyDown])
+  const keyHandlerRef = useRef(handleKeyDown)
+  keyHandlerRef.current = handleKeyDown
 
-  // Terminals waiting for input
+  useMountEffect(() => {
+    const listener = (e: KeyboardEvent) => keyHandlerRef.current(e)
+    window.addEventListener("keydown", listener)
+    return () => window.removeEventListener("keydown", listener)
+  })
+
   const terminals = useStateStore((s) => s.terminals)
   const attentionTerminals = terminals.filter((t) => t.waiting_for_input)
   const setActiveTerminalId = useTerminalStore((s) => s.setActiveTerminalId)
 
-  // Pending reviews
-  const reviewItems = tasks.filter(
-    (t) => t.status === "needs_review" || t.status === "awaiting_review"
-  )
-
-  const handleApprove = async (taskId: string) => {
-    try {
-      await POST(`/tasks/${taskId}/review`, { action: "approve" })
-      toast("Approved", "success")
-    } catch { toast("Failed", "error") }
-  }
-
-  const handleReject = async (taskId: string) => {
-    const reason = prompt("Reason for rejection:")
-    if (reason === null) return
-    try {
-      await POST(`/tasks/${taskId}/review`, { action: "reject", reason })
-      toast("Rejected", "success")
-    } catch { toast("Failed", "error") }
-  }
-
   return (
     <div className="h-app flex flex-col bg-gray-900 text-gray-100 overflow-hidden">
       {/* Header */}
-      <div className="flex justify-between items-center px-4 py-2 flex-shrink-0">
+      <div className="flex justify-between items-center px-4 py-2 border-b border-gray-800/80 flex-shrink-0">
         <div className="flex items-center gap-2">
           <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${connected ? "bg-green-500" : "bg-red-500"}`} />
-          <h1 className="text-lg font-bold tracking-tight">REMOTE CTRL</h1>
+          <h1 className="text-base font-bold tracking-tight">REMOTE CTRL</h1>
           <span
-            className="text-[10px] uppercase tracking-wider text-gray-400 self-end mb-0.5"
+            className="text-[10px] uppercase tracking-wider text-blue-400 bg-blue-500/10 border border-blue-500/30 px-1.5 py-0.5 rounded"
             title={connected ? "This machine is HomeBase" : "HomeBase disconnected"}
           >
             HomeBase
           </span>
-          <span className="text-[10px] text-gray-500 font-mono self-end mb-0.5">v0.1.0</span>
         </div>
         <div className="flex items-center gap-3">
           <SessionsNavButton />
@@ -211,14 +182,17 @@ export function DesktopLayout() {
       {attentionTerminals.length > 0 && (
         <div className="mx-4 mt-2 bg-orange-900/50 rounded-lg px-4 py-2 flex items-center gap-3 flex-shrink-0">
           <span className="text-xs font-semibold text-orange-300">
-            Attention ({attentionTerminals.length})
+            Needs Input ({attentionTerminals.length})
           </span>
           <div className="flex gap-2 overflow-x-auto">
             {attentionTerminals.map((t) => (
               <button
                 key={t.id}
                 className="px-3 py-1 text-xs rounded bg-orange-700 hover:bg-orange-600 text-orange-100 whitespace-nowrap"
-                onClick={() => setActiveTerminalId(t.id)}
+                onClick={() => {
+                  setActiveTerminalId(t.id)
+                  setWorkspaceMode("terminal")
+                }}
               >
                 {t.project || t.id.slice(0, 8)}
               </button>
@@ -227,66 +201,49 @@ export function DesktopLayout() {
         </div>
       )}
 
-      {/* Pending reviews banner */}
-      {reviewItems.length > 0 && (
-        <div className="mx-4 mt-2 bg-yellow-900/50 rounded-lg p-3 flex-shrink-0">
-          <h3 className="text-xs font-semibold text-yellow-300 mb-1.5">
-            Pending Review ({reviewItems.length})
-          </h3>
-          <div className="space-y-1.5">
-            {reviewItems.map((task) => (
-              <div key={task.id} className="flex items-center justify-between">
-                <span className="text-xs text-gray-200 truncate flex-1 mr-2">
-                  {task.title || task.description?.slice(0, 60)}
-                  {task.project && <span className="text-yellow-400 ml-1">({task.project})</span>}
-                </span>
-                <div className="flex gap-1 flex-shrink-0">
-                  <button
-                    className="px-2 py-0.5 text-xs rounded bg-green-600 hover:bg-green-700 text-white"
-                    onClick={() => handleApprove(task.id)}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    className="px-2 py-0.5 text-xs rounded bg-red-600 hover:bg-red-700 text-white"
-                    onClick={() => handleReject(task.id)}
-                  >
-                    Reject
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Main content: channel sidebar + workspace + right tabs */}
-      <div className="flex-1 flex gap-0 min-h-0 pb-[60px]">
-        {/* Channel sidebar */}
+      {/* Main 3-Pane Workspace: Workstreams Sidebar + Goal-First Center Stage + Context Panel */}
+      <div className="flex-1 flex gap-0 min-h-0 pb-[52px]">
         <ChannelSidebar onAddProject={() => setAddProjectOpen(true)} />
 
-        {/* Workspace: terminal + optional session viewer tab */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0 px-2 py-2">
-          <EmbeddedTerminal />
+          {workspaceMode === "goals" ? (
+            <WorkstreamGoalsWorkspace />
+          ) : (
+            <div className="flex-1 flex flex-col min-h-0">
+              <div className="mb-1.5 flex items-center justify-between rounded-md border border-gray-800 bg-gray-900 px-3 py-1.5 text-xs">
+                <span className="text-gray-400 font-mono text-[11px]">
+                  Raw Terminal Fallback {currentProject ? `· ${currentProject}` : ""}
+                </span>
+                <button
+                  onClick={() => setWorkspaceMode("goals")}
+                  className="text-blue-400 hover:text-blue-300 text-xs font-medium"
+                >
+                  ← Back to Goals &amp; Review (⌘J)
+                </button>
+              </div>
+              <EmbeddedTerminal />
+            </div>
+          )}
         </div>
 
-        {/* Right tabs */}
-        <div className="w-80 min-h-0 min-w-0 overflow-hidden px-2 py-2 flex-shrink-0">
+        <div className="w-[340px] min-h-0 min-w-0 overflow-hidden px-2 py-2 flex-shrink-0">
           <RightTabs />
         </div>
       </div>
 
-      {/* Floating elements */}
-      <FloatingChannelPanel
-        onOpenTerminal={(project) => {
-          if (project) selectProject(project)
-          setAgentPickerOpen(true)
-        }}
-        onCreateTask={() => { /* TODO */ }}
-        onOpenActivity={() => setTab("activity" as TabId)}
-        onEditProject={() => setSystemSettingsOpen(true)}
-        onSystemSettings={() => setSystemSettingsOpen(true)}
-      />
+      {/* Chief-of-Staff Chat & Command Bar (hidden when full-screen settings modal is open) */}
+      {!systemSettingsOpen && !projectSettingsOpen && (
+        <FloatingChannelPanel
+          onOpenTerminal={(project) => {
+            if (project) selectProject(project)
+            setWorkspaceMode("terminal")
+          }}
+          onCreateTask={() => setWorkspaceMode("goals")}
+          onOpenActivity={() => setTab("activity" as TabId)}
+          onEditProject={() => setSystemSettingsOpen(true)}
+          onSystemSettings={() => setSystemSettingsOpen(true)}
+        />
+      )}
       <CommandBar />
       <FloatingAgentPanel channel="desktop" />
       <CommandPalette />
@@ -306,44 +263,6 @@ export function DesktopLayout() {
           }}
           scaffoldProject={useProjectStore.getState().scaffoldProject}
         />
-      )}
-      {agentPickerOpen && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setAgentPickerOpen(false)}>
-          <div
-            className="bg-gray-800 rounded-lg p-4 w-full max-w-sm shadow-xl border border-gray-700"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-sm font-semibold mb-3">New Terminal — {currentProject}</h3>
-            <div className="space-y-1.5">
-              {presets.map((preset) => (
-                <button
-                  key={preset.id}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-left"
-                  onClick={() => {
-                    setAgentPickerOpen(false)
-                    if (!currentProject) {
-                      toast("Select a project first", "warning")
-                      return
-                    }
-                    spawnTerminal(currentProject, preset.command, useChannelStore.getState().activeChannelId || undefined)
-                    toast(`Terminal started: ${preset.label}`, "success")
-                  }}
-                >
-                  <span className="w-7 h-7 rounded bg-gray-800 flex items-center justify-center text-xs font-mono font-bold text-gray-200 flex-shrink-0">
-                    {preset.icon}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-gray-200">{preset.label}</div>
-                    {preset.description && (
-                      <div className="text-[10px] text-gray-500 truncate">{preset.description}</div>
-                    )}
-                  </div>
-                  <span className="text-[10px] text-gray-500 font-mono flex-shrink-0">{preset.command || "$SHELL"}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
       )}
       <GlobalTextInput />
     </div>

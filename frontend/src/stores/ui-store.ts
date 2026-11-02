@@ -24,6 +24,7 @@ interface UIState {
   returnToSessionsHub: boolean
   sessionsHubOpen: boolean
   sessionsHubScope: "workstream" | "all"
+  workspaceMode: "goals" | "terminal"
   voicePanelOpen: boolean
   projectSettingsOpen: boolean
   systemSettingsOpen: boolean
@@ -59,6 +60,7 @@ interface UIState {
   closeSessionViewer: () => void
   setSessionsHubOpen: (open: boolean) => void
   setSessionsHubScope: (scope: "workstream" | "all") => void
+  setWorkspaceMode: (mode: "goals" | "terminal") => void
   setVoicePanelOpen: (open: boolean) => void
   toggleVoicePanel: () => void
   setProjectSettingsOpen: (open: boolean) => void
@@ -85,8 +87,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   agentPanelOpen: false,
   viewingSessionId: null,
   returnToSessionsHub: false,
-  sessionsHubOpen: true,
+  sessionsHubOpen: false,
   sessionsHubScope: "workstream",
+  workspaceMode: "goals",
   voicePanelOpen: false,
   projectSettingsOpen: false,
   systemSettingsOpen: false,
@@ -150,10 +153,11 @@ export const useUIStore = create<UIState>((set, get) => ({
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),
   setAgentPanelOpen: (open) => set({ agentPanelOpen: open }),
   setViewingSessionId: (id) => set({ viewingSessionId: id, returnToSessionsHub: false }),
-  openSessionFromHub: (id) => set({ viewingSessionId: id, sessionsHubOpen: false, returnToSessionsHub: true }),
+  openSessionFromHub: (id) => set((state) => ({ viewingSessionId: id, workspaceMode: "goals", sessionsHubOpen: false, returnToSessionsHub: state.sessionsHubOpen })),
   closeSessionViewer: () => set((state) => ({ viewingSessionId: null, sessionsHubOpen: state.returnToSessionsHub, returnToSessionsHub: false })),
   setSessionsHubOpen: (open) => set({ sessionsHubOpen: open }),
   setSessionsHubScope: (scope) => set({ sessionsHubScope: scope }),
+  setWorkspaceMode: (mode) => set({ workspaceMode: mode }),
   setVoicePanelOpen: (open) => set({ voicePanelOpen: open }),
   toggleVoicePanel: () => set((s) => ({ voicePanelOpen: !s.voicePanelOpen })),
   setProjectSettingsOpen: (open) => set({ projectSettingsOpen: open }),

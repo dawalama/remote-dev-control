@@ -35,9 +35,11 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
     loadChannels()
   })
 
-  // When selecting a channel, also set the active project
+  // When selecting a channel, also set the active project and focus its workstream goals
   const selectChannel = useCallback((channelId: string) => {
     selectChannelRaw(channelId)
+    useUIStore.getState().setViewingSessionId(null)
+    useUIStore.getState().setSessionsHubScope("workstream")
     const ch = channels.find((c) => c.id === channelId)
     if (ch && ch.project_ids.length > 0) {
       const proj = projects.find((p) => p.name === ch.name.replace(/^#/, "").split("/")[0])

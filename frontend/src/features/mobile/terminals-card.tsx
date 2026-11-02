@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useTerminalStore } from "@/stores/terminal-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
+import { useMountEffect } from "@/hooks/use-mount-effect"
 import { POST } from "@/lib/api"
 
 export function TerminalsCard({
@@ -16,13 +17,12 @@ export function TerminalsCard({
   const killTerminal = useTerminalStore((s) => s.killTerminal)
   const toast = useUIStore((s) => s.toast)
   const [spawning, setSpawning] = useState<string | null>(null)
-  const [showInlinePicker, setShowInlinePicker] = useState(false)
   const presets = useTerminalPresetsStore((s) => s.presets)
   const loadPresets = useTerminalPresetsStore((s) => s.load)
 
-  useEffect(() => {
+  useMountEffect(() => {
     loadPresets()
-  }, [loadPresets])
+  })
 
   const filtered =
     !currentProject
@@ -69,7 +69,7 @@ export function TerminalsCard({
     <div className="bg-gray-800 rounded-lg p-3">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-          Terminals
+          Goals &amp; Terminals
         </h3>
         {filtered.length > 0 && (
           <span className="text-[10px] text-gray-500">{filtered.length}</span>
@@ -77,36 +77,31 @@ export function TerminalsCard({
       </div>
 
       {filtered.length === 0 ? (
-        // Empty state: show agent launcher buttons
-        <div className="space-y-1.5">
-          <p className="text-xs text-gray-500 mb-2">
+        <div className="space-y-2">
+          <p className="text-xs text-gray-500">
             {!currentProject
-              ? "Select a project to open a terminal"
-              : "Launch a terminal agent"}
+              ? "Select a project to start a goal loop or open a shell"
+              : "Start a supervised goal loop, or open a raw shell fallback"}
           </p>
           {currentProject && (
-            <div className="grid grid-cols-2 gap-1.5">
-              {presets.map((preset) => (
-                <button
-                  key={preset.id}
-                  className="flex items-center gap-2 px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-left disabled:opacity-50"
-                  onClick={() => handleSpawn(preset.command)}
-                  disabled={spawning !== null}
-                >
-                  <span className="w-6 h-6 rounded bg-gray-800 flex items-center justify-center text-[10px] font-mono font-bold text-gray-300 flex-shrink-0">
-                    {preset.icon}
-                  </span>
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium text-gray-200">{preset.label}</div>
-                    <div className="text-[10px] text-gray-500 truncate">{preset.command || "$SHELL"}</div>
-                  </div>
-                </button>
-              ))}
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white"
+                onClick={() => useUIStore.getState().setSessionsHubOpen(true)}
+              >
+                + Start Goal Loop
+              </button>
+              <button
+                className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-xs font-mono text-gray-200 disabled:opacity-50"
+                onClick={() => handleSpawn("")}
+                disabled={spawning !== null}
+              >
+                &gt;_ Raw Shell
+              </button>
             </div>
           )}
         </div>
       ) : (
-        // Active terminals list
         <div className="space-y-1.5">
           {filtered.map((t) => (
             <div
@@ -139,60 +134,23 @@ export function TerminalsCard({
               </button>
             </div>
           ))}
-          {/* Add more button */}
-          <button
-            className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded border border-dashed border-gray-600 text-gray-500 hover:text-gray-300 hover:border-gray-500 text-xs"
-            onClick={() => {
-              if (!currentProject) { toast("Select a project first", "warning"); return }
-              // Quick: show inline preset picker
-              setShowInlinePicker((v) => !v)
-            }}
-          >
-            + New Terminal
-          </button>
-          <InlineAgentPicker
-            show={showInlinePicker}
-            presets={presets}
-            onSelect={(cmd) => {
-              setShowInlinePicker(false)
-              handleSpawn(cmd)
-            }}
-            disabled={spawning !== null}
-          />
+          <div className="flex gap-2 pt-1">
+            <button
+              className="flex-1 py-1.5 rounded bg-blue-600/20 border border-blue-500/40 text-blue-300 text-xs font-medium"
+              onClick={() => useUIStore.getState().setSessionsHubOpen(true)}
+            >
+              + New Goal Loop
+            </button>
+            <button
+              className="px-3 py-1.5 rounded border border-dashed border-gray-600 text-gray-400 hover:text-gray-200 text-xs font-mono"
+              onClick={() => handleSpawn("")}
+              disabled={spawning !== null}
+            >
+              + Shell
+            </button>
+          </div>
         </div>
       )}
-    </div>
-  )
-}
-
-// Small inline picker that expands below the "+ New Terminal" button
-function InlineAgentPicker({
-  show,
-  presets,
-  onSelect,
-  disabled,
-}: {
-  show: boolean
-  presets: { id: string; label: string; command: string; icon: string }[]
-  onSelect: (command: string) => void
-  disabled: boolean
-}) {
-  if (!show) return null
-  return (
-    <div className="grid grid-cols-2 gap-1.5 pt-1">
-      {presets.map((preset) => (
-        <button
-          key={preset.id}
-          className="flex items-center gap-2 px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-left disabled:opacity-50"
-          onClick={() => onSelect(preset.command)}
-          disabled={disabled}
-        >
-          <span className="w-5 h-5 rounded bg-gray-800 flex items-center justify-center text-[10px] font-mono font-bold text-gray-300 flex-shrink-0">
-            {preset.icon}
-          </span>
-          <span className="text-xs text-gray-200">{preset.label}</span>
-        </button>
-      ))}
     </div>
   )
 }
