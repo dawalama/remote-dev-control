@@ -24,6 +24,12 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Install Python dependencies
         run: uv sync --extra dev --locked
+      - name: Install dbmate
+        run: |
+          curl -fsSL -o "${RUNNER_TEMP}/dbmate" \
+            https://github.com/amacneil/dbmate/releases/download/v2.37.0/dbmate-linux-amd64
+          chmod +x "${RUNNER_TEMP}/dbmate"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
       - name: Run isolated Python tests
         run: uv run pytest -q
       - name: Install frontend dependencies
