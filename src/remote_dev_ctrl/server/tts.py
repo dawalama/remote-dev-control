@@ -1,6 +1,7 @@
 """Text-to-Speech service with ElevenLabs primary and Deepgram fallback."""
 
 import os
+import logging
 import httpx
 from typing import Optional
 from dataclasses import dataclass
@@ -8,6 +9,8 @@ from enum import Enum
 
 from .db.connection import get_db
 from .vault import get_secret
+
+logger = logging.getLogger("remote_dev_ctrl.tts")
 
 
 class TTSProvider(str, Enum):
@@ -19,10 +22,10 @@ class TTSProvider(str, Enum):
 
 @dataclass
 class TTSConfig:
-    provider: TTSProvider = TTSProvider.ELEVENLABS
-    voice: str = "rachel"
-    fallback_provider: TTSProvider = TTSProvider.DEEPGRAM
-    fallback_voice: str = "aura-asteria-en"
+    provider: TTSProvider = TTSProvider.DEEPGRAM
+    voice: str = "asteria"
+    fallback_provider: TTSProvider = TTSProvider.ELEVENLABS
+    fallback_voice: str = "rachel"
     
     # ElevenLabs settings
     elevenlabs_model: str = "eleven_turbo_v2_5"
@@ -113,11 +116,17 @@ class TTSService:
                 value = row["value"]
                 
                 if key == "provider":
-                    config.provider = TTSProvider(value)
+                    try:
+                        config.provider = TTSProvider(value)
+                    except ValueError:
+                        pass
                 elif key == "voice":
                     config.voice = value
                 elif key == "fallback_provider":
-                    config.fallback_provider = TTSProvider(value)
+                    try:
+                        config.fallback_provider = TTSProvider(value)
+                    except ValueError:
+                        pass
                 elif key == "fallback_voice":
                     config.fallback_voice = value
                 elif key == "elevenlabs_model":
@@ -166,6 +175,37 @@ class TTSService:
         db.commit()
         self._config = None
     
+    def _get_best_alternative_provider(self, current: TTSProvider) -> Optional[TTSProvider]:
+        """Find an alternative TTS provider with an available API key."""
+        candidates = [TTSProvider.DEEPGRAM, TTSProvider.ELEVENLABS, TTSProvider.OPENAI]
+        for candidate in candidates:
+            if candidate == current:
+                continue
+            if candidate == TTSProvider.DEEPGRAM:
+                if get_secret("DEEPGRAM_API_KEY") or os.getenv("DEEPGRAM_API_KEY"):
+                    return candidate
+            elif candidate == TTSProvider.ELEVENLABS:
+                if get_secret("ELEVENLABS_API_KEY") or os.getenv("ELEVENLABS_API_KEY"):
+                    return candidate
+            elif candidate == TTSProvider.OPENAI:
+                if get_secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"):
+                    return candidate
+        return None
+
+    async def _call_provider(self, provider: TTSProvider, text: str, voice: Optional[str], config: TTSConfig) -> bytes:
+        """Call a specific TTS provider."""
+        if provider == TTSProvider.ELEVENLABS:
+            v = voice or (config.voice if config.provider == TTSProvider.ELEVENLABS else "rachel")
+            return await self._elevenlabs(text, v, config)
+        elif provider == TTSProvider.DEEPGRAM:
+            v = voice or (config.voice if config.provider == TTSProvider.DEEPGRAM else "asteria")
+            return await self._deepgram(text, v, config)
+        elif provider == TTSProvider.OPENAI:
+            v = voice or (config.voice if config.provider == TTSProvider.OPENAI else "nova")
+            return await self._openai(text, v)
+        else:
+            raise ValueError(f"Unsupported provider: {provider}")
+
     async def speak(self, text: str, voice: Optional[str] = None, provider: Optional[str] = None) -> bytes:
         """Convert text to speech, with automatic fallback."""
         config = self.get_config()
@@ -174,36 +214,35 @@ class TTSService:
         use_voice = voice or config.voice
         
         try:
-            if use_provider == TTSProvider.ELEVENLABS:
-                return await self._elevenlabs(text, use_voice, config)
-            elif use_provider == TTSProvider.DEEPGRAM:
-                return await self._deepgram(text, use_voice, config)
-            elif use_provider == TTSProvider.OPENAI:
-                return await self._openai(text, use_voice)
-            else:
-                raise ValueError(f"Unsupported provider: {use_provider}")
-                
-        except Exception as e:
-            error_str = str(e).lower()
+            return await self._call_provider(use_provider, text, use_voice, config)
+        except Exception as primary_err:
+            logger.warning("Primary TTS provider '%s' failed: %s", use_provider.value, primary_err)
             
-            # Check for quota/credit errors
-            if any(x in error_str for x in ["quota", "credit", "limit", "exceeded", "insufficient"]):
-                # Try fallback
-                if config.fallback_provider and config.fallback_provider != use_provider:
-                    return await self._fallback(text, config)
+            # Determine candidate fallback provider
+            fallback_provider = config.fallback_provider
+            if not fallback_provider or fallback_provider == use_provider:
+                fallback_provider = self._get_best_alternative_provider(use_provider)
             
-            raise
+            if fallback_provider and fallback_provider != use_provider:
+                fallback_voice = config.fallback_voice if fallback_provider == config.fallback_provider else None
+                try:
+                    logger.info("Attempting TTS fallback to '%s'", fallback_provider.value)
+                    return await self._call_provider(fallback_provider, text, fallback_voice, config)
+                except Exception as fallback_err:
+                    logger.error("Fallback TTS provider '%s' also failed: %s", fallback_provider.value, fallback_err)
+                    raise ValueError(
+                        f"Primary TTS ({use_provider.value}) failed: {primary_err}. "
+                        f"Fallback TTS ({fallback_provider.value}) failed: {fallback_err}"
+                    ) from fallback_err
+            
+            raise primary_err
     
     async def _fallback(self, text: str, config: TTSConfig) -> bytes:
-        """Use fallback provider."""
-        if config.fallback_provider == TTSProvider.DEEPGRAM:
-            return await self._deepgram(text, config.fallback_voice, config)
-        elif config.fallback_provider == TTSProvider.OPENAI:
-            return await self._openai(text, "nova")
-        elif config.fallback_provider == TTSProvider.ELEVENLABS:
-            return await self._elevenlabs(text, config.fallback_voice, config)
-        else:
-            raise ValueError("No fallback available")
+        """Use fallback provider directly."""
+        fallback_provider = config.fallback_provider or self._get_best_alternative_provider(config.provider)
+        if not fallback_provider:
+            raise ValueError("No fallback provider available")
+        return await self._call_provider(fallback_provider, text, config.fallback_voice, config)
     
     async def _elevenlabs(self, text: str, voice: str, config: TTSConfig) -> bytes:
         """ElevenLabs TTS."""
@@ -211,7 +250,7 @@ class TTSService:
         if not api_key:
             raise ValueError("ELEVENLABS_API_KEY not set")
         
-        voice_id = ELEVENLABS_VOICES.get(voice.lower(), ELEVENLABS_VOICES["rachel"])
+        voice_id = ELEVENLABS_VOICES.get(voice.lower(), ELEVENLABS_VOICES.get("rachel", "21m00Tcm4TlvDq8ikWAM"))
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         
         headers = {
@@ -234,6 +273,8 @@ class TTSService:
             
             if response.status_code == 401:
                 raise ValueError("ElevenLabs: Invalid API key")
+            elif response.status_code == 402 or "paid_plan_required" in response.text or "payment_required" in response.text:
+                raise ValueError("ElevenLabs: Paid plan required (free tier cannot use library voices via API)")
             elif response.status_code == 429 or "quota" in response.text.lower():
                 raise ValueError("ElevenLabs: Quota exceeded")
             elif response.status_code != 200:

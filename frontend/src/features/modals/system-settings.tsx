@@ -136,14 +136,28 @@ export function SystemSettingsModal({ onClose }: { onClose: () => void }) {
         },
         body: JSON.stringify({ text: "Hello! This is a test of the current voice configuration." }),
       })
-      if (!resp.ok) throw new Error("TTS failed")
+      if (!resp.ok) {
+        let msg = `HTTP ${resp.status}`
+        try {
+          const body = (await resp.json()) as { detail?: string }
+          if (body?.detail) msg = body.detail
+        } catch {
+          try {
+            msg = (await resp.text()).slice(0, 200) || msg
+          } catch {}
+        }
+        throw new Error(msg)
+      }
       const blob = await resp.blob()
+      if (!blob.size) throw new Error("Empty audio received from TTS service")
       const url = URL.createObjectURL(blob)
       const audio = new Audio(url)
       audio.onended = () => URL.revokeObjectURL(url)
-      audio.play()
-    } catch {
-      toast("Voice test failed", "error")
+      await audio.play()
+      toast("Voice test played successfully", "success")
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Voice test failed"
+      toast(message, "error")
     }
   }
 
@@ -399,9 +413,20 @@ function VoiceSection({
       <div className="grid grid-cols-2 gap-3">
         <div>
           <Label>Primary Provider</Label>
-          <select className="input-cls" value={config.provider} onChange={(e) => onSave("provider", e.target.value)}>
-            <option value="elevenlabs">ElevenLabs (Best Quality)</option>
-            <option value="deepgram">Deepgram (Fast)</option>
+          <select
+            className="input-cls"
+            value={config.provider}
+            onChange={(e) => {
+              const newProv = e.target.value
+              onSave("provider", newProv)
+              const provVoices = voices[newProv] || []
+              if (provVoices.length > 0 && !provVoices.includes(config.voice)) {
+                onSave("voice", provVoices[0])
+              }
+            }}
+          >
+            <option value="deepgram">Deepgram (Fast &amp; Natural)</option>
+            <option value="elevenlabs">ElevenLabs</option>
             <option value="openai">OpenAI</option>
           </select>
         </div>
@@ -413,12 +438,23 @@ function VoiceSection({
         </div>
         <div>
           <Label>Fallback Provider</Label>
-          <select className="input-cls" value={config.fallback_provider} onChange={(e) => onSave("fallback_provider", e.target.value)}>
-            <option value="deepgram">Deepgram</option>
+          <select
+            className="input-cls"
+            value={config.fallback_provider}
+            onChange={(e) => {
+              const newProv = e.target.value
+              onSave("fallback_provider", newProv)
+              const provVoices = voices[newProv] || []
+              if (provVoices.length > 0 && !provVoices.includes(config.fallback_voice)) {
+                onSave("fallback_voice", provVoices[0])
+              }
+            }}
+          >
             <option value="elevenlabs">ElevenLabs</option>
+            <option value="deepgram">Deepgram</option>
             <option value="openai">OpenAI</option>
           </select>
-          <p className="text-[10px] text-gray-500 mt-1">Used when primary quota is exceeded</p>
+          <p className="text-[10px] text-gray-500 mt-1">Automatic fallback when primary is unavailable</p>
         </div>
         <div>
           <Label>Fallback Voice</Label>
