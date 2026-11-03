@@ -144,7 +144,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "open_terminal",
-            "description": "Open a terminal for a project. IMPORTANT: 'project' is a project name (e.g. 'theme-scanner'), NOT a workstream/channel name. Workstreams are where you chat; projects are where code lives. If the active workstream is a project channel, use the project name without the '#' prefix.",
+            "description": "Open a terminal for a project. IMPORTANT: 'project' is a project name (e.g. 'web-app'), NOT a workstream/channel name. Workstreams are where you chat; projects are where code lives. If the active workstream is a project channel, use the project name without the '#' prefix.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -851,7 +851,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "switch_workstream",
-            "description": "Switch to a different workstream by name (fuzzy matched). Use when user says 'switch to X', 'open workstream X', 'go to the X workstream'. Pass only the workstream's core name — do NOT include the word 'workstream' or 'channel' in the `name` param, and do NOT include the leading '#'. For example if the user says 'switch to help-my-site workstream', call this with name='help-my-site'.",
+            "description": "Switch to a different workstream by name (fuzzy matched). Use when user says 'switch to X', 'open workstream X', 'go to the X workstream'. Pass only the workstream's core name — do NOT include the word 'workstream' or 'channel' in the `name` param, and do NOT include the leading '#'. For example if the user says 'switch to web-app workstream', call this with name='web-app'.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2605,12 +2605,12 @@ class ActionExecutor:
                     raw = params.get("project", "")
                     # Only accept a real project name. Silent fallback to the raw
                     # param let the LLM create a terminal under a channel name
-                    # like "#truesteps-site workstream" (ghost project).
+                    # like "#sample-project workstream" (ghost project).
                     project = fuzzy_match(raw, ctx.projects) or (raw if raw in ctx.projects else None) or ctx.project
                     if not project:
                         return {
                             "action": "open_terminal",
-                            "error": f"No project matches '{raw}'. Projects are not the same as workstreams; pass a project name (e.g. 'theme-scanner'), not a channel name.",
+                            "error": f"No project matches '{raw}'. Projects are not the same as workstreams; pass a project name (e.g. 'web-app'), not a channel name.",
                             "success": False,
                             "type": "server",
                         }

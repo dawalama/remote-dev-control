@@ -17,7 +17,7 @@ export function ChannelMessages({ channelId }: { channelId: string }) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const channel = channels.find((c) => c.id === channelId)
-  // Derive project name from channel name (e.g. #chilly-snacks -> chilly-snacks)
+  // Derive project name from channel name (e.g. #web-app -> web-app)
   const projectName = channel?.name.replace(/^#/, "").split("/")[0] || ""
 
   const handleSend = useCallback(async () => {

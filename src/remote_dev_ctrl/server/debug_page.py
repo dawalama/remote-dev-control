@@ -203,10 +203,10 @@ DEBUG_PAGE_HTML = '''<!DOCTYPE html>
                                     </select>
                                     <button onclick="sendEvent()" class="bg-green-600 hover:bg-green-700 rounded px-3 py-1.5 text-sm">Send</button>
                                 </div>
-                                <textarea id="event-data" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm font-mono h-24" placeholder='{"project": "documaker"}'>{}</textarea>
+                                <textarea id="event-data" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm font-mono h-24" placeholder='{"project": "sample-project"}'>{}</textarea>
                                 <div class="mt-2 flex flex-wrap gap-1">
-                                    <button onclick="quickEvent('select_project', {project: 'documaker'})" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">Select Project</button>
-                                    <button onclick="quickEvent('task_create', {project: 'documaker', description: 'Test'})" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">Create Task</button>
+                                    <button onclick="quickEvent('select_project', {project: 'sample-project'})" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">Select Project</button>
+                                    <button onclick="quickEvent('task_create', {project: 'sample-project', description: 'Test'})" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">Create Task</button>
                                     <button onclick="quickEvent('process_start', {process_id: 'test-app'})" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">Start Process</button>
                                 </div>
                             </div>

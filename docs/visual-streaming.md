@@ -83,7 +83,7 @@ RDC automatically detects your platform and uses the correct image.
 
 ```bash
 # Auto-detect URL from process port
-curl -X POST "http://localhost:8420/vnc/sessions?process_id=documaker-frontend" \
+curl -X POST "http://localhost:8420/vnc/sessions?process_id=web-frontend" \
   -H "Authorization: Bearer $RDC_TOKEN"
 
 # Specify custom URL
@@ -96,8 +96,8 @@ Response:
 {
   "success": true,
   "session": {
-    "id": "vnc-documaker-frontend",
-    "process_id": "documaker-frontend",
+    "id": "vnc-web-frontend",
+    "process_id": "web-frontend",
     "target_url": "http://host.docker.internal:3000",
     "vnc_port": 8090,
     "viewer_url": "http://localhost:8090",
@@ -116,7 +116,7 @@ curl "http://localhost:8420/vnc/sessions" \
 #### Stop Session
 
 ```bash
-curl -X POST "http://localhost:8420/vnc/sessions/vnc-documaker-frontend/stop" \
+curl -X POST "http://localhost:8420/vnc/sessions/vnc-web-frontend/stop" \
   -H "Authorization: Bearer $RDC_TOKEN"
 ```
 
@@ -314,7 +314,7 @@ pm = get_process_manager()
 vnc = get_vnc_manager()
 
 # Start process
-pm.start("documaker-frontend")
+pm.start("web-frontend")
 
 # Wait for process to be ready (poll until port is accessible)
 import time
@@ -322,7 +322,7 @@ time.sleep(3)
 
 # Start VNC
 session = vnc.create_session(
-    process_id="documaker-frontend",
+    process_id="web-frontend",
     target_url="http://host.docker.internal:3000"
 )
 

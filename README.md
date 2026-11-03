@@ -15,7 +15,7 @@ Your development workstation acts as **HomeBase**; your phones, tablets, and rem
 
 ## Why RDC?
 
-- **Goal-First & Workstream-Driven**: Stop babysitting terminal prompts. Group projects into workstreams (`#tesla-light-show`, `#api`, `#system`), set outcomes and acceptance criteria, and let agents work autonomously within safe boundaries.
+- **Goal-First & Workstream-Driven**: Stop babysitting terminal prompts. Group projects into workstreams (`#web-app`, `#api-service`, `#system`), set outcomes and acceptance criteria, and let agents work autonomously within safe boundaries.
 - **Review & Acceptance with Proof Artifacts**: Inspect outcome summaries, Git diffs, independent verification command results (`npm run verify`, `pytest`), and visual media attachments before accepting or continuing.
 - **Mobile-First & Node Supervision**: Check agent progress from your phone or tablet. Three responsive layouts (Desktop split-view, Mobile card-based, Kiosk tablet), touch controls, and a dedicated mobile virtual terminal keyboard.
 - **Live Terminal Fallback**: When an agent gets stuck or needs human terminal input, drop straight into a live PTY session with persistent output buffers and waiting-for-input detection.
@@ -111,7 +111,7 @@ cd ..
 ```
 
 ### 1. Workstreams & Channels
-Projects are organized into workstream channels (e.g. `#tesla-light-show`, `#truesteps-site`, `#system`). Each workstream maintains its conversation history, active services, goal sessions, and terminal bindings.
+Projects are organized into workstream channels (e.g. `#web-app`, `#api-service`, `#system`). Each workstream maintains its conversation history, active services, goal sessions, and terminal bindings.
 
 ### 2. Goal Sessions & Supervision Lifecycle
 Instead of typing raw terminal commands, create a **Goal Session**:

@@ -4,25 +4,25 @@
 
 This is the target experience. Everything else is in service of making this feel natural.
 
-### Scenario: Testing mindshare-monitor
+### Scenario: Testing analytics-service
 
 ```
-1. USER (voice/chat): "Hey, I want to focus on the mindshare project"
+1. USER (voice/chat): "Hey, I want to focus on the analytics project"
 
    ORCHESTRATOR:
-     - Fuzzy match "mindshare project" → mindshare-monitor (in trenches collection)
+     - Fuzzy match "analytics project" → analytics-service (in core collection)
      - recall() → last session was 3 days ago, was working on Twitter integration
      - Set active project in state machine
 
-   RESPONSE: "Focusing on mindshare-monitor. Last time you were working on
+   RESPONSE: "Focusing on analytics-service. Last time you were working on
    the Twitter feed integration. What do you want to do?"
 
 2. USER: "Can you load up the project, and test it against one of the top
    coins in dexscreener?"
 
    ORCHESTRATOR decomposes into steps:
-     a. Start API process for mindshare-monitor       → process manager
-     b. Start web frontend for mindshare-monitor      → process manager
+     a. Start API process for analytics-service       → process manager
+     b. Start web frontend for analytics-service      → process manager
      c. Wait for both to be healthy                    → health checks
      d. Find a top coin CA from dexscreener            → agent task
      e. Enter the CA into the running webapp           → browser automation
@@ -35,15 +35,15 @@ This is the target experience. Everything else is in service of making this feel
 
    [executes steps a-g, streaming status updates to mobile/desktop]
 
-   RESPONSE: "Here's mindshare-monitor running with $PEPE
-   (0x6982...3fad). Preview: https://rdc.local/preview/mindshare-monitor"
+   RESPONSE: "Here's analytics-service running with $PEPE
+   (0x6982...3fad). Preview: https://rdc.local/preview/analytics-service"
    [sends screenshot to Slack/TG]
 
 3. USER (looking at preview): "Hey the twitter list can be improved.
    It does not load. Can you try to fix it?"
 
    ORCHESTRATOR:
-     - Understands context: user is looking at mindshare-monitor preview
+     - Understands context: user is looking at analytics-service preview
      - The complaint is about the Twitter list component
      - Captures screenshot of current state as context
      - Constructs agent prompt with:
@@ -56,7 +56,7 @@ This is the target experience. Everything else is in service of making this feel
 
    RESPONSE: "I see the Twitter list issue. Opening an agent to fix it.
    Here's the terminal if you want to watch or take over:
-   https://rdc.local/mobile#terminal/mindshare-monitor"
+   https://rdc.local/mobile#terminal/analytics-service"
 
 4. USER can now:
    - Watch the agent work via mobile terminal overlay
@@ -74,11 +74,11 @@ The key difference from a CLI or chatbot: the orchestrator maintains **multi-tur
 
 ```
 Traditional:
-  rdc start mindshare-monitor --api --web
+  rdc start analytics-service --api --web
   rdc agent run "find top coin on dexscreener"
-  rdc browser open mindshare-monitor
+  rdc browser open analytics-service
   rdc browser input --selector="#ca-input" --value="0x..."
-  rdc screenshot mindshare-monitor
+  rdc screenshot analytics-service
   rdc notify slack --image=screenshot.png
 
 Orchestrator:
@@ -436,7 +436,7 @@ Slack/TG:
 ### Cross-channel handoff
 
 The scenario demonstrates natural channel handoffs:
-1. Start on voice → "focusing on mindshare-monitor"
+1. Start on voice → "focusing on analytics-service"
 2. Results delivered to Slack/TG → screenshot + preview link
 3. User opens preview on mobile/desktop → sees the running app
 4. Follow-up on voice → "twitter list doesn't load"
@@ -452,7 +452,7 @@ The simplest path: **text/SMS the user a link to `/mobile`** with the right cont
 
 ```
 Orchestrator completes a task:
-  → Text user: "mindshare-monitor tested with $PEPE — https://rdc.host/mobile#preview/mindshare-monitor"
+  → Text user: "analytics-service tested with $PEPE — https://rdc.host/mobile#preview/analytics-service"
   → User taps link → mobile page opens with preview
   → OR: mobile page already open → push state update via existing WS
 
@@ -509,17 +509,17 @@ USER: "Can you load up the project, and test it against one of the top
 
 ORCHESTRATOR receives intent:
   raw: "load up the project, test against top coin dexscreener"
-  conversation_context: { active_project: "mindshare-monitor" }
+  conversation_context: { active_project: "analytics-service" }
   memory_recall: [
-    "mindshare-monitor has processes: api (port 8000), web (port 3000)",
+    "analytics-service has processes: api (port 8000), web (port 3000)",
     "last test used $WIF contract address",
     "web app has input field for contract address on main page"
   ]
 
 PLANNER (LLM call with capabilities list + context):
   Plan:
-    1. start_process(project="mindshare-monitor", process="api")
-    2. start_process(project="mindshare-monitor", process="web")
+    1. start_process(project="analytics-service", process="api")
+    2. start_process(project="analytics-service", process="web")
     3. wait_healthy(urls=["localhost:8000/health", "localhost:3000"])
        depends_on: [1, 2]
     4. agent_task(prompt="Find the contract address of a top trending
@@ -533,11 +533,11 @@ PLANNER (LLM call with capabilities list + context):
        depends_on: [6]
     8. wait(seconds=3)  # let page load results
        depends_on: [7]
-    9. screenshot(project="mindshare-monitor", full_page=true)
+    9. screenshot(project="analytics-service", full_page=true)
        depends_on: [8]
-    10. share_link(type="preview", project="mindshare-monitor")
+    10. share_link(type="preview", project="analytics-service")
         depends_on: [5]
-    11. notify(message="mindshare-monitor tested with {step4.coin_name}",
+    11. notify(message="analytics-service tested with {step4.coin_name}",
               link="{step10.url}")
         depends_on: [9, 10]
         # → pushes state update to mobile/dashboard via WS
@@ -549,7 +549,7 @@ EXECUTOR runs steps, streaming status:
   "Looking up trending coins on dexscreener..."
   "Found $PEPE (0x6982...3fad) — entering into the app..."
   "Screenshot captured. Sending to Slack."
-  "Done. Preview: https://rdc.local/preview/mindshare-monitor"
+  "Done. Preview: https://rdc.local/preview/analytics-service"
 ```
 
 ## Architecture Summary

@@ -16,7 +16,6 @@ import argparse
 import json
 import os
 import secrets
-import shutil
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -48,30 +47,32 @@ def seed_demo_database(target_dir: Path):
 
     init_databases()
 
-    # 1. Projects
+    demo_root = Path.home() / "projects"
+
+    # 1. Generic Sample Projects
     project_repo = get_project_repo()
     p1 = project_repo.create(
         Project(
-            id="proj-tesla-light-show",
-            name="tesla-light-show",
-            path=str(Path.home() / "PersonalProjects" / "tesla-light-show"),
-            description="Tesla interactive light show sequencer & WebAudio visualizer",
+            id="proj-web-app",
+            name="web-app",
+            path=str(demo_root / "web-app"),
+            description="Modern React and TypeScript web application frontend",
         )
     )
     p2 = project_repo.create(
         Project(
-            id="proj-mindshare-monitor",
-            name="mindshare-monitor",
-            path=str(Path.home() / "PersonalProjects" / "mindshare-monitor"),
-            description="Social sentiment and keyword mindshare monitoring dashboard",
+            id="proj-api-service",
+            name="api-service",
+            path=str(demo_root / "api-service"),
+            description="FastAPI REST service with PostgreSQL and Redis caching",
         )
     )
     p3 = project_repo.create(
         Project(
-            id="proj-quickdraw-wallet",
-            name="quickdraw-wallet",
-            path=str(Path.home() / "PersonalProjects" / "quickdraw-wallet"),
-            description="High-frequency automated trading engine for Solana & Base",
+            id="proj-worker-service",
+            name="worker-service",
+            path=str(demo_root / "worker-service"),
+            description="Background task worker and asynchronous job processor",
         )
     )
 
@@ -83,19 +84,19 @@ def seed_demo_database(target_dir: Path):
     cm.ensure_system_channel()
 
     # Add initial welcome and discussion messages
-    cm.post_message(ch1.id, role="user", content="Look for any bugs and performance issues in the sequencer, and fix them.")
-    cm.post_message(ch1.id, role="agent", content="Starting audit across audio buffer rendering, timeline ruler slicing, and export dialogs.")
+    cm.post_message(ch1.id, role="user", content="Look for any bugs and performance issues in the web application, and fix them.")
+    cm.post_message(ch1.id, role="agent", content="Starting audit across state management, bundle size, and responsive layout tests.")
 
     # 3. Actions / Services
     proc_repo = get_process_config_repo()
     proc_repo.upsert(
         ProcessConfig(
-            id="tesla-light-show-app",
+            id="web-app-dev",
             project_id=p1.id,
             project=p1.name,
             name="app",
-            command="PORT=5173 npm run dev",
-            port=5173,
+            command="PORT=3000 npm run dev",
+            port=3000,
             kind=ActionKind.SERVICE,
             process_type=ProcessType.DEV_SERVER,
             status=ProcessStatus.IDLE,
@@ -104,7 +105,7 @@ def seed_demo_database(target_dir: Path):
 
     proc_repo.upsert(
         ProcessConfig(
-            id="tesla-light-show-verify",
+            id="web-app-verify",
             project_id=p1.id,
             project=p1.name,
             name="verify",
@@ -118,7 +119,7 @@ def seed_demo_database(target_dir: Path):
 
     proc_repo.upsert(
         ProcessConfig(
-            id="mindshare-monitor-api",
+            id="api-service-server",
             project_id=p2.id,
             project=p2.name,
             name="api",
@@ -132,7 +133,7 @@ def seed_demo_database(target_dir: Path):
 
     proc_repo.upsert(
         ProcessConfig(
-            id="quickdraw-wallet-test",
+            id="worker-service-test",
             project_id=p3.id,
             project=p3.name,
             name="test",
@@ -148,19 +149,16 @@ def seed_demo_database(target_dir: Path):
     rdc_db = get_db("rdc")
     now = datetime.now()
 
-    # Session 1: Ready for Review (tesla-light-show)
+    # Session 1: Ready for Review (web-app)
     sess1_id = "sess-demo-review-01"
-    outcome_summary = """`npm run verify` passes: 141 tests, typecheck, build, token checks, and lint.
+    outcome_summary = """`npm run verify` passes: 48 tests, typecheck, production build, and lint.
 
-- Exports now include edits still awaiting autosave.
-- Extended shows continue playing after the song ends.
-- Saved durations and frame rounding stay consistent.
-- Timeline ruler rendering is limited to the visible area.
-- Bundle imports match audio correctly and skip unrelated files.
-- Dialogs retain keyboard focus during playback.
-- Server rejects path traversal, malformed JSON, and oversized requests.
+- Optimized client-side re-renders and virtualized list items.
+- Added dark mode color scheme toggle with persistent localStorage preference.
+- Fixed layout shift on mobile viewports.
+- All ESLint and TypeScript checks pass cleanly.
 
-Preserved existing edits. Added 43 regression tests."""
+Preserved existing styling and architecture. Added 12 regression test cases."""
 
     metadata_sess1 = json.dumps({
         "supervised": True,
@@ -178,10 +176,10 @@ Preserved existing edits. Added 43 regression tests."""
     """, (
         sess1_id,
         ch1.id,
-        "tesla-light-show",
-        "term-tesla-light-show",
+        "web-app",
+        "term-web-app",
         None,
-        "Look for any bugs and performance issues in the codebase, and fix them",
+        "Look for any bugs and performance issues in the web application, and fix them",
         "verifying",
         "orchestrated",
         (now - timedelta(minutes=47)).isoformat(),
@@ -189,26 +187,19 @@ Preserved existing edits. Added 43 regression tests."""
         None,
         outcome_summary,
         metadata_sess1,
-        "Look for any bugs and performance issues in the codebase, and fix them",
-        json.dumps(["npm run verify passes all checks", "Timeline ruler performs at 60fps"]),
+        "Look for any bugs and performance issues in the web application, and fix them",
+        json.dumps(["npm run verify passes all checks", "No layout shifts on mobile"]),
         "none",
         None,
     ))
 
     # Evidence for Session 1
-    git_diff_stat = """server/commandPlannerServer.mjs            | 21 +++-------
- src/App.tsx                                |  7 ++--
- src/components/Sequencer/AudioWaveform.tsx | 19 +++++++--
- src/components/Sequencer/TimeRuler.tsx     | 48 +++++++++++++---------
- src/components/Sequencer/TrackGrid.tsx     | 64 ++++++++++++++++++-----------
- src/components/UI/ExportModal.tsx          |  8 +---
- src/hooks/useAutosave.ts                   | 66 ++++++++++++++++++------------
- src/hooks/useShowLibrary.ts                | 58 ++++++++++++++------------
- src/services/audioController.ts            | 50 +++++++++++++++++++---
- src/services/fseqParser.test.ts            | 19 +++++++++
- src/services/fseqParser.ts                 | 14 ++++++-
- src/services/showBundle.ts                 | 43 ++++++++++++++-----
- 12 files changed, 275 insertions(+), 142 deletions(-)"""
+    git_diff_stat = """src/App.tsx                                | 18 +++++++--------
+ src/components/Dashboard.tsx               | 42 ++++++++++++++++++------------
+ src/components/Sidebar.tsx                 | 24 ++++++++---------
+ src/hooks/useTheme.ts                      | 36 +++++++++++++++++++++++++
+ src/services/apiClient.ts                  | 12 ++++-----
+ 5 files changed, 81 insertions(+), 51 deletions(-)"""
 
     rdc_db.execute("""
         INSERT INTO session_evidence (id, session_id, evidence_type, title, data, source, observed_at)
@@ -216,7 +207,7 @@ Preserved existing edits. Added 43 regression tests."""
     """, (
         f"ev-{secrets.token_hex(6)}",
         sess1_id,
-        json.dumps({"diff": git_diff_stat, "status": "12 files modified", "head": "404ef4d"}),
+        json.dumps({"diff": git_diff_stat, "status": "5 files modified", "head": "a1b2c3d"}),
         (now - timedelta(minutes=5)).isoformat(),
     ))
 
@@ -229,7 +220,7 @@ Preserved existing edits. Added 43 regression tests."""
         json.dumps({
             "command": "npm run verify",
             "exit_code": 0,
-            "stdout": "✓ 141 tests passed (0 failed, 141 passed)\n✓ Typecheck passed\n✓ Production build completed (dist/ 412kb)\n✓ ESLint clean",
+            "stdout": "✓ 48 tests passed (0 failed, 48 passed)\n✓ TypeScript compilation clean\n✓ Production build completed (dist/ 245kb)\n✓ ESLint 0 errors, 0 warnings",
         }),
         (now - timedelta(minutes=4)).isoformat(),
     ))
@@ -241,10 +232,10 @@ Preserved existing edits. Added 43 regression tests."""
     """, (sess1_id, now.isoformat()))
     rdc_db.execute("""
         INSERT INTO session_criteria (session_id, criterion_index, criterion, status, evaluated_at)
-        VALUES (?, 1, 'Timeline ruler performs at 60fps', 'passed', ?)
+        VALUES (?, 1, 'No layout shifts on mobile', 'passed', ?)
     """, (sess1_id, now.isoformat()))
 
-    # Session 2: Needs You / Waiting for Input (mindshare-monitor)
+    # Session 2: Needs You / Waiting for Input (api-service)
     sess2_id = "sess-demo-waiting-02"
     rdc_db.execute("""
         INSERT OR REPLACE INTO sessions
@@ -255,17 +246,17 @@ Preserved existing edits. Added 43 regression tests."""
     """, (
         sess2_id,
         ch2.id,
-        "mindshare-monitor",
-        "term-mindshare-monitor",
+        "api-service",
+        "term-api-service",
         None,
-        "Apply schema migration for keyword trend caching",
+        "Apply schema migration for user session caching",
         "waiting",
         "claude",
         (now - timedelta(minutes=15)).isoformat(),
         now.isoformat(),
-        "Agent is waiting for authorization to execute schema migration on the staging database.",
+        "Agent is waiting for authorization to execute schema migration on the database.",
         json.dumps({"supervised": True}),
-        "Apply schema migration for keyword trend caching",
+        "Apply schema migration for user session caching",
         json.dumps(["Alembic migration completes cleanly"]),
         "human",
         "Interactive approval requested: alembic upgrade head",
@@ -276,7 +267,7 @@ Preserved existing edits. Added 43 regression tests."""
         VALUES (?, ?, 'command', 'medium', 'Execute database migration on staging schema', ?, 'pending', ?)
     """, (f"appr-{secrets.token_hex(6)}", sess2_id, json.dumps({"command": "alembic upgrade head"}), now.isoformat()))
 
-    # Session 3: Completed (quickdraw-wallet)
+    # Session 3: Completed (worker-service)
     sess3_id = "sess-demo-done-03"
     rdc_db.execute("""
         INSERT OR REPLACE INTO sessions
@@ -287,26 +278,26 @@ Preserved existing edits. Added 43 regression tests."""
     """, (
         sess3_id,
         ch3.id,
-        "quickdraw-wallet",
-        "term-quickdraw-wallet",
+        "worker-service",
+        "term-worker-service",
         None,
-        "Add pytest unit tests for order routing and signature verification",
+        "Add pytest unit tests for queue retry backoff",
         "completed",
         "codex",
         (now - timedelta(hours=2)).isoformat(),
         (now - timedelta(hours=1, minutes=45)).isoformat(),
         (now - timedelta(hours=1, minutes=45)).isoformat(),
-        "Added 24 unit tests covering Solana Ed25519 order signature verification and retry backoff. All tests passing.",
+        "Added 18 unit tests covering exponential backoff, dead letter queue routing, and failure notification handling. All tests passing.",
         json.dumps({"supervised": True}),
-        "Add pytest unit tests for order routing and signature verification",
+        "Add pytest unit tests for queue retry backoff",
         json.dumps(["All tests passing with 100% assertions satisfied"]),
         "none",
     ))
 
     # Link terminals to sessions
-    rdc_db.execute("INSERT OR REPLACE INTO session_terminals (session_id, terminal_id) VALUES (?, ?)", (sess1_id, "term-tesla-light-show"))
-    rdc_db.execute("INSERT OR REPLACE INTO session_terminals (session_id, terminal_id) VALUES (?, ?)", (sess2_id, "term-mindshare-monitor"))
-    rdc_db.execute("INSERT OR REPLACE INTO session_terminals (session_id, terminal_id) VALUES (?, ?)", (sess3_id, "term-quickdraw-wallet"))
+    rdc_db.execute("INSERT OR REPLACE INTO session_terminals (session_id, terminal_id) VALUES (?, ?)", (sess1_id, "term-web-app"))
+    rdc_db.execute("INSERT OR REPLACE INTO session_terminals (session_id, terminal_id) VALUES (?, ?)", (sess2_id, "term-api-service"))
+    rdc_db.execute("INSERT OR REPLACE INTO session_terminals (session_id, terminal_id) VALUES (?, ?)", (sess3_id, "term-worker-service"))
 
     rdc_db.commit()
     print("Demo database successfully seeded!")

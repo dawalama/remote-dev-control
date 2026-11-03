@@ -104,7 +104,7 @@ class ChannelManager:
         logger.info("Seeded missing #system channel (ch-system)")
 
     def get_channel_by_name(self, name: str) -> Optional[Channel]:
-        """Get a channel by name (e.g. '#chilly-snacks')."""
+        """Get a channel by name (e.g. '#web-app')."""
         row = self.db.execute(
             "SELECT * FROM channels WHERE name = ? AND archived_at IS NULL", (name,)
         ).fetchone()

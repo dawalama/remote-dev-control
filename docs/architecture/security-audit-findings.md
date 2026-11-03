@@ -2,7 +2,7 @@
 
 **Project:** remote-dev-ctrl  
 **Stack:** Python 3.11 (FastAPI, Typer, DuckDB/SQLite, MCP) + React/TypeScript/Vite  
-**Path:** /Users/dawa/remote-dev-ctrl  
+**Path:** ~/remote-dev-control  
 **Audit date:** 2025-03-08  
 
 ---

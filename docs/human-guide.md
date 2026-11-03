@@ -164,7 +164,7 @@ RDC organizes work around **Goal Sessions** within dedicated Workstream channels
 ### Creating a Goal Session
 
 From the dashboard:
-1. Open the target workstream channel (e.g. `#tesla-light-show`).
+1. Open the target workstream channel (e.g. `#web-app`).
 2. Click **"New Session"** in the Sessions Hub or Goals panel.
 3. Enter:
    - **Goal** — Clear description of the desired outcome (e.g., "Look for any bugs and performance issues in the codebase, and fix them").

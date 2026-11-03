@@ -382,7 +382,7 @@ function escapeRegExp(s: string): string {
 
 function matchCommand(input: string): { command: Command; rest: string } | null {
   // Strip trailing sentence punctuation that voice transcription adds
-  // ("Switch to Documaker." → "switch to documaker"); commands match phrases,
+  // ("Switch to Demo Project." → "switch to demo project"); commands match phrases,
   // not sentences.
   const normalized = input
     .toLowerCase()
@@ -397,7 +397,7 @@ function matchCommand(input: string): { command: Command; rest: string } | null 
       }
       if (cmd.hasSlot && normalized.startsWith(trigger + " ")) {
         // Slot value: also strip any internal trailing punctuation so
-        // "switch to documaker," resolves cleanly.
+        // "switch to demo project," resolves cleanly.
         const rest = normalized.slice(trigger.length + 1).trim().replace(/[.!?,;:]+$/, "").trim()
         if (rest) return { command: cmd, rest }
       }
@@ -669,9 +669,9 @@ export function useOrchestrator(opts: {
     // Fallback: voice phrasing the strict command table missed.  If the
     // message contains a navigation verb AND exactly one known workstream
     // name appears as a whole word, switch to it. Catches things like:
-    //   "use truesteps-site"
-    //   "let's go to documaker please"
-    //   "I want to switch over to the chilly-snacks workstream"
+    //   "use web-app"
+    //   "let's go to api-service please"
+    //   "I want to switch over to the demo-project workstream"
     // Without this, voice falls through to the LLM which often asks for
     // confirmation and then hallucinates success.
     const lower = text.toLowerCase()

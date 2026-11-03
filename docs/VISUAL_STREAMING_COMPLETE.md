@@ -90,7 +90,7 @@ Auto-detected at runtime.
 
 ```bash
 # 1. Start RDC server
-cd /Users/dawa/remote-dev-ctrl
+cd ~/remote-dev-control
 rdc server start -d
 
 # 2. Open dashboard

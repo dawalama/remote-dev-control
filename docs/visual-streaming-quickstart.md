@@ -17,7 +17,7 @@ If not running:
 ## 2. Start RDC Server
 
 ```bash
-cd /Users/dawa/remote-dev-ctrl
+cd ~/remote-dev-control
 rdc server start -d
 ```
 

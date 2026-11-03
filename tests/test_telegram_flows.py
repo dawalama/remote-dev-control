@@ -91,14 +91,14 @@ def test_telegram_goal_creation():
         from remote_dev_ctrl.server.db.repositories import get_project_repo
         from remote_dev_ctrl.server.db.models import Project
         repo = get_project_repo()
-        if not repo.get("tesla-light-show"):
-            repo.create(Project(name="tesla-light-show", path="/tmp"))
+        if not repo.get("demo-project"):
+            repo.create(Project(name="demo-project", path="/tmp"))
 
         with patch("remote_dev_ctrl.server.supervised_sessions.start_supervised_session") as mock_start:
-            res = await handle_telegram_command("goal", "tesla-light-show Fix test flakiness and lint", user_id=123)
+            res = await handle_telegram_command("goal", "demo-project Fix test flakiness and lint", user_id=123)
             assert isinstance(res, dict)
             assert "Goal Session Launched" in res["text"]
-            assert "tesla-light-show" in res["text"]
+            assert "demo-project" in res["text"]
             assert mock_start.called
 
     asyncio.run(_test())

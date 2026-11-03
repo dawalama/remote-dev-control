@@ -391,7 +391,7 @@ agents:
 
 # Project Overrides (optional - projects are auto-discovered from rdc list)
 # projects:
-#   documaker:
+#   web-app:
 #     priority: high
 #     preferred_provider: cursor
 '''

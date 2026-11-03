@@ -60,7 +60,7 @@ A channel is a **workspace** — not a message thread. It contains:
 - **Missions**: Autonomous tasks being planned/executed in this context.
 
 ```
-#chilly-snacks/payments (workspace)
+#ecommerce-api/payments (workspace)
 ┌─────────────────────────┬──────────────┐
 │  Message Queue          │  Terminal 1  │
 │  (chat + state log)     │  (Claude)    │
@@ -76,7 +76,7 @@ A channel is a **workspace** — not a message thread. It contains:
 On mobile, the same workspace collapses into tabs:
 
 ```
-#chilly-snacks/payments
+#ecommerce-api/payments
 ┌─────────────────────────┐
 │ [Chat] [Terms] [Mission]│  ← tabs or swipe
 ├─────────────────────────┤
@@ -88,11 +88,11 @@ On mobile, the same workspace collapses into tabs:
 
 | Type | Created By | Lifetime | Example |
 |---|---|---|---|
-| **Project** | Auto-created per project | Permanent | `#chilly-snacks` |
-| **Mission** | Auto-created when mission starts | Archives on completion | `#chilly-snacks/payments` |
+| **Project** | Auto-created per project | Permanent | `#ecommerce-api` |
+| **Mission** | Auto-created when mission starts | Archives on completion | `#ecommerce-api/payments` |
 | **Ephemeral** | User (`/channel` or button) | Until user archives | `#quick-question` |
 | **System** | Auto-created | Permanent | `#system`, `#system/observer` |
-| **Event** | Auto-created for PRs, deploys | Archives on merge/complete | `#chilly-snacks/pr-42` |
+| **Event** | Auto-created for PRs, deploys | Archives on merge/complete | `#ecommerce-api/pr-42` |
 
 ### Channel Sidebar
 
@@ -101,10 +101,10 @@ Flat list by default. Toggle to project-grouped view when channels accumulate:
 ```
 [Flat]                    [By Project]
 
-#chilly-snacks            chilly-snacks
-#chilly-snacks/payments     #default
-#quickdraw-wallet           #payments
-#system                   quickdraw-wallet
+#ecommerce-api            ecommerce-api
+#ecommerce-api/payments     #default
+#billing-service            #payments
+#system                   billing-service
                             #default
                           system
                             #system
@@ -142,9 +142,9 @@ Projects (permanent, organizational)
 ```
 
 - Adding a project creates a default channel for it
-- Multiple channels per project is natural: `#chilly-snacks`, `#chilly-snacks/payments`, `#chilly-snacks/deploy`
+- Multiple channels per project is natural: `#ecommerce-api`, `#ecommerce-api/payments`, `#ecommerce-api/deploy`
 - Terminals are tied to projects (for cwd) but can appear in one or more channels
-- A terminal in `#chilly-snacks/payments` is also visible in the parent `#chilly-snacks`
+- A terminal in `#ecommerce-api/payments` is also visible in the parent `#ecommerce-api`
 
 ---
 
@@ -180,8 +180,8 @@ Observer (batch process, not live)
 
 Per-channel orchestrators are isolated by default. Cross-channel read access is granted by the user:
 
-- You say "use the same auth pattern from quickdraw-wallet" in `#chilly-snacks`
-- The orchestrator checks: do I have read access to `#quickdraw-wallet`?
+- You say "use the same auth pattern from billing-service" in `#ecommerce-api`
+- The orchestrator checks: do I have read access to `#billing-service`?
 - If yes → searches that channel's message queue
 - If no → asks the meta-orchestrator → asks you for permission
 
@@ -354,7 +354,7 @@ First-class input in all contexts. Focus-based routing:
 
 - Voice goes to whatever pane has focus (terminal or chat)
 - "Switch to terminal" / "switch to chat" to redirect
-- "Switch to chilly-snacks" to change active channel
+- "Switch to ecommerce-api" to change active channel
 - Transcription → input (for terminal) or command parsing (for orchestrator)
 
 ---

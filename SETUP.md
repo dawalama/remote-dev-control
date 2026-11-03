@@ -3,15 +3,15 @@
 ## Automated Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/dawalama/remote-dev-ctrl/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/dawalama/remote-dev-control/main/install.sh | bash
 ```
 
 ## Manual Install
 
 ```bash
 # 1. Clone & install
-git clone https://github.com/dawalama/remote-dev-ctrl.git
-cd remote-dev-ctrl
+git clone https://github.com/dawalama/remote-dev-control.git
+cd remote-dev-control
 uv sync                    # or: pip install -e .
 
 # 2. Build frontend

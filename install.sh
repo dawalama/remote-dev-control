@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Remote Dev Ctrl (RDC) — Install Script
-# Usage: curl -sSL https://raw.githubusercontent.com/dawalama/remote-dev-ctrl/main/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/dawalama/remote-dev-control/main/install.sh | bash
 #    or: ./install.sh
 #
 set -euo pipefail
@@ -21,8 +21,8 @@ fail()  { echo -e "${RED}✗${NC}  $*"; exit 1; }
 step()  { echo -e "\n${BOLD}── $* ──${NC}"; }
 
 # ── Configuration ───────────────────────────────────────────────────────────
-RDC_REPO="https://github.com/dawalama/remote-dev-ctrl.git"
-RDC_DIR="${RDC_DIR:-$HOME/remote-dev-ctrl}"
+RDC_REPO="https://github.com/dawalama/remote-dev-control.git"
+RDC_DIR="${RDC_DIR:-$HOME/remote-dev-control}"
 RDC_HOME="${RDC_HOME:-$HOME/.rdc}"
 MIN_PYTHON="3.11"
 MIN_NODE="18"
@@ -164,7 +164,7 @@ fi
 if [ ! -f "$RDC_HOME/config.yml" ]; then
   cat > "$RDC_HOME/config.yml" << 'YAML'
 # RDC Configuration
-# Docs: https://github.com/dawalama/remote-dev-ctrl/blob/main/docs/configuration.md
+# Docs: https://github.com/dawalama/remote-dev-control/blob/main/docs/configuration.md
 
 server:
   host: 127.0.0.1

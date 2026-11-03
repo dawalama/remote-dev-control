@@ -1130,7 +1130,7 @@ async def handle_telegram_command(command: str, args: str, user_id: int) -> Any:
                     "• _Brief me_\n"
                     "• _What needs review?_\n"
                     "• _Show active sessions_\n"
-                    "• _Run test and lint on tesla-light-show_\n"
+                    "• _Run test and lint on demo-project_\n"
                     "• _Accept outcome_\n\n"
                     "Or tap a quick action below:"
                 ),
@@ -6096,11 +6096,11 @@ For UI-only actions (switching views, navigation), use UI_ACTION which the front
 [UI_ACTION:open_task_modal]
 
 Examples:
-- "Start the frontend" -> [ACTION:start_action:mindshare-monitor-frontend] I'm starting the frontend now.
+- "Start the frontend" -> [ACTION:start_action:web-app-frontend] I'm starting the frontend now.
 - "Show me the actions" -> [UI_ACTION:show_tab:processes] Here are your actions.
-- "Switch to documaker project" -> [UI_ACTION:select_project:documaker] Switched to documaker.
+- "Switch to demo-project project" -> [UI_ACTION:select_project:demo-project] Switched to demo-project.
 - "Create a task to fix login" -> [ACTION:create_task:Fix login bug|Investigate and fix the login issue] Created a task for the login fix.
-- "Add a task for documaker to add dark mode" -> [ACTION:create_task:documaker:Add dark mode|Implement dark mode toggle in settings] Created the task.
+- "Add a task for demo-project to add dark mode" -> [ACTION:create_task:demo-project:Add dark mode|Implement dark mode toggle in settings] Created the task.
 - "I want to add a new task" -> [UI_ACTION:open_task_modal] I've opened the task form for you.
 
 IMPORTANT: Use the exact process IDs from the list above. Be concise. Execute first, then briefly confirm."""
