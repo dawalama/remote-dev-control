@@ -455,6 +455,15 @@ def test_session_git_status_and_one_click_host_commit(monkeypatch, tmp_path):
     assert "Commit and push are blocked" in (status_data["detected_blocker"] or "")
     assert any(s["kind"] == "host_commit" for s in status_data["suggested_next_steps"])
 
+    # Verify proof artifact renders inline per-file diff before commit
+    artifact_before = client.get(
+        f"/sessions/{session.id}/artifact",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert artifact_before.status_code == 200
+    assert "Code Changes (Per-File Diff)" in artifact_before.text
+    assert "export const x = 2" in artifact_before.text
+
     commit_resp = client.post(
         f"/sessions/{session.id}/git-commit",
         headers={"Authorization": f"Bearer {token}"},
@@ -465,7 +474,7 @@ def test_session_git_status_and_one_click_host_commit(monkeypatch, tmp_path):
     assert commit_data["success"] is True
     assert "Co-Authored-By" not in commit_data["message"]
 
-    # Verify git evidence was auto-recorded and blocker was cleared
+    # Verify git evidence was auto-recorded, blocker was cleared, and diff persists in artifact after commit
     ev_resp = client.get(
         f"/sessions/{session.id}/evidence",
         headers={"Authorization": f"Bearer {token}"},
@@ -474,5 +483,14 @@ def test_session_git_status_and_one_click_host_commit(monkeypatch, tmp_path):
     updated_session = manager.get(session.id)
     assert "Commit and push are blocked" not in (updated_session.output_summary or "")
     assert "Host commit" in (updated_session.output_summary or "")
+
+    artifact_after = client.get(
+        f"/sessions/{session.id}/artifact",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert artifact_after.status_code == 200
+    assert "Code Changes (Per-File Diff)" in artifact_after.text
+    assert "export const x = 2" in artifact_after.text
+
 
 

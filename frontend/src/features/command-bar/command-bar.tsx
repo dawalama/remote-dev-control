@@ -15,34 +15,47 @@ export function CommandBar() {
   const phone = useStateStore((s) => s.phone)
   const toggleBottomPanel = useUIStore((s) => s.toggleBottomPanel)
   const [phoneCalling, setPhoneCalling] = useState(false)
+  const [quickInput, setQuickInput] = useState("")
+  const [sendingQuick, setSendingQuick] = useState(false)
+
+  const channels = useChannelStore((s) => s.channels)
+  const activeChannelId = useChannelStore((s) => s.activeChannelId)
+  const activeChannel = channels.find((c) => c.id === activeChannelId)
+  const currentProject = useProjectStore((s) => s.currentProject)
 
   const orchestrator = useOrchestrator({
     channel: "desktop",
+    sync: true,
     onOpenTerminal: () => toggleBottomPanel(),
   })
 
+  const runChiefOfStaffPrompt = useCallback(async (text: string, openDrawer = true) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    setSendingQuick(true)
+    try {
+      const { activeChannelId: chId, postMessage } = useChannelStore.getState()
+      if (chId) {
+        await postMessage(chId, trimmed, "user")
+      }
+      if (openDrawer && chId && !useUIStore.getState().chatOpen) {
+        useUIStore.getState().toggleChat()
+      }
+      const result = await orchestrator.send(trimmed)
+      if (chId && result?.response) {
+        await postMessage(chId, result.response, "orchestrator")
+      } else if (!chId && result?.response) {
+        toast(result.response.slice(0, 160), "info")
+      }
+    } finally {
+      setSendingQuick(false)
+    }
+  }, [orchestrator, toast])
+
   const handleVoiceFinal = useCallback(async (text: string) => {
     toast(`Voice: "${text}"`, "info")
-    // Post the spoken text to the active workstream so the user sees the full
-    // exchange in chat. In async mode the server will post the reply there too.
-    const { activeChannelId, postMessage, loadMessages } = useChannelStore.getState()
-    if (activeChannelId) {
-      await postMessage(activeChannelId, text, "user")
-    }
-    const result = await orchestrator.send(text)
-    const isAsync = (result as Record<string, unknown> | null)?.async === true
-    if (isAsync && activeChannelId) {
-      // Server will push the real response via WS; loadMessages is a best-effort pickup.
-      setTimeout(() => { void loadMessages(activeChannelId) }, 1500)
-      return
-    }
-    if (!activeChannelId && result?.response) {
-      // No workstream open — fall back to a toast preview.
-      toast(result.response.slice(0, 120), "info")
-    } else if (activeChannelId && result?.response) {
-      await postMessage(activeChannelId, result.response, "orchestrator")
-    }
-  }, [toast, orchestrator])
+    await runChiefOfStaffPrompt(text, true)
+  }, [toast, runChiefOfStaffPrompt])
 
   const voice = useVoice({ channel: "desktop", onFinal: handleVoiceFinal })
   const setVoicePanelOpen = useUIStore((s) => s.setVoicePanelOpen)
@@ -65,48 +78,94 @@ export function CommandBar() {
     }
   }
 
+  const scopeLabel = activeChannel?.name?.replace(/^#/, "") || currentProject || "HomeBase"
+
   return (
     <div className="fixed bottom-0 left-0 right-0 h-[48px] bg-gray-800 border-t border-gray-700 z-40 flex items-center px-4 gap-2">
-      {/* Left: logs pill + scope chip (only when floating chat drawer is closed) */}
+      {/* Left: logs pill + scope chip */}
       <LogsPill />
       {!chatOpen && <ChatScopeChip compact />}
 
-      {/* Spacer */}
-      <div className="flex-1" />
+      {/* Center: Always-ready Workstream Chief-of-Staff Bar */}
+      <div className="flex-1 max-w-2xl mx-auto flex items-center gap-1.5">
+        <div className="flex-1 flex items-center rounded-full border border-gray-600/80 bg-gray-900/90 px-3 py-1 focus-within:border-blue-500">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400 mr-2 flex-shrink-0">
+            Chief of Staff
+          </span>
+          <input
+            data-no-global-intercept
+            value={quickInput}
+            disabled={sendingQuick}
+            onChange={(e) => setQuickInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && quickInput.trim() && !sendingQuick) {
+                e.preventDefault()
+                const msg = quickInput
+                setQuickInput("")
+                void runChiefOfStaffPrompt(msg, true)
+              }
+            }}
+            placeholder={`Ask ${scopeLabel} — "Brief me", "Start a goal to...", or ask anything…`}
+            className="min-w-0 flex-1 bg-transparent text-xs text-gray-100 placeholder-gray-500 focus:outline-none"
+          />
+          {quickInput.trim() ? (
+            <button
+              disabled={sendingQuick}
+              onClick={() => {
+                const msg = quickInput
+                setQuickInput("")
+                void runChiefOfStaffPrompt(msg, true)
+              }}
+              className="ml-1.5 rounded-full bg-blue-600 px-2.5 py-0.5 text-[10px] font-medium text-white hover:bg-blue-500"
+            >
+              {sendingQuick ? "…" : "Send"}
+            </button>
+          ) : (
+            <button
+              disabled={sendingQuick}
+              onClick={() => { void runChiefOfStaffPrompt("Brief me", true) }}
+              className="ml-1.5 rounded-full border border-gray-700 bg-gray-800 px-2 py-0.5 text-[10px] text-gray-300 hover:border-blue-500/50 hover:text-blue-300 flex-shrink-0"
+              title="Get an instant deterministic status brief for this workstream"
+            >
+              ⚡ Brief me
+            </button>
+          )}
+        </div>
+      </div>
 
-      {/* Right: FABs */}
+      {/* Right: Unified Controls */}
       <div className="flex items-center gap-2">
         {/* Phone */}
-        <button
-          className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${
-            phone?.active
-              ? "bg-green-600 text-white animate-pulse"
-              : phone?.configured
-                ? "bg-gray-600 text-gray-300 hover:bg-gray-500"
-                : "bg-gray-700 text-gray-500 opacity-50 cursor-not-allowed"
-          }`}
-          disabled={!phone?.configured || phoneCalling}
-          onClick={handlePhone}
-          title={phone?.active ? "Hang up" : "Call"}
-        >
-          📱
-        </button>
+        {Boolean(phone?.configured) && (
+          <button
+            className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${
+              phone?.active
+                ? "bg-green-600 text-white animate-pulse"
+                : "bg-gray-600 text-gray-300 hover:bg-gray-500"
+            }`}
+            disabled={phoneCalling}
+            onClick={handlePhone}
+            title={phone?.active ? "Hang up" : "Call"}
+          >
+            📱
+          </button>
+        )}
 
-        {/* Voice — opens HomeBase Voice panel (clear connect surface) */}
+        {/* Voice — opens HomeBase Voice panel */}
         <button
           className={`h-8 rounded-full flex items-center gap-1.5 px-3 text-xs font-medium transition-colors ${
             voicePanelOpen || voice.listening
               ? "bg-red-600 text-white animate-pulse"
-              : "bg-gray-600 text-gray-300 hover:bg-gray-500"
+              : "bg-gray-700 text-gray-300 hover:bg-gray-600"
           }`}
           onClick={() => setVoicePanelOpen(true)}
-          title="HomeBase Voice — talk to this machine"
+          title="HomeBase Voice — talk to Chief of Staff"
         >
           🎤
           <span className="hidden sm:inline">Voice</span>
         </button>
 
-        {/* Chat toggle */}
+        {/* Chief of Staff History Drawer toggle */}
         <ChatToggle />
 
         {/* Settings (rightmost) */}
@@ -126,14 +185,15 @@ function ChatToggle() {
       className={`h-8 rounded-full flex items-center gap-1.5 px-3 text-xs font-medium transition-colors ${
         chatOpen
           ? "bg-blue-600 text-white"
-          : "bg-gray-600 text-gray-300 hover:bg-gray-500"
+          : "bg-gray-700 text-gray-300 hover:bg-gray-600"
       }`}
       onClick={toggleChat}
-      title="Toggle chat (⌘/)"
+      title="Toggle Workstream Chief-of-Staff drawer (⌘/)"
     >
       💬
+      <span className="hidden md:inline">Thread</span>
       {!chatOpen && messages.length > 0 && (
-        <span className="text-[10px] bg-gray-500 text-white px-1 rounded-full">{messages.length}</span>
+        <span className="text-[10px] bg-gray-600 text-gray-200 px-1.5 rounded-full">{messages.length}</span>
       )}
     </button>
   )
@@ -154,7 +214,7 @@ function SettingsButton() {
   return (
     <div className="relative">
       <button
-        className="w-8 h-8 rounded-full flex items-center justify-center text-sm bg-gray-600 text-gray-300 hover:bg-gray-500"
+        className="w-8 h-8 rounded-full flex items-center justify-center text-sm bg-gray-700 text-gray-300 hover:bg-gray-600"
         onClick={() => setOpen(!open)}
         title="Settings"
       >

@@ -241,7 +241,13 @@ def start_supervised_session(
             error=provider_blocker,
         )
 
-    full_prompt = session_execution_prompt(s)
+    rdc_note = (
+        f"\n\n[RDC Execution Note: Leave modified files uncommitted in the working tree "
+        f"so the operator can inspect the diff and commit from RDC in 1 click. "
+        f"If this goal benefits from a rich custom visual report, benchmark table, or architecture diagram, "
+        f"you may optionally write a standalone dark-mode HTML file to .rdc/sessions/{s.id}.html.]"
+    )
+    full_prompt = session_execution_prompt(s) + rdc_note
     followups = (s.metadata or {}).get("followup_instructions") or []
     latest_instruction = (
         str(followups[-1].get("instruction") or "").strip()

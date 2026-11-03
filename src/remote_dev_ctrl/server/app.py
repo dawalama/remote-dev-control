@@ -9466,6 +9466,112 @@ class SessionArtifactPayload(BaseModel):
     title: str | None = None
 
 
+def _parse_unified_diff_to_html(raw_diff: str) -> str:
+    import html as html_lib
+
+    esc = html_lib.escape
+    if not raw_diff or not raw_diff.strip():
+        return ""
+
+    files: list[tuple[str, int, int, list[str]]] = []
+    current_path: str | None = None
+    adds = 0
+    dels = 0
+    hunk_lines: list[str] = []
+
+    def _flush() -> None:
+        nonlocal current_path, adds, dels, hunk_lines
+        if current_path:
+            files.append((current_path, adds, dels, hunk_lines[:400]))
+        current_path = None
+        adds = 0
+        dels = 0
+        hunk_lines = []
+
+    for line in raw_diff.splitlines():
+        if line.startswith("diff --git "):
+            _flush()
+            m = re.match(r"diff --git a/(.+?) b/(.+)$", line)
+            current_path = m.group(2) if m else line[11:].strip()
+            continue
+        if current_path is None:
+            continue
+        if line.startswith(("index ", "--- ", "+++ ", "new file mode", "deleted file mode")):
+            continue
+        if line.startswith("@@"):
+            hunk_lines.append(f'<div class="dl dl-hunk">{esc(line)}</div>')
+        elif line.startswith("+"):
+            adds += 1
+            hunk_lines.append(f'<div class="dl dl-add">{esc(line)}</div>')
+        elif line.startswith("-"):
+            dels += 1
+            hunk_lines.append(f'<div class="dl dl-del">{esc(line)}</div>')
+        else:
+            hunk_lines.append(f'<div class="dl">{esc(line)}</div>')
+    _flush()
+
+    if not files:
+        return ""
+
+    blocks = []
+    for idx, (fpath, f_adds, f_dels, lines_html) in enumerate(files[:20]):
+        open_attr = " open" if idx < 4 else ""
+        body_html = "".join(lines_html) if lines_html else '<div class="dl muted">Binary or mode-only change</div>'
+        blocks.append(
+            f'<details class="diff-file"{open_attr}>'
+            f'<summary class="diff-summary">'
+            f'<span class="file-chip">{esc(fpath)}</span>'
+            f'<span class="diff-counts"><span class="cnt-add">+{f_adds}</span> <span class="cnt-del">-{f_dels}</span></span>'
+            f'</summary>'
+            f'<div class="diff-body">{body_html}</div>'
+            f'</details>'
+        )
+    return "".join(blocks)
+
+
+def _collect_session_diff_html(session, evidence: list[dict]) -> str:
+    try:
+        proj_path = _session_project_path(session.project)
+        if not (proj_path / ".git").exists():
+            return ""
+        # 1. Check live uncommitted diff first
+        working_diff = subprocess.run(
+            ["git", "diff", "HEAD"],
+            cwd=proj_path, text=True, capture_output=True, timeout=6, check=False,
+        ).stdout
+        if working_diff.strip():
+            return _parse_unified_diff_to_html(working_diff)
+
+        # 2. If working tree is clean, check git_baseline..HEAD or most recent commit
+        baseline_head = ((session.metadata or {}).get("git_baseline") or {}).get("head", "").strip()
+        current_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=proj_path, text=True, capture_output=True, timeout=4, check=False,
+        ).stdout.strip()
+        if baseline_head and current_head and baseline_head != current_head:
+            range_diff = subprocess.run(
+                ["git", "diff", f"{baseline_head}..{current_head}"],
+                cwd=proj_path, text=True, capture_output=True, timeout=6, check=False,
+            ).stdout
+            if range_diff.strip():
+                return _parse_unified_diff_to_html(range_diff)
+
+        # 3. Check if any git evidence recorded a commit SHA
+        for ev in reversed(evidence):
+            if ev.get("evidence_type") == "git":
+                ev_head = str((ev.get("data") or {}).get("head") or "").strip()
+                if ev_head:
+                    show_diff = subprocess.run(
+                        ["git", "show", "--format=", "--patch", ev_head],
+                        cwd=proj_path, text=True, capture_output=True, timeout=6, check=False,
+                    ).stdout
+                    if show_diff.strip():
+                        return _parse_unified_diff_to_html(show_diff)
+    except Exception:
+        pass
+    return ""
+
+
 def _build_synthesized_session_artifact(session, evidence: list[dict], criteria: list[dict]) -> str:
     import html as html_lib
 
@@ -9580,6 +9686,16 @@ def _build_synthesized_session_artifact(session, evidence: list[dict], criteria:
         except Exception:
             pass
 
+    inline_diff_html = _collect_session_diff_html(session, evidence)
+    diff_section = ""
+    if inline_diff_html:
+        diff_section = (
+            '<section class="card">'
+            '<div class="card-label">Code Changes (Per-File Diff)</div>'
+            f'{inline_diff_html}'
+            '</section>'
+        )
+
     proof_section = ""
     if verif_cards or git_cards:
         proof_section = (
@@ -9663,6 +9779,25 @@ def _build_synthesized_session_artifact(session, evidence: list[dict], criteria:
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: #cbd5e1;
     white-space: pre-wrap;
   }}
+  .diff-file {{
+    margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #070a10;
+  }}
+  .diff-summary {{
+    cursor: pointer; padding: 8px 12px; background: rgba(15,23,42,0.85);
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    user-select: none; font-size: 12px;
+  }}
+  .diff-counts {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; display: flex; gap: 6px; }}
+  .cnt-add {{ color: #34d399; font-weight: 600; }}
+  .cnt-del {{ color: #fb7185; font-weight: 600; }}
+  .diff-body {{
+    padding: 6px 0; overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px; line-height: 1.45;
+  }}
+  .dl {{ padding: 1px 12px; white-space: pre; color: #94a3b8; }}
+  .dl-hunk {{ background: rgba(56,189,248,0.1); color: #7dd3fc; padding: 3px 12px; margin: 2px 0; }}
+  .dl-add {{ background: rgba(16,185,129,0.14); color: #a7f3d0; }}
+  .dl-del {{ background: rgba(244,63,94,0.14); color: #fecdd3; }}
 </style>
 </head>
 <body>
@@ -9686,6 +9821,7 @@ def _build_synthesized_session_artifact(session, evidence: list[dict], criteria:
   </section>
   {criteria_rows}
   {proof_section}
+  {diff_section}
 </body>
 </html>"""
 
