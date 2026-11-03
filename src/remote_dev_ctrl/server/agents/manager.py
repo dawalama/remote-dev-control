@@ -44,7 +44,11 @@ class AgentManager:
                 if not self._is_process_running(state.pid):
                     state.status = AgentStatus.STOPPED
                     state.pid = None
+                    state.current_task = None
                     self._repo.upsert(state)
+            elif state.status not in (AgentStatus.WORKING, AgentStatus.SPAWNING) and state.current_task:
+                state.current_task = None
+                self._repo.upsert(state)
             self._agents[project] = state
 
     def _is_process_running(self, pid: int) -> bool:
@@ -222,6 +226,7 @@ class AgentManager:
                 state.error = self._get_exit_error(project, exit_code)
 
             state.pid = None
+            state.current_task = None
             self._repo.upsert(state)
             self._emit("status_change", project, state)
             self._emit("task_complete", project, exit_code, output)
@@ -302,6 +307,7 @@ class AgentManager:
 
         state.status = AgentStatus.STOPPED
         state.pid = None
+        state.current_task = None
         self._repo.upsert(state)
 
         self._emit("status_change", project, state)

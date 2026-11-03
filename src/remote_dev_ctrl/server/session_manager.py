@@ -553,16 +553,16 @@ class SessionManager:
                 self.log_event(session, "session.terminal_closed", {"terminal_id": terminal_id})
                 # If this was the last active terminal, check if session should complete
                 active_terms = [tid for tid in session.terminal_ids if tm.get(tid)]
-                if not active_terms and session.status == SessionStatus.RUNNING:
+                if not active_terms and session.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
                     summary = await self._generate_summary(session)
-                    end_status = self.successful_execution_status(session)
+                    end_status = self.successful_execution_status(session) if session.status == SessionStatus.RUNNING else SessionStatus.FAILED
                     self.update_status(session.id, end_status, output_summary=summary)
                     components: list[dict] = [
                         {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
                     ]
                     if summary:
                         components.append({"type": "text", "content": summary})
-                    cm.post_message(session.channel_id, role="system", content="Session completed.",
+                    cm.post_message(session.channel_id, role="system", content="Session completed." if end_status != SessionStatus.FAILED else "Session ended — terminal closed.",
                         metadata={"type": "a2ui", "components": components})
                 break
 
@@ -571,7 +571,7 @@ class SessionManager:
             if term_status in ("stopped", "error"):
                 self.log_event(session, "session.terminal_stopped", {"terminal_id": terminal_id, "status": term_status})
                 active_terms = [tid for tid in session.terminal_ids if tm.get(tid) and tid != terminal_id]
-                if not active_terms and session.status == SessionStatus.RUNNING:
+                if not active_terms and session.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
                     terminal_text = strip_ansi(bytes(term._output_buffer).decode("utf-8", errors="replace"))
                     exit_match = _EXIT_SIGNAL_RE.search(terminal_text)
                     exit_code = int(exit_match.group(1)) if exit_match else None
@@ -725,15 +725,25 @@ class SessionManager:
 
     def recover_sessions(self):
         """Recover active sessions from DB on server startup."""
+        tm = get_terminal_manager()
         for session in self.list_active():
             self._sessions[session.id] = session
             # Recover terminal IDs from junction table
             session.terminal_ids = self.get_terminal_ids(session.id)
             if session.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
-                for tid in session.terminal_ids:
-                    self._start_terminal_monitor(session, tid)
-                if session.terminal_ids:
-                    logger.info("Recovered session %s with %d terminals", session.id, len(session.terminal_ids))
+                alive_terms = [tid for tid in session.terminal_ids if tm.get(tid)]
+                if not alive_terms:
+                    end_status = SessionStatus.FAILED
+                    self.update_status(
+                        session.id,
+                        end_status,
+                        output_summary=session.output_summary or "Session ended — terminal process was terminated while unmonitored."
+                    )
+                    logger.info("Reconciled dead session %s to %s", session.id, end_status)
+                else:
+                    for tid in alive_terms:
+                        self._start_terminal_monitor(session, tid)
+                    logger.info("Recovered session %s with %d terminals", session.id, len(alive_terms))
 
     # ── DB Helpers ──
 

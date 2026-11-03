@@ -119,6 +119,11 @@ async def lifespan(app: FastAPI):
     init_conversation_schema()
     task_repo = TaskRepository()
     event_repo = EventRepository()
+    from .db import get_agent_run_repo
+    try:
+        get_agent_run_repo().reconcile_orphaned_runs()
+    except Exception as e:
+        logger.warning(f"Failed to reconcile agent runs on startup: {e}")
 
     # Ensure the #system workstream exists — control-plane intent routing
     # depends on it. Migration seeds it on fresh DBs; this is a belt-and-

@@ -34,6 +34,7 @@ class Orchestrator:
         
         # Track task <-> agent mapping
         self._agent_tasks: dict[str, str] = {}  # project -> task_id
+        self._agent_runs: dict[str, int] = {}  # project -> run_id
         
         # Config
         self.poll_interval = 5  # seconds
@@ -70,6 +71,12 @@ class Orchestrator:
         if self._running:
             return
         
+        # Reconcile any orphaned agent runs from previous crash/restart
+        try:
+            self.run_repo.reconcile_orphaned_runs()
+        except Exception as e:
+            logger.warning(f"Failed to reconcile agent runs on start: {e}")
+
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
         logger.info("Orchestrator started")
@@ -114,6 +121,16 @@ class Orchestrator:
             if not is_healthy:
                 agent = self.agent_manager.get(project)
                 if agent and agent.status == AgentStatus.STOPPED:
+                    # Update active agent run as failed
+                    try:
+                        active_run = self.run_repo.get_active(project)
+                        if active_run:
+                            active_run.ended_at = datetime.now()
+                            active_run.status = AgentRunStatus.FAILED
+                            active_run.error = "Agent stopped unexpectedly"
+                            self.run_repo.update(active_run)
+                    except Exception:
+                        pass
                     # Update any in-progress tasks as failed
                     tasks = self.task_repo.list(status=TaskStatus.IN_PROGRESS)
                     for task in tasks:
@@ -202,7 +219,9 @@ class Orchestrator:
                     pid=state.pid,
                     status=AgentRunStatus.RUNNING,
                 )
-                self.run_repo.create(run)
+                run = self.run_repo.create(run)
+                if run.id:
+                    self._agent_runs[task.project] = run.id
                 
                 self.event_repo.log(
                     "agent.spawned",
@@ -236,7 +255,21 @@ class Orchestrator:
     def _on_agent_complete(self, project: str, exit_code: int, output: str) -> None:
         """Handle agent task completion."""
         task_id = self._agent_tasks.pop(project, None)
-        
+        run_id = self._agent_runs.pop(project, None)
+
+        # Update agent run in DB
+        try:
+            run = self.run_repo.get(run_id) if run_id else self.run_repo.get_active(project)
+            if run:
+                run.ended_at = datetime.now()
+                run.exit_code = exit_code
+                run.status = AgentRunStatus.COMPLETED if exit_code == 0 else AgentRunStatus.FAILED
+                if exit_code != 0:
+                    run.error = f"Agent exited with code {exit_code}"
+                self.run_repo.update(run)
+        except Exception as e:
+            logger.warning(f"Failed to update agent run for {project}: {e}")
+
         if not task_id:
             return
         

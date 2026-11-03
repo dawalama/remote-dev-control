@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import sqlite3
 import uuid as uuid_mod
@@ -687,7 +688,7 @@ class TaskRepository:
         project_cursor = self.db.execute("""
             SELECT project_id, COUNT(*) as count
             FROM tasks
-            WHERE status NOT IN ('completed', 'cancelled')
+            WHERE status NOT IN ('completed', 'cancelled', 'failed')
             GROUP BY project_id
         """)
         # Resolve project_id UUIDs to names for the stats
@@ -799,6 +800,33 @@ class AgentRunRepository:
         if not row:
             return None
         return self._row_to_run(row)
+
+    def reconcile_orphaned_runs(self) -> int:
+        """Find any agent runs still marked as 'running' whose PID is dead or gone, and mark them failed."""
+        cursor = self.db.execute("SELECT * FROM agent_runs WHERE status = 'running'")
+        rows = cursor.fetchall()
+        reconciled = 0
+        now = datetime.now().isoformat()
+        for row in rows:
+            run = self._row_to_run(row)
+            pid = run.pid
+            is_alive = False
+            if pid:
+                try:
+                    os.kill(pid, 0)
+                    is_alive = True
+                except (ProcessLookupError, OSError):
+                    is_alive = False
+            if not is_alive:
+                self.db.execute("""
+                    UPDATE agent_runs
+                    SET status = 'failed', ended_at = ?, error = coalesce(error, 'Process terminated')
+                    WHERE id = ?
+                """, (now, run.id))
+                reconciled += 1
+        if reconciled > 0:
+            self.db.commit()
+        return reconciled
 
     def list(
         self,
