@@ -530,178 +530,485 @@ async def lifespan(app: FastAPI):
         event_bus_module._bus = None
 
 
-async def handle_telegram_command(command: str, args: str, user_id: int) -> str:
-    """Handle commands from Telegram."""
+async def handle_telegram_command(command: str, args: str, user_id: int) -> Any:
+    """Handle commands from Telegram for goal sessions, workstreams, and reviews."""
+    from .session_manager import get_session_manager, SessionStatus
     from .processes import get_process_manager
-    
+    from .channel_manager import get_channel_manager
+    from .db.repositories import get_project_repo, resolve_project_id
+    from .brief import build_homebase_brief
+
+    sm = get_session_manager()
+
     try:
         if command == "status":
-            agents = agent_manager.list() if agent_manager else []
-            running = len([a for a in agents if a.status not in (AgentStatus.STOPPED, AgentStatus.ERROR)])
-            stats = task_repo.stats() if task_repo else {}
+            all_sessions = sm.list_all(limit=50)
+            running_sessions = [s for s in all_sessions if s.status == SessionStatus.RUNNING]
+            verifying_sessions = [s for s in all_sessions if s.status == SessionStatus.VERIFYING]
+            pending_sessions = [s for s in all_sessions if s.status == SessionStatus.PENDING]
+            waiting_sessions = [s for s in all_sessions if s.status == SessionStatus.WAITING]
+
+            db = sm._db()
+            approval_row = db.execute("SELECT COUNT(*) as count FROM session_approvals WHERE status = 'pending'").fetchone()
+            approval_count = approval_row["count"] if approval_row else 0
+
             pm = get_process_manager()
             processes = pm.list() if pm else []
             running_procs = len([p for p in processes if p.status == "running"])
-            
-            return (
-                f"📊 *System Status*\n\n"
-                f"🤖 Agents: `{running}` running / `{len(agents)}` total\n"
-                f"📋 Tasks: `{stats.get('pending', 0)}` pending, `{stats.get('in_progress', 0)}` in progress\n"
-                f"⚙️ Processes: `{running_procs}` running / `{len(processes)}` total\n"
-                f"👥 Clients: `{len(connected_clients)}` connected"
+
+            review_badge = f" ({len(verifying_sessions)})" if verifying_sessions else ""
+            approval_badge = f" ({approval_count})" if approval_count else ""
+
+            buttons = [
+                [("🎯 Sessions", "show_sessions"), (f"🔍 Reviews{review_badge}", "show_reviews")],
+                [("⚡ New Goal", "show_projects"), ("🧭 Brief Me", "show_brief")],
+            ]
+            if approval_count:
+                buttons.insert(0, [(f"⚠️ Approvals Pending{approval_badge}", "show_approvals")])
+            buttons.append([("📁 Projects", "show_projects"), ("⚙️ Services", "show_processes")])
+            buttons.append([("🔄 Refresh", "refresh_status")])
+
+            text = (
+                "📊 *RDC Command Center Status*\n\n"
+                f"🎯 *Goal Sessions:*\n"
+                f"• `{len(running_sessions)}` running, `{len(verifying_sessions)}` awaiting review 🔍\n"
+                f"• `{len(pending_sessions)}` queued, `{len(waiting_sessions)}` waiting input\n\n"
+                f"⚠️ *Approvals Pending:* `{approval_count}`\n"
+                f"⚙️ *Services:* `{running_procs}` running / `{len(processes)}` total\n"
+                f"👥 *Connected Clients:* `{len(connected_clients)}`"
             )
-        
-        elif command == "agents":
-            agents = agent_manager.list() if agent_manager else []
-            if not agents:
-                return "🤖 *Agents*\n\nNo agents found."
-            
-            lines = ["🤖 *Agents*\n"]
-            for a in agents:
-                status_icon = {"working": "🟢", "idle": "⚪", "error": "🔴", "stopped": "⬛"}.get(a.status.value, "⚪")
-                lines.append(f"{status_icon} `{a.project}` - {a.status.value}")
-                if a.current_task:
-                    lines.append(f"    └ _{a.current_task[:50]}_")
-            return "\n".join(lines)
-        
-        elif command == "tasks":
-            tasks = task_repo.list(limit=20) if task_repo else []
-            if not tasks:
-                return "📋 *Tasks*\n\nNo pending tasks.\n\n_Use /add to create a task._"
-            
-            lines = ["📋 *Tasks*\n"]
-            for t in tasks[:10]:
-                status_icon = {
-                    "pending": "⏳", "assigned": "👤", "in_progress": "🔄",
-                    "blocked": "🚫", "completed": "✅", "failed": "❌", "cancelled": "⬛"
-                }.get(t.status.value, "⚪")
-                priority_badge = {"urgent": "🔴", "high": "🟠", "normal": "", "low": "⚪"}.get(t.priority.value, "")
-                lines.append(f"{status_icon} `{t.id}` {priority_badge}")
-                lines.append(f"    {t.project}: _{t.description[:40]}_")
-            
-            if len(tasks) > 10:
-                lines.append(f"\n_...and {len(tasks) - 10} more_")
-            return "\n".join(lines)
-        
+            return {"text": text, "buttons": buttons}
+
+        elif command in ("brief", "homebase"):
+            brief_data = build_homebase_brief()
+            needs_you = brief_data.get("needs_you") or []
+            active_sessions = brief_data.get("active_sessions") or []
+            recommended = brief_data.get("recommended_next") or {}
+
+            lines = ["🧭 *HomeBase Control-Plane Brief*\n"]
+            if needs_you:
+                lines.append(f"⚠️ *Needs Your Attention ({len(needs_you)}):*")
+                for item in needs_you[:3]:
+                    lines.append(f"• {item.get('summary', 'Action required')} (`{item.get('session_id', '')[:8]}`)")
+                lines.append("")
+
+            if active_sessions:
+                lines.append(f"🎯 *Active Workstreams ({len(active_sessions)}):*")
+                for s in active_sessions[:4]:
+                    st = s.get("status_label", s.get("status", ""))
+                    lines.append(f"• `{s.get('project', '')}`: {s.get('goal', '')[:40]} [{st}]")
+                lines.append("")
+            else:
+                lines.append("🎯 *No sessions currently active.*\n")
+
+            if recommended.get("summary"):
+                lines.append(f"💡 *Recommendation:*\n_{recommended['summary']}_")
+
+            buttons = [
+                [("🔍 Reviews", "show_reviews"), ("🎯 Sessions", "show_sessions")],
+                [("⚡ New Goal", "show_projects"), ("🔄 Refresh", "show_brief")],
+            ]
+            return {"text": "\n".join(lines), "buttons": buttons}
+
+        elif command == "sessions":
+            all_sessions = sm.list_all(limit=10)
+            if not all_sessions:
+                return {
+                    "text": "🎯 *Goal Sessions*\n\nNo sessions found.\n\nUse `/goal <project> <description>` to launch your first session!",
+                    "buttons": [[("⚡ New Goal", "show_projects")]]
+                }
+
+            status_icons = {
+                "running": "🟢",
+                "verifying": "🔍",
+                "pending": "⏳",
+                "waiting": "⚠️",
+                "completed": "✅",
+                "done": "✅",
+                "failed": "🔴",
+                "cancelled": "⬛",
+            }
+
+            lines = ["🎯 *Recent & Active Goal Sessions*\n"]
+            buttons = []
+            for s in all_sessions[:8]:
+                icon = status_icons.get(s.status.value, "⚪")
+                goal_str = (s.goal or s.description or "")[:45]
+                lines.append(f"{icon} `{s.id[:13]}` *{s.project}* ({s.status.value})")
+                lines.append(f"    _{goal_str}_")
+
+                if s.status.value == "verifying":
+                    buttons.append([
+                        (f"✅ Accept {s.project}", f"accept_session:{s.id}"),
+                        (f"📋 Proof {s.project}", f"proof_session:{s.id}"),
+                    ])
+                elif s.status.value == "running":
+                    buttons.append([
+                        (f"💬 Instruct {s.project}", f"instruct_prompt:{s.id}"),
+                        (f"🛑 Cancel {s.project}", f"cancel_session:{s.id}"),
+                    ])
+
+            buttons.append([("⚡ New Goal", "show_projects"), ("🔄 Refresh", "show_sessions")])
+            return {"text": "\n".join(lines), "buttons": buttons}
+
+        elif command == "reviews":
+            verifying = [s for s in sm.list_all(limit=50) if s.status == SessionStatus.VERIFYING]
+            if not verifying:
+                return {
+                    "text": "🔍 *Sessions Awaiting Review*\n\n✅ All caught up! No sessions are waiting for review right now.",
+                    "buttons": [[("🎯 Active Sessions", "show_sessions"), ("⚡ New Goal", "show_projects")]]
+                }
+
+            lines = [f"🔍 *Sessions Awaiting Review ({len(verifying)})*\n"]
+            buttons = []
+            for s in verifying[:4]:
+                summary = s.output_summary or "Ready for human review and acceptance."
+                lines.append(f"📂 *{s.project}* (`{s.id[:13]}`)")
+                lines.append(f"🎯 Goal: _{s.goal or s.description}_\n📊 Outcome: `{summary[:120]}`\n")
+                buttons.append([
+                    (f"✅ Accept {s.project}", f"accept_session:{s.id}"),
+                    (f"📋 View Proof", f"proof_session:{s.id}"),
+                ])
+                buttons.append([
+                    (f"💬 Instruct {s.project}", f"instruct_prompt:{s.id}"),
+                    (f"🛑 Cancel", f"cancel_session:{s.id}"),
+                ])
+
+            buttons.append([("🔄 Refresh", "show_reviews")])
+            return {"text": "\n".join(lines), "buttons": buttons}
+
+        elif command == "accept_session":
+            session_id = args.strip()
+            if not session_id:
+                return "Usage: `/accept <session_id>`"
+
+            session = sm.get(session_id)
+            if not session:
+                return f"❌ Session not found: `{session_id}`"
+
+            # Check if there are criteria to waive or mark passed
+            now = datetime.now().isoformat()
+            sm._db().execute(
+                """UPDATE session_criteria SET status = 'waived', note = 'Accepted via Telegram review',
+                   evaluated_by = 'telegram-user', evaluated_at = ?
+                   WHERE session_id = ? AND status NOT IN ('passed', 'waived')""",
+                (now, session_id),
+            )
+            sm._db().commit()
+
+            sm._save_terminal_log(session)
+            from .terminal import get_terminal_manager
+            tm = get_terminal_manager()
+            for tid in session.terminal_ids:
+                try:
+                    tm.destroy(tid)
+                except Exception:
+                    pass
+
+            sm.update_status(session.id, SessionStatus.COMPLETED, output_summary=session.output_summary or "Accepted via Telegram")
+            sm.log_event(session, "session.completed", {"decided_by": "telegram"})
+
+            buttons = [
+                [("🎯 Active Sessions", "show_sessions"), ("🔍 Other Reviews", "show_reviews")],
+                [("⚡ New Goal", "show_projects")],
+            ]
+            text = (
+                f"✅ *Session Accepted & Completed!*\n\n"
+                f"📂 Project: `{session.project}`\n"
+                f"🆔 Session: `{session.id}`\n"
+                f"🎯 Goal: _{session.goal or session.description}_\n\n"
+                f"All terminals released and outcome recorded."
+            )
+            return {"text": text, "buttons": buttons}
+
+        elif command == "proof_session":
+            session_id = args.strip()
+            if not session_id:
+                return "Usage: `/proof <session_id>`"
+
+            session = sm.get(session_id)
+            if not session:
+                return f"❌ Session not found: `{session_id}`"
+
+            criteria_rows = sm._db().execute(
+                "SELECT criterion, status FROM session_criteria WHERE session_id = ? ORDER BY criterion_index", (session_id,)
+            ).fetchall()
+            crit_lines = []
+            for c in criteria_rows:
+                c_icon = "✅" if c["status"] in ("passed", "waived") else "⏳"
+                crit_lines.append(f"{c_icon} {c['criterion']}")
+
+            crit_text = "\n".join(crit_lines) if crit_lines else "• All criteria passed or waived"
+
+            text = (
+                f"📋 *Proof Artifact: {session.project}*\n"
+                f"🆔 Session: `{session.id}`\n"
+                f"🎯 Goal: _{session.goal or session.description}_\n\n"
+                f"*Outcome & Summary:*\n"
+                f"```\n{session.output_summary or 'No summary recorded.'}\n```\n\n"
+                f"*Acceptance Criteria:*\n{crit_text}"
+            )
+            buttons = [
+                [("✅ Accept & Complete", f"accept_session:{session.id}")],
+                [("💬 Instruct Agent", f"instruct_prompt:{session.id}"), ("⬅️ Back to Reviews", "show_reviews")],
+            ]
+            return {"text": text, "buttons": buttons}
+
+        elif command in ("goal", "create_goal"):
+            from .supervised_sessions import create_supervised_session, start_supervised_session
+
+            parts = args.split(maxsplit=1)
+            project = ""
+            goal_text = ""
+
+            # Check if first word is a registered project
+            valid_projects = [p.name.lower() for p in get_project_repo().list()]
+            if parts and parts[0].lower() in valid_projects:
+                project = parts[0]
+                goal_text = parts[1] if len(parts) > 1 else ""
+            elif len(parts) >= 2:
+                project = parts[0]
+                goal_text = parts[1]
+            else:
+                goal_text = args.strip()
+
+            if not project:
+                return {
+                    "text": "*Select a project for your new goal:*",
+                    "buttons": [
+                        [(f"⚡ {p.name}", f"quick_goal:{p.name}")] for p in get_project_repo().list()[:8]
+                    ]
+                }
+
+            if not goal_text:
+                return f"Usage: `/goal {project} <what you want the agent to do>`"
+
+            pid = resolve_project_id(project)
+            if not pid:
+                return f"❌ Unknown project: `{project}`"
+
+            cm = get_channel_manager()
+            channel = cm.get_project_default_channel(pid) or cm.ensure_project_channel(pid, project)
+
+            try:
+                session = create_supervised_session(
+                    channel_id=channel.id,
+                    project=project,
+                    goal=goal_text,
+                    provider="orchestrated",
+                    acceptance_criteria=["Requested outcome completed", "Verification passes"],
+                )
+                start_supervised_session(session.id, provider="orchestrated")
+            except Exception as e:
+                return f"❌ Failed to start goal session: `{e}`"
+
+            buttons = [
+                [("💬 Instruct", f"instruct_prompt:{session.id}"), ("🛑 Cancel", f"cancel_session:{session.id}")],
+                [("🎯 All Sessions", "show_sessions")],
+            ]
+            text = (
+                f"🎯 *Goal Session Launched!*\n\n"
+                f"📂 Project: `{project}`\n"
+                f"🎯 Goal: _{goal_text}_\n"
+                f"🆔 Session: `{session.id}`\n"
+                f"🤖 Provider: `orchestrated`\n"
+                f"Status: 🟢 `running`"
+            )
+            return {"text": text, "buttons": buttons}
+
+        elif command == "instruct_session":
+            parts = args.split(maxsplit=1)
+            if len(parts) < 2:
+                return "Usage: `/instruct <session_id> <instruction text>`"
+
+            session_id, instruction = parts[0], parts[1].strip()
+            session = sm.get(session_id)
+            if not session:
+                return f"❌ Session not found: `{session_id}`"
+
+            from .terminal import get_terminal_manager
+            tm = get_terminal_manager()
+            delivered = False
+            for tid in session.terminal_ids:
+                try:
+                    tm.write(tid, f"\n{instruction}\n".encode())
+                    delivered = True
+                    break
+                except Exception:
+                    pass
+
+            sm.log_event(session, "session.instruction_received", {"instruction": instruction, "source": "telegram", "delivered_to_terminal": delivered})
+            buttons = [
+                [("🎯 Sessions", "show_sessions"), ("🔍 Reviews", "show_reviews")]
+            ]
+            delivery_status = "Delivered to live terminal" if delivered else "Queued in session events"
+            return {
+                "text": f"💬 *Instruction Delivered ({delivery_status})*\n\nSession: `{session.id[:13]}`\nInstruction: _{instruction}_",
+                "buttons": buttons
+            }
+
+        elif command == "cancel_session":
+            session_id = args.strip()
+            if not session_id:
+                return "Usage: `/cancel <session_id>`"
+
+            session = sm.get(session_id)
+            if not session:
+                return f"❌ Session not found: `{session_id}`"
+
+            from .terminal import get_terminal_manager
+            tm = get_terminal_manager()
+            for tid in session.terminal_ids:
+                try:
+                    tm.destroy(tid)
+                except Exception:
+                    pass
+
+            sm.update_status(session.id, SessionStatus.CANCELLED)
+            sm.log_event(session, "session.cancelled", {"channel": "telegram"})
+            buttons = [
+                [("🎯 Active Sessions", "show_sessions"), ("⚡ New Goal", "show_projects")]
+            ]
+            return {"text": f"🛑 *Session Cancelled*\n\nSession `{session_id[:13]}` ({session.project}) was stopped.", "buttons": buttons}
+
+        elif command == "retry_session":
+            session_id = args.strip()
+            if not session_id:
+                return "Usage: `/retry <session_id>`"
+
+            from .supervised_sessions import start_supervised_session
+            try:
+                start_supervised_session(session_id, provider="orchestrated")
+                return {"text": f"🔄 *Session Retried*\n\nSession `{session_id[:13]}` is running again.", "buttons": [[("🎯 Sessions", "show_sessions")]]}
+            except Exception as e:
+                return f"❌ Retry failed: `{e}`"
+
+        elif command == "approvals":
+            db = sm._db()
+            rows = db.execute(
+                "SELECT * FROM session_approvals WHERE status = 'pending' ORDER BY requested_at DESC LIMIT 5"
+            ).fetchall()
+            if not rows:
+                return {
+                    "text": "✅ *Approvals*\n\nNo terminal command approvals are currently pending.",
+                    "buttons": [[("🎯 Sessions", "show_sessions"), ("📊 Status", "refresh_status")]]
+                }
+
+            lines = ["⚠️ *Pending Approvals*\n"]
+            buttons = []
+            for r in rows:
+                lines.append(f"• *Session:* `{r['session_id'][:13]}`")
+                lines.append(f"  Summary: _{r['summary']}_\n")
+                buttons.append([
+                    (f"👍 Approve ({r['id'][:8]})", f"approve_cmd:{r['id']}"),
+                    (f"👎 Reject ({r['id'][:8]})", f"reject_cmd:{r['id']}"),
+                ])
+            buttons.append([("🔄 Refresh", "show_approvals")])
+            return {"text": "\n".join(lines), "buttons": buttons}
+
+        elif command == "decide_approval":
+            parts = args.split(maxsplit=1)
+            if len(parts) < 2:
+                return "Usage: approval decision required"
+
+            approval_id, decision = parts[0], parts[1].strip().lower()
+            if decision not in ("approved", "rejected"):
+                return "Decision must be approved or rejected"
+
+            row = sm._db().execute("SELECT * FROM session_approvals WHERE id = ?", (approval_id,)).fetchone()
+            if not row:
+                return f"❌ Approval not found: `{approval_id}`"
+
+            if row["status"] != "pending":
+                return f"Approval `{approval_id[:8]}` was already resolved ({row['status']})."
+
+            now = datetime.now().isoformat()
+            sm._db().execute(
+                "UPDATE session_approvals SET status = ?, decided_by = 'telegram-user', decided_at = ? WHERE id = ?",
+                (decision, now, approval_id)
+            )
+            sm._db().commit()
+
+            import json
+            details = json.loads(row["details"] or "{}")
+            terminal_id = details.get("terminal_id")
+            if terminal_id:
+                from .terminal import get_terminal_manager
+                get_terminal_manager().write(terminal_id, b"y\n" if decision == "approved" else b"n\n")
+
+            session = sm.get(row["session_id"])
+            if session:
+                session.control_owner = "agent"
+                session.blocker = None
+                sm._persist(session)
+                sm.update_status(session.id, SessionStatus.RUNNING)
+                sm.log_event(session, "session.approval_decided", {"approval_id": approval_id, "decision": decision, "channel": "telegram"})
+
+            action_emoji = "👍 Approved" if decision == "approved" else "👎 Rejected"
+            return {
+                "text": f"{action_emoji} *Command Decision Recorded*\n\nApproval `{approval_id[:8]}` resolved for session `{row['session_id'][:13]}`.",
+                "buttons": [[("🎯 Active Sessions", "show_sessions"), ("🔍 Reviews", "show_reviews")]]
+            }
+
+        elif command in ("workstreams", "channels"):
+            cm = get_channel_manager()
+            channels = cm.list_channels()
+            if not channels:
+                return "🌊 *Workstreams*\n\nNo workstream channels found."
+
+            lines = ["🌊 *Active Workstreams & Channels*\n"]
+            for ch in channels[:10]:
+                sessions = sm.list_for_channel(ch.id)
+                active = len([s for s in sessions if s.status in (SessionStatus.RUNNING, SessionStatus.VERIFYING, SessionStatus.PENDING)])
+                lines.append(f"• *{ch.name}* (`{ch.id[:8]}`)")
+                lines.append(f"  Sessions: `{len(sessions)}` total, `{active}` active\n")
+
+            buttons = [
+                [("🎯 Active Sessions", "show_sessions"), ("⚡ New Goal", "show_projects")],
+                [("🔄 Refresh", "show_workstreams")]
+            ]
+            return {"text": "\n".join(lines), "buttons": buttons}
+
+        elif command == "projects":
+            from .db.repositories import get_project_repo
+            db_projects = get_project_repo().list()
+            if not db_projects:
+                return "📁 *Projects*\n\nNo projects registered."
+
+            lines = ["📁 *Registered Projects*\n"]
+            buttons = []
+            for i in range(0, len(db_projects), 2):
+                row = []
+                for p in db_projects[i:i+2]:
+                    lines.append(f"• `{p.name}`")
+                    row.append((f"📂 {p.name}", f"select_project:{p.name}"))
+                buttons.append(row)
+
+            buttons.append([("⬅️ Main Menu", "main_menu")])
+            return {"text": "\n".join(lines), "buttons": buttons}
+
         elif command == "processes":
             pm = get_process_manager()
             processes = pm.list() if pm else []
             if not processes:
                 return "⚙️ *Processes*\n\nNo processes configured."
-            
-            lines = ["⚙️ *Processes*\n"]
-            for p in processes[:15]:
-                status_icon = {"running": "🟢", "stopped": "⬛", "failed": "🔴"}.get(p.status, "⚪")
+
+            lines = ["⚙️ *Processes & Services*\n"]
+            buttons = []
+            for p in processes[:10]:
+                status_icon = "🟢" if p.status == "running" else "⬛"
                 port_info = f":{p.port}" if p.port else ""
                 lines.append(f"{status_icon} `{p.id}`{port_info} - {p.project}")
-            return "\n".join(lines)
-        
-        elif command == "projects":
-            from .db.repositories import get_project_repo
-            db_projects = get_project_repo().list()
+                if p.status == "running":
+                    buttons.append([(f"🛑 Stop {p.id}", f"stop_action:{p.id}")])
+                else:
+                    buttons.append([(f"▶️ Start {p.id}", f"start_action:{p.id}")])
 
-            if not db_projects:
-                return "📁 *Projects*\n\nNo projects registered."
+            buttons.append([("⬅️ Main Menu", "main_menu"), ("🔄 Refresh", "show_processes")])
+            return {"text": "\n".join(lines), "buttons": buttons}
 
-            lines = ["📁 *Projects*\n"]
-            for p in db_projects:
-                lines.append(f"• `{p.name}`")
-            return "\n".join(lines)
-        
-        elif command == "spawn":
-            parts = args.split(maxsplit=1)
-            project = parts[0] if parts else ""
-            task = parts[1] if len(parts) > 1 else None
-            
-            if not project:
-                return "Usage: `/spawn <project> [task]`"
-            
-            try:
-                state = agent_manager.spawn(project, task=task)
-                return f"✅ *Agent Spawned*\n\nProject: `{project}`\nPID: `{state.pid}`"
-            except Exception as e:
-                return f"❌ *Error*\n\n`{e}`"
-        
-        elif command == "stop":
-            if not args:
-                return "Usage: `/stop <project>`"
-            
-            if agent_manager.stop(args):
-                return f"✅ *Agent Stopped*\n\nProject: `{args}`"
-            else:
-                return f"❌ Agent not found: `{args}`"
-        
-        elif command == "add_task":
-            parts = args.split(maxsplit=1)
-            project = parts[0] if parts else ""
-            description = parts[1] if len(parts) > 1 else ""
-            
-            if not project or not description:
-                return "Usage: `/add <project> <task description>`"
-            
-            pid = resolve_project_id(project)
-            if not pid:
-                return f"❌ Unknown project: `{project}`"
-            task = task_repo.create(project_id=pid, description=description)
-            return (
-                f"✅ *Task Created*\n\n"
-                f"ID: `{task.id}`\n"
-                f"Project: `{project}`\n"
-                f"Description: _{description[:100]}_\n\n"
-                f"_Use /run {task.id} to start it._"
-            )
-        
-        elif command == "run_task":
-            task_id = args.strip()
-            if not task_id:
-                return "Usage: `/run <task_id>`"
-            
-            task = task_repo.get(task_id)
-            if not task:
-                return f"❌ Task not found: `{task_id}`"
-            
-            task_repo.start(task_id)
-            return f"▶️ *Task Started*\n\nID: `{task_id}`\nProject: `{task.project}`"
-        
-        elif command == "cancel_task":
-            task_id = args.strip()
-            if not task_id:
-                return "Usage: `/cancel <task_id>`"
-            
-            task = task_repo.cancel(task_id)
-            if not task:
-                return f"❌ Task not found: `{task_id}`"
-            
-            return f"❌ *Task Cancelled*\n\nID: `{task_id}`"
-        
-        elif command == "logs":
-            parts = args.split()
-            project = parts[0] if parts else ""
-            lines = int(parts[1]) if len(parts) > 1 else 20
-            
-            if not project:
-                return "Usage: `/logs <project> [lines]`"
-            
-            # Get agent logs
-            from .config import get_rdc_home
-            log_file = get_rdc_home() / "agents" / f"{project}.log"
-            
-            if not log_file.exists():
-                return f"No logs found for `{project}`"
-            
-            try:
-                content = log_file.read_text()
-                log_lines = content.strip().split("\n")
-                recent = log_lines[-lines:]
-                return "\n".join(recent)[-3000]  # Telegram limit
-            except Exception as e:
-                return f"Error reading logs: `{e}`"
-        
         elif command == "start_action":
             process_id = args.strip()
-            if not process_id:
-                return "Usage: action_id required"
-
             pm = get_process_manager()
             try:
                 pm.start(process_id)
@@ -711,141 +1018,127 @@ async def handle_telegram_command(command: str, args: str, user_id: int) -> str:
 
         elif command == "stop_action":
             process_id = args.strip()
-            if not process_id:
-                return "Usage: action_id required"
-
             pm = get_process_manager()
             try:
                 pm.stop(process_id)
                 return f"🛑 *Action Stopped*\n\n`{process_id}`"
             except Exception as e:
                 return f"❌ Failed to stop: `{e}`"
-        
+
+        elif command == "logs":
+            parts = args.split()
+            target = parts[0] if parts else ""
+            lines = int(parts[1]) if len(parts) > 1 else 20
+
+            if not target:
+                return "Usage: `/logs <project_or_session_id> [lines]`"
+
+            from .config import get_rdc_home
+            log_file = get_rdc_home() / "agents" / f"{target}.log"
+            if not log_file.exists():
+                session_log = get_rdc_home() / "sessions" / f"{target}.log"
+                if session_log.exists():
+                    log_file = session_log
+                else:
+                    return f"No logs found for `{target}`"
+
+            try:
+                content = log_file.read_text()
+                log_lines = content.strip().split("\n")
+                recent = log_lines[-lines:]
+                return "\n".join(recent)[-3000:]
+            except Exception as e:
+                return f"Error reading logs: `{e}`"
+
         elif command == "message":
             import re
             text = args.lower().strip()
             original_text = args.strip()
-            
-            # Get list of valid project names for fuzzy matching
-            from .db.repositories import get_project_repo
-            try:
-                valid_projects = [p.name.lower() for p in get_project_repo().list()]
-            except Exception:
-                valid_projects = []
-            
-            def fuzzy_match_project(name: str) -> str | None:
-                """Find best matching project name."""
-                name = name.lower().strip()
-                # Exact match
-                for p in valid_projects:
-                    if p == name:
-                        return p
-                # Starts with
-                for p in valid_projects:
-                    if p.startswith(name) or name.startswith(p):
-                        return p
-                # Contains
-                for p in valid_projects:
-                    if name in p or p in name:
-                        return p
-                return None
-            
-            # Natural language parsing with intent extraction
-            
-            # Select/switch/use project
-            select_match = re.search(r'(?:select|switch(?:\s+to)?|use|set|choose)\s+(?:project\s+)?(?:to\s+)?(?:the\s+)?["\']?([a-zA-Z0-9_-]+)["\']?(?:\s+project)?', text)
-            if select_match:
-                raw_project = select_match.group(1)
-                # Filter out common words that aren't project names
-                if raw_project not in ('to', 'the', 'project', 'a', 'an', 'my', 'for'):
-                    matched = fuzzy_match_project(raw_project)
-                    if matched:
-                        return f"select_project:{matched}"
-                    else:
-                        # Project not found - return special value to show selection
-                        return f"select_project_notfound:{raw_project}"
-            
-            # If they said "select project" without a name, show list
-            if ("select" in text or "switch" in text or "choose" in text) and "project" in text:
-                return "show_projects"
-            
-            # Spawn/start agent - "spawn agent for documaker" or "start documaker agent"
-            spawn_match = re.search(r'(?:spawn|start|run|launch)\s+(?:an?\s+)?(?:agent\s+)?(?:for\s+)?(?:the\s+)?["\']?([a-zA-Z0-9_-]+)["\']?(?:\s+agent)?', text)
-            if spawn_match and ("spawn" in text or "agent" in text or "launch" in text):
-                project = spawn_match.group(1)
-                if project not in ('agent', 'an', 'the', 'for'):
-                    return await handle_telegram_command("spawn", project, user_id)
-            
-            # Stop agent - "stop documaker agent" or "kill agent for documaker"
-            stop_match = re.search(r'(?:stop|kill|terminate)\s+(?:the\s+)?(?:agent\s+)?(?:for\s+)?["\']?([a-zA-Z0-9_-]+)["\']?(?:\s+agent)?', text)
-            if stop_match and ("agent" in text or "kill" in text):
-                project = stop_match.group(1)
-                if project not in ('agent', 'the', 'for'):
-                    return await handle_telegram_command("stop", project, user_id)
-            
-            # View logs - "logs for documaker" or "show documaker logs"
-            logs_match = re.search(r'(?:logs?|output|show\s+logs?)\s+(?:for\s+)?(?:the\s+)?["\']?([a-zA-Z0-9_-]+)["\']?', text)
-            if not logs_match:
-                # Try reverse: "documaker logs"
-                logs_match = re.search(r'["\']?([a-zA-Z0-9_-]+)["\']?\s+logs?', text)
-            if logs_match and "log" in text:
-                project = logs_match.group(1)
-                if project not in ('the', 'for', 'show', 'view'):
-                    return await handle_telegram_command("logs", project, user_id)
-            
-            # Start/stop process
-            proc_match = re.search(r'(?:start|stop)\s+(?:process\s+)?["\']?([a-zA-Z0-9_-]+)["\']?', text)
-            if proc_match and "process" in text:
-                process_id = proc_match.group(1)
-                if "start" in text:
-                    return await handle_telegram_command("start_action", process_id, user_id)
-                else:
-                    return await handle_telegram_command("stop_action", process_id, user_id)
-            
-            # Add task - "add task to project: description" or "add fix the bug to documaker"
-            add_match = re.search(r'(?:add|create)\s+(?:task\s+)?(?:to\s+)?["\']?([a-zA-Z0-9_-]+)["\']?[:\s]+(.+)', text)
-            if add_match:
-                project = add_match.group(1)
-                description = add_match.group(2).strip()
-                return await handle_telegram_command("add_task", f"{project} {description}", user_id)
-            
-            # Simple queries
-            if "status" in text or "how are" in text or "what's up" in text or "overview" in text:
+
+            # Natural language routing
+            if any(p in text for p in ("brief", "brief me", "homebase", "what's going on", "what's up", "overview")):
+                return await handle_telegram_command("brief", "", user_id)
+
+            if any(p in text for p in ("review", "reviews", "what needs review", "ready for review")):
+                return await handle_telegram_command("reviews", "", user_id)
+
+            if any(p in text for p in ("sessions", "active sessions", "show sessions")):
+                return await handle_telegram_command("sessions", "", user_id)
+
+            if any(p in text for p in ("status", "how are things", "system status")):
                 return await handle_telegram_command("status", "", user_id)
-            elif "agents" in text or "workers" in text:
-                return await handle_telegram_command("agents", "", user_id)
-            elif "tasks" in text or "queue" in text or "todo" in text or "pending" in text:
-                return await handle_telegram_command("tasks", "", user_id)
-            elif "process" in text:
-                return await handle_telegram_command("processes", "", user_id)
-            elif "project" in text:
+
+            if "approval" in text:
+                return await handle_telegram_command("approvals", "", user_id)
+
+            if text.startswith("approve") or text == "approve":
+                db = sm._db()
+                row = db.execute("SELECT id FROM session_approvals WHERE status = 'pending' ORDER BY requested_at DESC LIMIT 1").fetchone()
+                if row:
+                    return await handle_telegram_command("decide_approval", f"{row['id']} approved", user_id)
+                return "No pending approvals to approve."
+
+            if text.startswith("reject") or text == "reject":
+                db = sm._db()
+                row = db.execute("SELECT id FROM session_approvals WHERE status = 'pending' ORDER BY requested_at DESC LIMIT 1").fetchone()
+                if row:
+                    return await handle_telegram_command("decide_approval", f"{row['id']} rejected", user_id)
+                return "No pending approvals to reject."
+
+            if text.startswith("accept"):
+                parts = original_text.split(maxsplit=1)
+                if len(parts) > 1:
+                    return await handle_telegram_command("accept_session", parts[1], user_id)
+                else:
+                    # Accept oldest verifying session
+                    verifying = [s for s in sm.list_all(limit=10) if s.status == SessionStatus.VERIFYING]
+                    if verifying:
+                        return await handle_telegram_command("accept_session", verifying[0].id, user_id)
+                    return "No sessions currently awaiting review."
+
+            # Goal creation regex: "run <goal> on <project>", "goal for <project>: <goal>", "add <goal> to <project>"
+            goal_match = re.search(r'(?:goal\s+for|run|start|launch)\s+["\']?([a-zA-Z0-9_-]+)["\']?[:\s]+(.+)', text)
+            if goal_match:
+                proj = goal_match.group(1)
+                valid_projs = [p.name.lower() for p in get_project_repo().list()]
+                if proj in valid_projs:
+                    return await handle_telegram_command("goal", f"{proj} {goal_match.group(2)}", user_id)
+
+            goal_match2 = re.search(r'(?:run|do|fix|implement)\s+(.+)\s+(?:in|on|for)\s+["\']?([a-zA-Z0-9_-]+)["\']?', text)
+            if goal_match2:
+                g_text = goal_match2.group(1)
+                proj = goal_match2.group(2)
+                valid_projs = [p.name.lower() for p in get_project_repo().list()]
+                if proj in valid_projs:
+                    return await handle_telegram_command("goal", f"{proj} {g_text}", user_id)
+
+            if "project" in text:
                 return await handle_telegram_command("projects", "", user_id)
-            elif "help" in text:
-                return (
-                    "🎤 *Voice Commands*\n\n"
-                    "• _What's the status?_\n"
-                    "• _Show me the tasks_\n"
-                    "• _Select project documaker_\n"
-                    "• _Spawn agent for documaker_\n"
-                    "• _Stop agent documaker_\n"
-                    "• _Logs for documaker_\n"
-                    "• _Add fix the bug to documaker_\n"
-                    "• _Start process my-app_\n"
-                )
-            else:
-                return (
-                    "🤔 I didn't understand that.\n\n"
-                    "Try saying:\n"
-                    "• _What's the status?_\n"
-                    "• _Show tasks_\n"
-                    "• _Select project X_\n"
-                    "• _Spawn agent for X_\n\n"
-                    "Or say _help_ for more."
-                )
-        
+
+            if "process" in text or "service" in text:
+                return await handle_telegram_command("processes", "", user_id)
+
+            return {
+                "text": (
+                    "🤔 *I didn't quite catch that*\n\n"
+                    "Try one of these goal & review commands:\n"
+                    "• _Brief me_\n"
+                    "• _What needs review?_\n"
+                    "• _Show active sessions_\n"
+                    "• _Run test and lint on tesla-light-show_\n"
+                    "• _Accept outcome_\n\n"
+                    "Or tap a quick action below:"
+                ),
+                "buttons": [
+                    [("🧭 Brief Me", "show_brief"), ("🔍 Reviews", "show_reviews")],
+                    [("🎯 Sessions", "show_sessions"), ("⚡ New Goal", "show_projects")],
+                    [("📊 Status", "refresh_status")],
+                ]
+            }
+
         else:
             return f"Unknown command: `{command}`"
-    
+
     except Exception as e:
         logger.error(f"Telegram command error: {e}")
         return f"❌ *Error*\n\n`{e}`"
