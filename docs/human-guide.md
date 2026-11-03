@@ -254,7 +254,7 @@ project settings
 - **HomeBase** is the machine running the RDC server (repos, agents, terminals).
 - **Nodes** are paired phones, tablets, or browsers that supervise HomeBase remotely.
 - Say or type **`Brief me`** for a deterministic status summary (running sessions, what needs you, recommended next step) without waiting on an LLM for exact phrases.
-- See [Hike Demo](hike-demo.md) for the full away-from-desk loop.
+- Nodes allow you to review outcomes, inspect diffs, and accept or reject changes while away from your desk.
 
 ### Voice Control (Kiosk/Mobile)
 

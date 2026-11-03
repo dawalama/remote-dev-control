@@ -32,10 +32,16 @@ node_modules/
 .idea/
 *.sw?
 
-# Agent config (personal)
+# Agent config & AI harnesses (personal/internal)
+.ai/
 AGENTS.md
+CLAUDE.md
 GEMINI.md
 rdc.yaml
+
+# Working documents & internal designs (excluded from open source output)
+workingdoc/
+workingdocs/
 
 # OS
 .DS_Store
