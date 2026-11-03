@@ -7,14 +7,16 @@ Complete guide for developers using RDC (Remote Dev Ctrl).
 1. [Installation](#installation)
 2. [Starting the Server](#starting-the-server)
 3. [Dashboard](#dashboard)
-4. [Managing Projects](#managing-projects)
-5. [Terminals](#terminals)
-6. [Tasks & Recipes](#tasks--recipes)
-7. [Actions](#actions)
-8. [Chat & Orchestrator](#chat--orchestrator)
-9. [MCP Integration](#mcp-integration)
-10. [Configuration](#configuration)
-11. [Troubleshooting](#troubleshooting)
+4. [Managing Projects & Workstreams](#managing-projects--workstreams)
+5. [Goal Sessions, Supervision & Proof Artifacts](#goal-sessions-supervision--proof-artifacts)
+6. [Terminals & Live Fallback](#terminals--live-fallback)
+7. [Actions (Services & Commands)](#actions)
+8. [Chat, HomeBase Briefs & Voice](#chat--homebase-briefs--voice)
+9. [Telegram Bot Integration](#telegram-bot-integration)
+10. [AI Agent & Model Wrappers](#ai-agent--model-wrappers)
+11. [MCP Integration](#mcp-integration)
+12. [Configuration](#configuration)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -23,7 +25,7 @@ Complete guide for developers using RDC (Remote Dev Ctrl).
 ### Automated
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/dawalama/remote-dev-ctrl/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/dawalama/remote-dev-control/main/install.sh | bash
 ```
 
 The script installs all prerequisites (uv, pnpm), clones the repo, builds the frontend, and creates default config.
@@ -31,8 +33,8 @@ The script installs all prerequisites (uv, pnpm), clones the repo, builds the fr
 ### Manual
 
 ```bash
-git clone https://github.com/dawalama/remote-dev-ctrl.git
-cd remote-dev-ctrl
+git clone https://github.com/dawalama/remote-dev-control.git
+cd remote-dev-control
 uv sync                    # or: pip install -e .
 cd frontend && pnpm install && pnpm run build && cd ..
 ```
@@ -40,7 +42,7 @@ cd frontend && pnpm install && pnpm run build && cd ..
 ### Verify
 
 ```bash
-rdc--help
+rdc --help
 rdc server start
 open http://localhost:8420
 ```
@@ -155,49 +157,50 @@ From CLI: `Cmd+T` (desktop layout) opens the preset picker.
 
 When a terminal is waiting for input (e.g., an MCP approval prompt), an orange "Attention" banner appears across all layouts. Click the terminal name to jump directly to it.
 
+## Goal Sessions, Supervision & Proof Artifacts
+
+RDC organizes work around **Goal Sessions** within dedicated Workstream channels. Instead of manually watching a terminal, you define what needs to be achieved and let the agent work under supervision.
+
+### Creating a Goal Session
+
+From the dashboard:
+1. Open the target workstream channel (e.g. `#tesla-light-show`).
+2. Click **"New Session"** in the Sessions Hub or Goals panel.
+3. Enter:
+   - **Goal** — Clear description of the desired outcome (e.g., "Look for any bugs and performance issues in the codebase, and fix them").
+   - **Acceptance Criteria** (optional) — Testable conditions for completion (e.g., "npm run verify passes", "no uncommitted dirty state").
+   - **Agent Provider** — Orchestrated (default policy), Codex CLI, Claude Code, Cursor Agent, or custom wrapper.
+
+### Session Supervision Lifecycle
+
+```
+[Pending] ──> [Working] ──> [Needs You / Waiting] (if approval needed)
+                   │                │
+                   ▼                ▼
+            [Verifying] ◄───────────┘
+                 │
+                 ├──> [Accept] ──> [Completed]
+                 └──> [Tell Agent Next Step] ──> [Working]
+```
+
+1. **Pending** — Queued for execution.
+2. **Working** — The AI agent wrapper is executing in an isolated background PTY terminal.
+3. **Needs You (`waiting`)** — The agent encountered an interactive question or command execution boundary requiring human approval. Approve via Web UI or Telegram.
+4. **Ready for Review (`verifying`)** — Agent execution is finished. RDC automatically runs the project's independent verification command and captures Git diffs.
+5. **Accept or Continue** — Review the **Proof Artifact**, accept the outcome, or provide instructions for the next loop.
+
+### Proof Artifact & Evidence Viewer
+
+When a session reaches **Ready for Review**, the Session Viewer displays:
+- **Proof Artifact Tab**: Rendered Markdown outcome summary, changed file metrics, and verification status.
+- **Details & Evidence Tab**: Interactive Git diff viewer, verification command output (`npm run verify`, `pytest`), and visual media attachments.
+- **Timeline Tab**: Chronological audit log of all events and agent state changes.
+- **Raw Log Tab**: Complete ANSI terminal output stream for deep debugging.
+- **Live Terminal Toggle**: One-click fallback directly into the running PTY terminal whenever you want manual control.
+
 ---
 
-## Tasks & Recipes
-
-### Creating Tasks
-
-From the dashboard: click "+ Task" or "New Task".
-
-Fill in:
-- **Project** — Which project this task is for
-- **Recipe** (optional) — Pre-built template with instructions
-- **Description** — What the task should do
-- **Model** — Which LLM to use (searchable dropdown with tags)
-
-### Recipes
-
-Recipes are reusable task templates. The built-in "Code Audit" recipe runs a security-focused audit with structured scoring.
-
-Custom recipes can be created via the API or database.
-
-### Task Lifecycle
-
-1. **Pending** — Created, waiting to be run
-2. **Running** — Actively executing
-3. **Needs Review** — Completed but needs human approval
-4. **Completed** — Done successfully
-5. **Failed** — Error occurred (can retry or edit & retry)
-
-### Task Actions
-
-| Action | When Available | What It Does |
-|--------|---------------|--------------|
-| Run | Pending | Start execution |
-| Cancel/Stop | Pending, Running | Cancel the task |
-| View Output | Running, Completed, Failed | See task output |
-| Live Log | Running | Stream output in real-time |
-| Approve | Needs Review | Accept the result |
-| Reject | Needs Review | Reject with reason |
-| Retry | Failed | Re-run with same parameters |
-| Edit & Retry | Failed | Modify description then re-run |
-| Continue | Completed | Create follow-up task with context |
-| Fix with AI | Failed | Auto-generate a fix task |
-| Delete | Completed, Failed | Remove from list |
+## Terminals & Live Fallback
 
 ---
 
@@ -261,6 +264,63 @@ Tap the microphone button to dictate. Voice input is routed to:
 
 ---
 
+## Telegram Bot Integration
+
+RDC includes a native interactive Telegram Bot so you can supervise HomeBase and approve actions directly from your phone chat without opening a browser.
+
+### Setup
+
+1. Create a bot with `@BotFather` on Telegram and copy your bot token.
+2. Store the token in the vault:
+   ```bash
+   rdc config set-secret TELEGRAM_BOT_TOKEN "123456789:ABCdef..."
+   ```
+3. In `~/.rdc/config.yml`, enable Telegram:
+   ```yaml
+   channels:
+     telegram:
+       enabled: true
+       allowed_users: [123456789] # Your numeric Telegram User ID
+   ```
+4. Restart RDC: `rdc server restart`.
+
+### Bot Capabilities & Inline Buttons
+
+- **`/brief`** — Spoken and written briefing of running sessions, what needs your attention, and recommended next steps.
+- **`/status`** — Instant health check across agents, queues, and dev servers.
+- **`/sessions`** — List active and reviewable goal sessions.
+- **`/actions`** — Start or stop dev servers and inspect logs.
+- **Interactive Approval Buttons**:
+  - `[Approve]` and `[Deny]` for pending agent command execution requests.
+  - `[Accept Outcome]` and `[Request Changes]` when a session is in review.
+
+---
+
+## AI Agent & Model Wrappers
+
+RDC supports multiple AI agent CLI tools and model routers:
+
+- **Claude Code** (`claude`)
+- **OpenAI Codex CLI** (`codex`)
+- **Cursor Agent** (`cursor-agent`)
+- **OpenRouter Models** (multi-tier routing: free, cheap, premium)
+- **Local Ollama** (e.g., `gemma4`, `llama3`)
+
+### Managing Wrappers
+
+```bash
+# List all registered wrappers and their readiness
+rdc wrapper list
+
+# View instructions for model wrappers to self-register
+rdc wrapper instructions
+
+# Register or update a wrapper specification
+rdc wrapper register spec.json
+```
+
+---
+
 ## MCP Integration
 
 Add to your AI assistant's MCP config:
@@ -272,14 +332,14 @@ Add to your AI assistant's MCP config:
       "command": "python",
       "args": ["-m", "remote_dev_ctrl.mcp.server"],
       "env": {
-        "PYTHONPATH": "/path/to/remote-dev-ctrl/src"
+        "PYTHONPATH": "/path/to/remote-dev-control/src"
       }
     }
   }
 }
 ```
 
-This gives AI assistants access to RDC's browser context tools.
+This gives AI assistants access to RDC's browser context, session creation, and state inspection tools.
 
 ---
 
@@ -302,10 +362,10 @@ If you installed with `uv sync`, the binary is in the virtualenv:
 
 ```bash
 # Option 1: Activate the venv
-source ~/remote-dev-ctrl/.venv/bin/activate
+source ~/remote-dev-control/.venv/bin/activate
 
 # Option 2: Add to PATH (in ~/.zshrc or ~/.bashrc)
-export PATH="$HOME/remote-dev-ctrl/.venv/bin:$PATH"
+export PATH="$HOME/remote-dev-control/.venv/bin:$PATH"
 ```
 
 ### Server won't start
@@ -320,7 +380,7 @@ lsof -i :8420
 The server sets `no-cache` headers, but you can force-refresh:
 ```bash
 # Rebuild frontend
-cd ~/remote-dev-ctrl/frontend && pnpm run build
+cd ~/remote-dev-control/frontend && pnpm run build
 ```
 
 ### Terminals disconnecting

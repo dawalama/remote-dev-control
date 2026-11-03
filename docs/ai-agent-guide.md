@@ -59,7 +59,27 @@ WS   /terminals/{id}/ws               → Binary PTY I/O stream
 DELETE /terminals/{id}                 → Kill terminal
 ```
 
-### Tasks
+### Goal Sessions & Supervision
+
+```
+GET  /sessions                           → [{id, channel_id, project, status, goal, ...}]
+POST /sessions                           → Create supervised goal session
+     body: {channel_id, project, goal, acceptance_criteria?, provider?}
+GET  /sessions/{id}                      → Get session details, criteria, blockers
+POST /sessions/{id}/retry                → Start / retry agent execution for session
+GET  /sessions/{id}/artifact             → Get rendered Proof Artifact
+GET  /sessions/{id}/evidence             → [{id, evidence_type, data, ...}]
+POST /sessions/{id}/evidence             → Attach evidence item (git, verification, media)
+GET  /sessions/{id}/criteria             → [{id, title, status: passed|failed|waived, ...}]
+POST /sessions/{id}/criteria             → Add acceptance criterion
+PATCH /sessions/{id}/criteria/{cid}      → Update criterion status (passed, failed, waived)
+GET  /sessions/{id}/approvals            → List pending command approvals
+POST /sessions/{id}/approvals/{aid}/resolve → Resolve approval (action: approve|deny)
+POST /sessions/{id}/complete             → Accept outcome and complete review
+GET  /homebase/brief                     → HomeBase summary, active sessions, audio brief
+```
+
+### Tasks (Legacy Queue)
 
 ```
 GET  /tasks                           → [{id, status, description, ...}]

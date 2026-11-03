@@ -42,9 +42,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/dawalama/remote-dev-ctrl"
-Repository = "https://github.com/dawalama/remote-dev-ctrl"
-Issues = "https://github.com/dawalama/remote-dev-ctrl/issues"
+Homepage = "https://github.com/dawalama/remote-dev-control"
+Repository = "https://github.com/dawalama/remote-dev-control"
+Issues = "https://github.com/dawalama/remote-dev-control/issues"
 
 [project.optional-dependencies]
 dev = [
