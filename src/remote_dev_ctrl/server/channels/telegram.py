@@ -1,17 +1,20 @@
-"""Telegram bot integration for RDC Command Center."""
+"""Telegram bot integration for RDC Command Center.
+
+Modernized for goal-centered sessions, workstreams, and review-and-accept workflows.
+"""
 
 import asyncio
 import logging
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Any, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 # Theme-aware status indicators for Telegram messages
 TELEGRAM_THEMES = {
-    'modern': {'running': '\u25cf', 'stopped': '\u25cb', 'failed': '\u2715', 'pending': '\u25d0', 'header': '\u2014'},
-    'default': {'running': '\U0001f7e2', 'stopped': '\u2b1b', 'failed': '\U0001f534', 'pending': '\U0001f7e1', 'header': '\u2501'},
-    'brutalist': {'running': '\u25b6', 'stopped': '\u25a0', 'failed': '\u2716', 'pending': '\u25b7', 'header': '\u2550'},
+    'modern': {'running': '●', 'stopped': '○', 'failed': '✕', 'pending': '◐', 'header': '—'},
+    'default': {'running': '🟢', 'stopped': '⬛', 'failed': '🔴', 'pending': '⏳', 'header': '━'},
+    'brutalist': {'running': '▶', 'stopped': '■', 'failed': '✖', 'pending': '▷', 'header': '═'},
 }
 
 
@@ -22,7 +25,7 @@ class TelegramBot:
         self,
         token: str,
         allowed_users: list[int] | None = None,
-        on_command: Callable[[str, str, int], Awaitable[str]] | None = None,
+        on_command: Callable[[str, str, int], Awaitable[Any]] | None = None,
         dashboard_url: str | None = None,
     ):
         self.token = token
@@ -33,12 +36,13 @@ class TelegramBot:
         self._app = None
         self._running = False
         self._user_projects: dict[int, str] = {}  # user_id -> selected project
+        self._user_state: dict[int, dict[str, Any]] = {}  # user_id -> conversational state
     
     async def start(self):
         """Start the Telegram bot."""
         try:
-            from telegram import Update, Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
-            from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+            from telegram import BotCommand
+            from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
         except ImportError:
             logger.error("python-telegram-bot not installed. Run: pip install python-telegram-bot")
             return False
@@ -50,17 +54,31 @@ class TelegramBot:
         self._app.add_handler(CommandHandler("start", self._handle_start))
         self._app.add_handler(CommandHandler("help", self._handle_help))
         self._app.add_handler(CommandHandler("status", self._handle_status))
-
-        self._app.add_handler(CommandHandler("tasks", self._handle_tasks))
-        self._app.add_handler(CommandHandler("processes", self._handle_processes))
-
-        self._app.add_handler(CommandHandler("add", self._handle_add_task))
-        self._app.add_handler(CommandHandler("run", self._handle_run_task))
-        self._app.add_handler(CommandHandler("cancel", self._handle_cancel_task))
+        self._app.add_handler(CommandHandler("brief", self._handle_brief))
+        self._app.add_handler(CommandHandler("homebase", self._handle_brief))
+        self._app.add_handler(CommandHandler("sessions", self._handle_sessions))
+        self._app.add_handler(CommandHandler("reviews", self._handle_reviews))
+        self._app.add_handler(CommandHandler("goal", self._handle_goal))
+        self._app.add_handler(CommandHandler("accept", self._handle_accept))
+        self._app.add_handler(CommandHandler("proof", self._handle_proof))
+        self._app.add_handler(CommandHandler("instruct", self._handle_instruct))
+        self._app.add_handler(CommandHandler("approvals", self._handle_approvals))
+        self._app.add_handler(CommandHandler("approve", self._handle_approve))
+        self._app.add_handler(CommandHandler("reject", self._handle_reject))
+        self._app.add_handler(CommandHandler("workstreams", self._handle_workstreams))
+        self._app.add_handler(CommandHandler("channels", self._handle_workstreams))
         self._app.add_handler(CommandHandler("projects", self._handle_projects))
         self._app.add_handler(CommandHandler("project", self._handle_select_project))
+        self._app.add_handler(CommandHandler("processes", self._handle_processes))
         self._app.add_handler(CommandHandler("logs", self._handle_logs))
+        self._app.add_handler(CommandHandler("cancel", self._handle_cancel))
         self._app.add_handler(CommandHandler("dashboard", self._handle_dashboard))
+        
+        # Backwards compatibility handlers
+        self._app.add_handler(CommandHandler("tasks", self._handle_sessions))
+        self._app.add_handler(CommandHandler("add", self._handle_goal))
+        self._app.add_handler(CommandHandler("run", self._handle_sessions))
+
         self._app.add_handler(CallbackQueryHandler(self._handle_callback))
         self._app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._handle_voice))
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
@@ -68,17 +86,18 @@ class TelegramBot:
         # Set bot commands for autocomplete
         commands = [
             BotCommand("status", "📊 System overview"),
-            BotCommand("project", "📂 Select project: /project <name>"),
-
-            BotCommand("tasks", "📋 List pending tasks"),
-            BotCommand("processes", "⚙️ List running processes"),
+            BotCommand("brief", "🧭 HomeBase control-plane brief"),
+            BotCommand("sessions", "🎯 Active & recent goal sessions"),
+            BotCommand("reviews", "🔍 Sessions awaiting review"),
+            BotCommand("goal", "⚡ New goal: /goal [proj] <text>"),
+            BotCommand("accept", "✅ Accept review outcome: /accept <id>"),
+            BotCommand("approvals", "⚠️ Pending command approvals"),
+            BotCommand("workstreams", "🌊 List active workstreams"),
+            BotCommand("project", "📂 Select active project: /project <name>"),
             BotCommand("projects", "📁 List all projects"),
-            BotCommand("add", "➕ Add task: /add <description>"),
-            BotCommand("run", "▶️ Run task: /run <task_id>"),
-            BotCommand("cancel", "❌ Cancel task: /cancel <task_id>"),
-
+            BotCommand("processes", "⚙️ Background services & ports"),
             BotCommand("logs", "📜 View logs"),
-            BotCommand("dashboard", "🔗 Get dashboard link"),
+            BotCommand("cancel", "🛑 Cancel session: /cancel <id>"),
             BotCommand("help", "❓ Show all commands"),
         ]
         
@@ -88,10 +107,8 @@ class TelegramBot:
         await self._app.updater.start_polling()
         
         self._running = True
-        
         me = await self._bot.get_me()
         logger.info(f"Telegram bot started: @{me.username}")
-        
         return True
     
     async def stop(self):
@@ -99,7 +116,6 @@ class TelegramBot:
         if not self._app or not self._running:
             return
         self._running = False
-        self._running = False # Set to false immediately
         try:
             if self._app.updater and getattr(self._app.updater, "running", True):
                 await self._app.updater.stop()
@@ -151,24 +167,48 @@ class TelegramBot:
         ]
         return InlineKeyboardMarkup(keyboard)
     
+    async def _send_or_edit(self, target, result: Any, default_buttons=None):
+        """Send a new message or edit an existing message from callback query."""
+        reply_markup = None
+        if isinstance(result, dict):
+            text = result.get("text", "")
+            buttons = result.get("buttons")
+            if buttons is not None:
+                reply_markup = self._make_keyboard(buttons)
+        else:
+            text = str(result)
+        
+        if reply_markup is None and default_buttons:
+            reply_markup = self._make_keyboard(default_buttons)
+            
+        if hasattr(target, "edit_message_text"):
+            try:
+                await target.edit_message_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+            except Exception as e:
+                if "Message is not modified" not in str(e):
+                    logger.warning(f"edit_message_text failed: {e}")
+        elif hasattr(target, "reply_text"):
+            await target.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+    
     async def _show_main_menu(self, query, user_id: int):
         """Show the main menu with quick actions."""
         current_project = self._get_user_project(user_id)
         
         buttons = [
-            [("📊 Status", "refresh_status")],
-            [("📋 Tasks", "show_tasks"), ("⚙️ Processes", "show_processes")],
-            [("📁 Projects", "show_projects")],
+            [("📊 Status", "refresh_status"), ("🧭 Brief Me", "show_brief")],
+            [("🎯 Sessions", "show_sessions"), ("🔍 Reviews", "show_reviews")],
+            [("⚡ New Goal", f"quick_goal:{current_project}" if current_project else "show_projects"), ("🌊 Workstreams", "show_workstreams")],
+            [("📁 Projects", "show_projects"), ("⚙️ Services", "show_processes")],
         ]
         
         if current_project:
             buttons.append([
-                (f"📜 Logs", f"logs_project:{current_project}"),
+                (f"📜 Logs ({current_project})", f"logs_project:{current_project}"),
             ])
         
         keyboard = self._make_keyboard(buttons)
         await query.edit_message_text(
-            f"{self._project_context(user_id)}\n\n*Main Menu*\n\nSelect an action:",
+            f"{self._project_context(user_id)}\n\n*RDC Command Center*\n\nSelect an action:",
             parse_mode="Markdown",
             reply_markup=keyboard
         )
@@ -191,106 +231,118 @@ class TelegramBot:
         else:
             action, param = data, ""
         
-        if action == "select_project":
-            self._set_user_project(user_id, param)
-            await query.edit_message_text(
-                f"✅ *Project Selected*\n\n📂 `{param}`",
-                parse_mode="Markdown"
-            )
-        
+        if action == "main_menu":
+            await self._show_main_menu(query, user_id)
+            return
 
+        if not self.on_command:
+            await query.edit_message_text("❌ No command handler configured.")
+            return
+
+        if action == "refresh_status":
+            result = await self.on_command("status", "", user_id)
+            await self._send_or_edit(query, result)
         
-        elif action == "logs_project":
-            if self.on_command:
-                result = await self.on_command("logs", f"{param} 20", user_id)
-                await query.edit_message_text(
-                    f"📜 *Logs:* `{param}`\n\n```\n{result}\n```",
-                    parse_mode="Markdown"
-                )
+        elif action == "show_brief":
+            result = await self.on_command("brief", "", user_id)
+            await self._send_or_edit(query, result)
         
-        elif action == "run_task":
-            if self.on_command:
-                result = await self.on_command("run_task", param, user_id)
-                await query.edit_message_text(result, parse_mode="Markdown")
+        elif action == "show_sessions":
+            result = await self.on_command("sessions", "", user_id)
+            await self._send_or_edit(query, result)
         
-        elif action == "cancel_task":
-            if self.on_command:
-                result = await self.on_command("cancel_task", param, user_id)
-                await query.edit_message_text(result, parse_mode="Markdown")
-        
+        elif action == "show_reviews":
+            result = await self.on_command("reviews", "", user_id)
+            await self._send_or_edit(query, result)
+            
+        elif action == "show_approvals":
+            result = await self.on_command("approvals", "", user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "show_workstreams":
+            result = await self.on_command("workstreams", "", user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "accept_session":
+            result = await self.on_command("accept_session", param, user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "proof_session":
+            result = await self.on_command("proof_session", param, user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "instruct_prompt":
+            self._user_state[user_id] = {"action": "instruct", "session_id": param}
+            buttons = [[("⬅️ Cancel", "show_sessions")]]
+            await query.edit_message_text(
+                f"💬 *Send Instruction to Session* `{param}`\n\n"
+                "Type what the agent should do next (or send a voice note):",
+                parse_mode="Markdown",
+                reply_markup=self._make_keyboard(buttons)
+            )
+
+        elif action == "quick_goal":
+            self._user_state[user_id] = {"action": "goal", "project": param}
+            buttons = [[("⬅️ Cancel", "show_projects")]]
+            await query.edit_message_text(
+                f"⚡ *New Goal for* `{param}`\n\n"
+                "Type your goal description (or send a voice note):",
+                parse_mode="Markdown",
+                reply_markup=self._make_keyboard(buttons)
+            )
+
+        elif action == "approve_cmd":
+            result = await self.on_command("decide_approval", f"{param} approved", user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "reject_cmd":
+            result = await self.on_command("decide_approval", f"{param} rejected", user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "cancel_session":
+            result = await self.on_command("cancel_session", param, user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "retry_session":
+            result = await self.on_command("retry_session", param, user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "select_project":
+            self._set_user_project(user_id, param)
+            buttons = [
+                [("⚡ Start Goal", f"quick_goal:{param}"), ("📜 Logs", f"logs_project:{param}")],
+                [("🎯 Sessions", "show_sessions"), ("⬅️ Back to Menu", "main_menu")],
+            ]
+            await query.edit_message_text(
+                f"✅ *Active Project Selected*\n\n📂 `{param}`\n\nCommands like /goal and /logs will now default to this project.",
+                parse_mode="Markdown",
+                reply_markup=self._make_keyboard(buttons)
+            )
+
+        elif action == "show_projects":
+            result = await self.on_command("projects", "", user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "show_processes":
+            result = await self.on_command("processes", "", user_id)
+            await self._send_or_edit(query, result)
+
         elif action == "start_action":
-            if self.on_command:
-                result = await self.on_command("start_action", param, user_id)
-                await query.edit_message_text(result, parse_mode="Markdown")
+            result = await self.on_command("start_action", param, user_id)
+            await self._send_or_edit(query, result)
 
         elif action == "stop_action":
-            if self.on_command:
-                result = await self.on_command("stop_action", param, user_id)
-                await query.edit_message_text(result, parse_mode="Markdown")
-        
-        elif action == "refresh_status":
-            if self.on_command:
-                result = await self.on_command("status", "", user_id)
-                keyboard = self._make_keyboard([[("🔄 Refresh", "refresh_status")]])
-                await query.edit_message_text(
-                    f"{self._project_context(user_id)}\n\n{result}",
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
-                )
-        
-        elif action == "main_menu":
-            await self._show_main_menu(query, user_id)
-        
-        elif action == "show_tasks":
-            if self.on_command:
-                result = await self.on_command("tasks", "", user_id)
-                task_ids = self._parse_task_ids(result)
-                
-                buttons = []
-                for task_id in task_ids[:5]:
-                    short_id = task_id[:8]
-                    buttons.append([
-                        (f"▶️ Run {short_id}", f"run_task:{task_id}"),
-                        (f"❌ Cancel {short_id}", f"cancel_task:{task_id}")
-                    ])
-                buttons.append([("⬅️ Back", "refresh_status")])
-                
-                keyboard = self._make_keyboard(buttons) if buttons else None
-                await query.edit_message_text(result, parse_mode="Markdown", reply_markup=keyboard)
-        
-        elif action == "show_processes":
-            if self.on_command:
-                result = await self.on_command("processes", "", user_id)
-                process_ids = self._parse_process_ids(result)
-                
-                buttons = []
-                for proc_id, is_running in process_ids[:6]:
-                    if is_running:
-                        buttons.append([(f"🛑 Stop {proc_id}", f"stop_action:{proc_id}")])
-                    else:
-                        buttons.append([(f"▶️ Start {proc_id}", f"start_action:{proc_id}")])
-                buttons.append([("⬅️ Back", "refresh_status")])
+            result = await self.on_command("stop_action", param, user_id)
+            await self._send_or_edit(query, result)
 
-                keyboard = self._make_keyboard(buttons)
-                await query.edit_message_text(result, parse_mode="Markdown", reply_markup=keyboard)
-        
-        elif action == "show_projects":
-            if self.on_command:
-                result = await self.on_command("projects", "", user_id)
-                projects = self._parse_project_names(result)
-                
-                buttons = []
-                for i in range(0, len(projects), 2):
-                    row = [(f"📂 {p}", f"select_project:{p}") for p in projects[i:i+2]]
-                    buttons.append(row)
-                buttons.append([("⬅️ Back", "refresh_status")])
-                
-                keyboard = self._make_keyboard(buttons)
-                await query.edit_message_text(
-                    f"{self._project_context(user_id)}\n\n*Select a project:*",
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
-                )
+        elif action == "logs_project":
+            result = await self.on_command("logs", f"{param} 20", user_id)
+            buttons = [[("⬅️ Back", "main_menu")]]
+            await query.edit_message_text(
+                f"📜 *Logs:* `{param}`\n\n```\n{result}\n```",
+                parse_mode="Markdown",
+                reply_markup=self._make_keyboard(buttons)
+            )
     
     async def _handle_start(self, update, context):
         """Handle /start command."""
@@ -299,18 +351,21 @@ class TelegramBot:
             return
         
         user_id = update.effective_user.id
+        current_project = self._get_user_project(user_id)
         
         buttons = [
-            [("📊 Status", "refresh_status")],
-            [("📋 Tasks", "show_tasks"), ("⚙️ Processes", "show_processes")],
-            [("📁 Select Project", "show_projects")],
+            [("📊 Status", "refresh_status"), ("🧭 Brief Me", "show_brief")],
+            [("🎯 Sessions", "show_sessions"), ("🔍 Reviews", "show_reviews")],
+            [("⚡ New Goal", f"quick_goal:{current_project}" if current_project else "show_projects"), ("🌊 Workstreams", "show_workstreams")],
+            [("📁 Select Project", "show_projects"), ("⚙️ Services", "show_processes")],
         ]
         
         keyboard = self._make_keyboard(buttons)
         await update.message.reply_text(
-            "👋 *RDC Command Center*\n\n"
-            "Control your tasks and projects remotely.\n\n"
-            "Tap a button below or type /help for all commands.",
+            f"{self._project_context(user_id)}\n\n"
+            "👋 *Welcome to RDC Command Center*\n\n"
+            "Remote control for your AI agent workstreams, goal sessions, and outcome reviews.\n\n"
+            "Tap an action below, send a voice note, or type /help for all commands.",
             parse_mode="Markdown",
             reply_markup=keyboard
         )
@@ -325,29 +380,32 @@ class TelegramBot:
         project_context = self._project_context(user_id)
         
         help_text = (
-            f"📚 *RDC Commands*\n\n"
+            f"📚 *RDC Command Center Guide*\n\n"
             f"{project_context}\n\n"
-            "*Project Context:*\n"
-            "• /project `<name>` - Select active project\n"
-            "• /projects - List all projects\n\n"
-            "*Status & Monitoring:*\n"
-            "• /status - System overview\n"
-
-            "• /tasks - List pending tasks\n"
-            "• /processes - List running processes\n"
-            "• /logs - View project logs\n\n"
-            "*Task Management:*\n"
-            "• /add `<description>` - Create task\n"
-            "• /run `<task_id>` - Run a pending task\n"
-            "• /cancel `<task_id>` - Cancel a task\n\n"
-
-            "*Other:*\n"
-            "• /dashboard - Get dashboard URL\n\n"
-            "_Commands use selected project. Override with explicit project name._"
+            "*🎯 Goals & Sessions:*\n"
+            "• /goal `<proj> <text>` - Launch a goal session\n"
+            "• /sessions - View active and recent sessions\n"
+            "• /cancel `<id>` - Cancel an active session\n"
+            "• /instruct `<id> <text>` - Send instruction to agent\n\n"
+            "*🔍 Reviews & Approvals:*\n"
+            "• /reviews - View sessions awaiting review\n"
+            "• /accept `<id>` - Accept outcome and complete session\n"
+            "• /proof `<id>` - View verification proof artifact\n"
+            "• /approvals - Pending terminal command approvals\n"
+            "• /approve `<id>` / /reject `<id>` - Decide approval\n\n"
+            "*🧭 Overview & Monitoring:*\n"
+            "• /brief - HomeBase control-plane status brief\n"
+            "• /status - System overview and quick actions\n"
+            "• /workstreams - Active channels and session counts\n"
+            "• /processes - Running services and ports\n"
+            "• /logs `[project]` - Recent agent logs\n\n"
+            "*📁 Project Context:*\n"
+            "• /project `<name>` - Switch active project\n"
+            "• /projects - List registered projects\n\n"
+            "_💡 Tip: You can send voice notes anytime to issue goals or ask for a brief!_"
         )
-        
         await update.message.reply_text(help_text, parse_mode="Markdown")
-    
+
     async def _handle_status(self, update, context):
         """Handle /status command."""
         if not self._is_authorized(update.effective_user.id):
@@ -355,190 +413,45 @@ class TelegramBot:
             return
         
         user_id = update.effective_user.id
-        project_context = self._project_context(user_id)
-        current_project = self._get_user_project(user_id)
-        
         if self.on_command:
             result = await self.on_command("status", "", user_id)
-            
-            # Quick action buttons
-            buttons = [
-                [("📋 Tasks", "show_tasks"), ("⚙️ Processes", "show_processes")],
-                [("📁 Projects", "show_projects"), ("🔄 Refresh", "refresh_status")],
-            ]
-            
-            if current_project:
-                buttons.insert(1, [
-                    (f"📜 Logs", f"logs_project:{current_project}"),
-                ])
-            
-            keyboard = self._make_keyboard(buttons)
-            await update.message.reply_text(
-                f"{project_context}\n\n{result}",
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-    
+            await self._send_or_edit(update.message, result)
 
-    
-    async def _handle_tasks(self, update, context):
-        """Handle /tasks command."""
+    async def _handle_brief(self, update, context):
+        """Handle /brief command."""
         if not self._is_authorized(update.effective_user.id):
             await self._unauthorized(update)
             return
         
         user_id = update.effective_user.id
-        
         if self.on_command:
-            result = await self.on_command("tasks", "", user_id)
-            task_ids = self._parse_task_ids(result)
-            
-            if task_ids:
-                # Show tasks with action buttons
-                buttons = []
-                for task_id in task_ids[:5]:  # Limit to 5 tasks
-                    short_id = task_id[:8]
-                    buttons.append([
-                        (f"▶️ Run {short_id}", f"run_task:{task_id}"),
-                        (f"❌ Cancel {short_id}", f"cancel_task:{task_id}")
-                    ])
-                
-                keyboard = self._make_keyboard(buttons)
-                await update.message.reply_text(result, parse_mode="Markdown", reply_markup=keyboard)
-            else:
-                await update.message.reply_text(result, parse_mode="Markdown")
-    
-    def _parse_task_ids(self, text: str) -> list[str]:
-        """Extract task IDs from command output."""
-        import re
-        # Match UUID-like patterns or short IDs
-        ids = re.findall(r'`([a-f0-9-]{8,36})`', text)
-        return list(dict.fromkeys(ids))
-    
-    async def _handle_processes(self, update, context):
-        """Handle /processes command."""
-        if not self._is_authorized(update.effective_user.id):
-            await self._unauthorized(update)
-            return
-        
-        user_id = update.effective_user.id
-        
-        if self.on_command:
-            result = await self.on_command("processes", "", user_id)
-            process_ids = self._parse_process_ids(result)
-            
-            if process_ids:
-                buttons = []
-                for proc_id, is_running in process_ids[:6]:  # Limit to 6
-                    if is_running:
-                        buttons.append([(f"🛑 Stop {proc_id}", f"stop_action:{proc_id}")])
-                    else:
-                        buttons.append([(f"▶️ Start {proc_id}", f"start_action:{proc_id}")])
-                
-                keyboard = self._make_keyboard(buttons)
-                await update.message.reply_text(result, parse_mode="Markdown", reply_markup=keyboard)
-            else:
-                await update.message.reply_text(result, parse_mode="Markdown")
-    
-    def _parse_process_ids(self, text: str) -> list[tuple[str, bool]]:
-        """Extract process IDs and their running state from command output."""
-        import re
-        processes = []
-        for line in text.split("\n"):
-            # Match patterns like "🟢 process-name" or "⚪ process-name"
-            match = re.match(r'^[🟢⚪🔴]\s*`?([a-zA-Z0-9_-]+)`?', line.strip())
-            if match:
-                proc_id = match.group(1)
-                is_running = "🟢" in line
-                processes.append((proc_id, is_running))
-        return processes
-    
-    async def _handle_projects(self, update, context):
-        """Handle /projects command."""
-        if not self._is_authorized(update.effective_user.id):
-            await self._unauthorized(update)
-            return
-        
-        user_id = update.effective_user.id
-        current = self._project_context(user_id)
-        
-        if self.on_command:
-            result = await self.on_command("projects", "", user_id)
-            projects = self._parse_project_names(result)
-            
-            if projects:
-                # Create button grid (2 per row)
-                buttons = []
-                for i in range(0, len(projects), 2):
-                    row = [(f"📂 {p}", f"select_project:{p}") for p in projects[i:i+2]]
-                    buttons.append(row)
-                
-                keyboard = self._make_keyboard(buttons)
-                await update.message.reply_text(
-                    f"{current}\n\n*Select a project:*",
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
-                )
-            else:
-                await update.message.reply_text(f"{current}\n\n{result}", parse_mode="Markdown")
-    
-    def _parse_project_names(self, text: str) -> list[str]:
-        """Extract project names from command output."""
-        import re
-        # Match patterns like "• project_name" or "- project_name" or "`project_name`"
-        projects = []
-        for line in text.split("\n"):
-            # Match "• name" or "- name" patterns
-            match = re.match(r'^[•\-]\s*`?([a-zA-Z0-9_-]+)`?', line.strip())
-            if match:
-                projects.append(match.group(1))
-            # Also match "`name`" patterns
-            elif '`' in line:
-                matches = re.findall(r'`([a-zA-Z0-9_-]+)`', line)
-                projects.extend(matches)
-        return list(dict.fromkeys(projects))  # Remove duplicates, preserve order
-    
-    async def _handle_select_project(self, update, context):
-        """Handle /project command to select active project."""
-        if not self._is_authorized(update.effective_user.id):
-            await self._unauthorized(update)
-            return
-        
-        user_id = update.effective_user.id
-        
-        if not context.args:
-            # Show current project and list available
-            current = self._get_user_project(user_id)
-            if self.on_command:
-                projects_list = await self.on_command("projects", "", user_id)
-                if current:
-                    await update.message.reply_text(
-                        f"📂 *Current Project:* `{current}`\n\n"
-                        f"Use `/project <name>` to switch.\n\n{projects_list}",
-                        parse_mode="Markdown"
-                    )
-                else:
-                    await update.message.reply_text(
-                        f"📂 *No project selected*\n\n"
-                        f"Use `/project <name>` to select.\n\n{projects_list}",
-                        parse_mode="Markdown"
-                    )
-            return
-        
-        project = context.args[0]
-        self._set_user_project(user_id, project)
-        
-        await update.message.reply_text(
-            f"✅ *Project Selected*\n\n"
-            f"📂 `{project}`\n\n"
-            f"Commands like /add and /logs will now use this project.",
-            parse_mode="Markdown"
-        )
-    
+            result = await self.on_command("brief", "", user_id)
+            await self._send_or_edit(update.message, result)
 
-    
-    async def _handle_add_task(self, update, context):
-        """Handle /add command."""
+    async def _handle_sessions(self, update, context):
+        """Handle /sessions command."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        
+        user_id = update.effective_user.id
+        if self.on_command:
+            result = await self.on_command("sessions", "", user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_reviews(self, update, context):
+        """Handle /reviews command."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        
+        user_id = update.effective_user.id
+        if self.on_command:
+            result = await self.on_command("reviews", "", user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_goal(self, update, context):
+        """Handle /goal command."""
         if not self._is_authorized(update.effective_user.id):
             await self._unauthorized(update)
             return
@@ -547,89 +460,205 @@ class TelegramBot:
         selected_project = self._get_user_project(user_id)
         
         if not context.args:
-            if self.on_command:
-                result = await self.on_command("projects", "", user_id)
-                if selected_project:
-                    await update.message.reply_text(
-                        f"*Usage:* `/add <description>`\n\n"
-                        f"📂 Using project: `{selected_project}`\n\n"
-                        f"_Or specify project: /add <project> <description>_",
-                        parse_mode="Markdown"
-                    )
-                else:
-                    await update.message.reply_text(
-                        "*Usage:* `/add <project> <description>`\n\n"
-                        "_Or select a project first with /project_\n\n" + result,
-                        parse_mode="Markdown"
-                    )
+            if selected_project:
+                self._user_state[user_id] = {"action": "goal", "project": selected_project}
+                buttons = [[("⬅️ Cancel", "main_menu")]]
+                await update.message.reply_text(
+                    f"⚡ *New Goal for* `{selected_project}`\n\n"
+                    "Type what you want the agent to accomplish (or send a voice note):",
+                    parse_mode="Markdown",
+                    reply_markup=self._make_keyboard(buttons)
+                )
+            else:
+                if self.on_command:
+                    projects_result = await self.on_command("projects", "", user_id)
+                    await self._send_or_edit(update.message, projects_result)
             return
         
-        # Check if first arg is a project or part of description
         first_arg = context.args[0]
-        
         if selected_project and len(context.args) >= 1:
-            # Use selected project, all args are the task description
             project = selected_project
-            task = " ".join(context.args)
+            goal_text = " ".join(context.args)
         elif len(context.args) >= 2:
-            # First arg is project, rest is description
             project = first_arg
-            task = " ".join(context.args[1:])
+            goal_text = " ".join(context.args[1:])
         else:
             await update.message.reply_text(
-                "*Usage:* `/add <description>` (with project selected)\n"
-                "or `/add <project> <description>`",
+                "*Usage:* `/goal <description>` (with project selected)\n"
+                "or `/goal <project> <description>`",
                 parse_mode="Markdown"
             )
             return
         
         if self.on_command:
-            result = await self.on_command("add_task", f"{project} {task}", user_id)
-            await update.message.reply_text(result, parse_mode="Markdown")
-    
-    async def _handle_run_task(self, update, context):
-        """Handle /run command."""
+            result = await self.on_command("goal", f"{project} {goal_text}", user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_accept(self, update, context):
+        """Handle /accept command."""
         if not self._is_authorized(update.effective_user.id):
             await self._unauthorized(update)
             return
         
+        user_id = update.effective_user.id
         if not context.args:
-            # Show pending tasks
+            # Show reviews list so user can tap accept button
             if self.on_command:
-                result = await self.on_command("tasks", "", update.effective_user.id)
-                await update.message.reply_text(
-                    "*Usage:* `/run <task_id>`\n\n" + result,
-                    parse_mode="Markdown"
-                )
+                result = await self.on_command("reviews", "", user_id)
+                await self._send_or_edit(update.message, result)
             return
         
-        task_id = context.args[0]
-        
+        session_id = context.args[0]
         if self.on_command:
-            result = await self.on_command("run_task", task_id, update.effective_user.id)
-            await update.message.reply_text(result, parse_mode="Markdown")
-    
-    async def _handle_cancel_task(self, update, context):
-        """Handle /cancel command."""
+            result = await self.on_command("accept_session", session_id, user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_proof(self, update, context):
+        """Handle /proof command."""
         if not self._is_authorized(update.effective_user.id):
             await self._unauthorized(update)
             return
         
+        user_id = update.effective_user.id
         if not context.args:
-            if self.on_command:
-                result = await self.on_command("tasks", "", update.effective_user.id)
-                await update.message.reply_text(
-                    "*Usage:* `/cancel <task_id>`\n\n" + result,
-                    parse_mode="Markdown"
-                )
+            await update.message.reply_text("Usage: `/proof <session_id>`", parse_mode="Markdown")
             return
         
-        task_id = context.args[0]
-        
+        session_id = context.args[0]
         if self.on_command:
-            result = await self.on_command("cancel_task", task_id, update.effective_user.id)
-            await update.message.reply_text(result, parse_mode="Markdown")
-    
+            result = await self.on_command("proof_session", session_id, user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_instruct(self, update, context):
+        """Handle /instruct command."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        
+        user_id = update.effective_user.id
+        if not context.args:
+            await update.message.reply_text("Usage: `/instruct <session_id> <instruction text>`", parse_mode="Markdown")
+            return
+        
+        if len(context.args) == 1:
+            session_id = context.args[0]
+            self._user_state[user_id] = {"action": "instruct", "session_id": session_id}
+            await update.message.reply_text(
+                f"💬 *Instruct Session* `{session_id}`\n\nType your instruction below:",
+                parse_mode="Markdown"
+            )
+            return
+        
+        session_id = context.args[0]
+        instruction = " ".join(context.args[1:])
+        if self.on_command:
+            result = await self.on_command("instruct_session", f"{session_id} {instruction}", user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_approvals(self, update, context):
+        """Handle /approvals command."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        
+        user_id = update.effective_user.id
+        if self.on_command:
+            result = await self.on_command("approvals", "", user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_approve(self, update, context):
+        """Handle /approve command."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        
+        user_id = update.effective_user.id
+        if not context.args:
+            await update.message.reply_text("Usage: `/approve <approval_id>`", parse_mode="Markdown")
+            return
+        
+        approval_id = context.args[0]
+        if self.on_command:
+            result = await self.on_command("decide_approval", f"{approval_id} approved", user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_reject(self, update, context):
+        """Handle /reject command."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        
+        user_id = update.effective_user.id
+        if not context.args:
+            await update.message.reply_text("Usage: `/reject <approval_id>`", parse_mode="Markdown")
+            return
+        
+        approval_id = context.args[0]
+        if self.on_command:
+            result = await self.on_command("decide_approval", f"{approval_id} rejected", user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_workstreams(self, update, context):
+        """Handle /workstreams command."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        
+        user_id = update.effective_user.id
+        if self.on_command:
+            result = await self.on_command("workstreams", "", user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_projects(self, update, context):
+        """Handle /projects command."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        
+        user_id = update.effective_user.id
+        if self.on_command:
+            result = await self.on_command("projects", "", user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_select_project(self, update, context):
+        """Handle /project command to select active project."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        
+        user_id = update.effective_user.id
+        if not context.args:
+            current = self._get_user_project(user_id)
+            if self.on_command:
+                projects_result = await self.on_command("projects", "", user_id)
+                prefix = f"📂 *Current Project:* `{current}`\n\n" if current else "📂 *No project selected*\n\n"
+                await update.message.reply_text(f"{prefix}Use `/project <name>` to select.\n\n", parse_mode="Markdown")
+                await self._send_or_edit(update.message, projects_result)
+            return
+        
+        project = context.args[0]
+        self._set_user_project(user_id, project)
+        buttons = [
+            [("⚡ Start Goal", f"quick_goal:{project}"), ("📜 Logs", f"logs_project:{project}")],
+            [("🎯 Sessions", "show_sessions"), ("⬅️ Main Menu", "main_menu")],
+        ]
+        await update.message.reply_text(
+            f"✅ *Project Selected*\n\n📂 `{project}`\n\nCommands like /goal and /logs will now default to this project.",
+            parse_mode="Markdown",
+            reply_markup=self._make_keyboard(buttons)
+        )
+
+    async def _handle_processes(self, update, context):
+        """Handle /processes command."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        
+        user_id = update.effective_user.id
+        if self.on_command:
+            result = await self.on_command("processes", "", user_id)
+            await self._send_or_edit(update.message, result)
+
     async def _handle_logs(self, update, context):
         """Handle /logs command."""
         if not self._is_authorized(update.effective_user.id):
@@ -644,16 +673,35 @@ class TelegramBot:
             if self.on_command:
                 result = await self.on_command("projects", "", user_id)
                 await update.message.reply_text(
-                    "*Usage:* `/logs [project] [lines]`\n\n"
-                    "_Select a project first with /project or specify one._\n\n" + result,
+                    "*Usage:* `/logs [project] [lines]`\n\n_Select a project first with /project or specify one._\n\n",
                     parse_mode="Markdown"
                 )
+                await self._send_or_edit(update.message, result)
             return
         
         if self.on_command:
             result = await self.on_command("logs", f"{project} {lines}", user_id)
             await update.message.reply_text(f"📜 *Logs:* `{project}`\n\n```\n{result}\n```", parse_mode="Markdown")
-    
+
+    async def _handle_cancel(self, update, context):
+        """Handle /cancel command."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        
+        user_id = update.effective_user.id
+        if not context.args:
+            # Show active sessions to cancel
+            if self.on_command:
+                result = await self.on_command("sessions", "", user_id)
+                await self._send_or_edit(update.message, result)
+            return
+        
+        session_id = context.args[0]
+        if self.on_command:
+            result = await self.on_command("cancel_session", session_id, user_id)
+            await self._send_or_edit(update.message, result)
+
     async def _handle_dashboard(self, update, context):
         """Handle /dashboard command."""
         if not self._is_authorized(update.effective_user.id):
@@ -661,19 +709,12 @@ class TelegramBot:
             return
         
         if self.dashboard_url:
-            await update.message.reply_text(
-                f"🔗 *Dashboard*\n\n{self.dashboard_url}",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text(f"🔗 *Dashboard*\n\n{self.dashboard_url}", parse_mode="Markdown")
         else:
-            await update.message.reply_text(
-                "Dashboard URL not configured.\n"
-                "Set `dashboard_url` in the bot config.",
-                parse_mode="Markdown"
-            )
-    
+            await update.message.reply_text("Dashboard URL not configured.\nSet `dashboard_url` in config.", parse_mode="Markdown")
+
     async def _handle_message(self, update, context):
-        """Handle regular text messages."""
+        """Handle regular text messages with conversational state and NLP matching."""
         if not self._is_authorized(update.effective_user.id):
             await self._unauthorized(update)
             return
@@ -681,121 +722,82 @@ class TelegramBot:
         user_id = update.effective_user.id
         text = update.message.text.strip()
         
-        if self.on_command:
-            result = await self.on_command("message", text, user_id)
-            
-            # Handle special return values
-            keyboard = None
-            if result.startswith("select_project:"):
-                project = result.split(":", 1)[1]
-                self._set_user_project(user_id, project)
-                result = f"✅ *Project Selected*\n\n📂 `{project}`"
-            elif result.startswith("select_project_notfound:"):
-                attempted = result.split(":", 1)[1]
-                projects_result = await self.on_command("projects", "", user_id)
-                projects = self._parse_project_names(projects_result)
-                if projects:
-                    buttons = []
-                    for i in range(0, len(projects), 2):
-                        row = [(f"📂 {p}", f"select_project:{p}") for p in projects[i:i+2]]
-                        buttons.append(row)
-                    keyboard = self._make_keyboard(buttons)
-                result = f"🤔 Didn't find project `{attempted}`\n\n*Select one:*"
-            elif result == "show_projects":
-                projects_result = await self.on_command("projects", "", user_id)
-                projects = self._parse_project_names(projects_result)
-                if projects:
-                    buttons = []
-                    for i in range(0, len(projects), 2):
-                        row = [(f"📂 {p}", f"select_project:{p}") for p in projects[i:i+2]]
-                        buttons.append(row)
-                    keyboard = self._make_keyboard(buttons)
-                result = f"*Select a project:*"
-            
-            await update.message.reply_text(result, parse_mode="Markdown", reply_markup=keyboard)
-    
+        if not self.on_command:
+            return
+
+        # Check conversational state first
+        state = self._user_state.pop(user_id, None)
+        if state:
+            action = state.get("action")
+            if action == "goal":
+                project = state.get("project")
+                result = await self.on_command("goal", f"{project} {text}", user_id)
+                await self._send_or_edit(update.message, result)
+                return
+            elif action == "instruct":
+                session_id = state.get("session_id")
+                result = await self.on_command("instruct_session", f"{session_id} {text}", user_id)
+                await self._send_or_edit(update.message, result)
+                return
+
+        # Pass to NLP router
+        result = await self.on_command("message", text, user_id)
+        await self._send_or_edit(update.message, result)
+
     async def _handle_voice(self, update, context):
-        """Handle voice messages - transcribe and process as text."""
+        """Handle voice messages — transcribe and process with state and NLP."""
         if not self._is_authorized(update.effective_user.id):
             await self._unauthorized(update)
             return
         
         user_id = update.effective_user.id
-        
-        # Get the voice/audio file
         voice = update.message.voice or update.message.audio
         if not voice:
             await update.message.reply_text("❌ Could not process audio")
             return
         
-        # Send "processing" indicator
         processing_msg = await update.message.reply_text("🎤 Processing voice message...")
         
         try:
-            # Download the audio file
             file = await voice.get_file()
             audio_bytes = await file.download_as_bytearray()
-            
-            # Transcribe using our STT service
             transcript = await self._transcribe_audio(bytes(audio_bytes))
             
             if not transcript:
                 await processing_msg.edit_text("❌ Could not transcribe audio. Please try again or type your message.")
                 return
             
-            # Show what was understood
             await processing_msg.edit_text(f"🎤 _{transcript}_\n\n⏳ Processing...")
             
-            # Process as a regular message
             if self.on_command:
+                # Check conversational state first
+                state = self._user_state.pop(user_id, None)
+                if state:
+                    action = state.get("action")
+                    if action == "goal":
+                        project = state.get("project")
+                        result = await self.on_command("goal", f"{project} {transcript}", user_id)
+                        await self._send_or_edit(processing_msg, result)
+                        return
+                    elif action == "instruct":
+                        session_id = state.get("session_id")
+                        result = await self.on_command("instruct_session", f"{session_id} {transcript}", user_id)
+                        await self._send_or_edit(processing_msg, result)
+                        return
+
                 result = await self.on_command("message", transcript, user_id)
-                
-                # Handle special return values
-                keyboard = None
-                if result.startswith("select_project:"):
-                    project = result.split(":", 1)[1]
-                    self._set_user_project(user_id, project)
-                    result = f"✅ *Project Selected*\n\n📂 `{project}`"
-                elif result.startswith("select_project_notfound:"):
-                    attempted = result.split(":", 1)[1]
-                    # Show project selection buttons
-                    projects_result = await self.on_command("projects", "", user_id)
-                    projects = self._parse_project_names(projects_result)
-                    if projects:
-                        buttons = []
-                        for i in range(0, len(projects), 2):
-                            row = [(f"📂 {p}", f"select_project:{p}") for p in projects[i:i+2]]
-                            buttons.append(row)
-                        keyboard = self._make_keyboard(buttons)
-                    result = f"🤔 Didn't find project `{attempted}`\n\n*Select one:*"
-                elif result == "show_projects":
-                    projects_result = await self.on_command("projects", "", user_id)
-                    projects = self._parse_project_names(projects_result)
-                    if projects:
-                        buttons = []
-                        for i in range(0, len(projects), 2):
-                            row = [(f"📂 {p}", f"select_project:{p}") for p in projects[i:i+2]]
-                            buttons.append(row)
-                        keyboard = self._make_keyboard(buttons)
-                    result = f"*Select a project:*"
-                
-                await processing_msg.edit_text(
-                    f"🎤 _{transcript}_\n\n{result}", 
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
-                )
+                await self._send_or_edit(processing_msg, result)
         
         except Exception as e:
             logger.error(f"Voice processing error: {e}")
             await processing_msg.edit_text(f"❌ Error processing voice: `{e}`", parse_mode="Markdown")
-    
+
     async def _transcribe_audio(self, audio_bytes: bytes) -> str | None:
         """Transcribe audio bytes to text using Deepgram or Whisper."""
         import httpx
         import os
         from ..vault import get_secret
         
-        # Try Deepgram first
         deepgram_key = get_secret("DEEPGRAM_API_KEY") or os.environ.get("DEEPGRAM_API_KEY")
         if deepgram_key:
             try:
@@ -807,10 +809,7 @@ class TelegramBot:
                             "Content-Type": "audio/ogg",
                         },
                         content=audio_bytes,
-                        params={
-                            "model": "nova-2",
-                            "smart_format": "true",
-                        },
+                        params={"model": "nova-2", "smart_format": "true"},
                         timeout=30.0,
                     )
                     if response.status_code == 200:
@@ -820,7 +819,6 @@ class TelegramBot:
             except Exception as e:
                 logger.error(f"Deepgram transcription error: {e}")
         
-        # Fallback to OpenAI Whisper
         openai_key = get_secret("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
         if openai_key:
             try:
@@ -840,17 +838,12 @@ class TelegramBot:
         
         logger.warning("No STT service available (set DEEPGRAM_API_KEY or OPENAI_API_KEY)")
         return None
-    
-    async def send_message(self, user_id: int, text: str, parse_mode: str = "Markdown"):
+
+    async def send_message(self, user_id: int, text: str, parse_mode: str = "Markdown", reply_markup=None):
         """Send a message to a user."""
         if self._bot:
-            await self._bot.send_message(chat_id=user_id, text=text, parse_mode=parse_mode)
-    
-    async def send_photo(self, user_id: int, photo, caption: str = None):
-        """Send a photo to a user."""
-        if self._bot:
-            await self._bot.send_photo(chat_id=user_id, photo=photo, caption=caption, parse_mode="Markdown")
-    
+            await self._bot.send_message(chat_id=user_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
+
     async def broadcast(self, text: str):
         """Send a message to all allowed users."""
         if self._bot and self.allowed_users:
@@ -859,19 +852,61 @@ class TelegramBot:
                     await self.send_message(user_id, text)
                 except Exception as e:
                     logger.error(f"Failed to send to {user_id}: {e}")
-    
-    async def notify_task_complete(self, task_id: str, project: str, result: str = None):
-        """Notify users when a task completes."""
-        msg = f"✅ *Task Completed*\n\nProject: `{project}`\nTask: `{task_id}`"
-        if result:
-            msg += f"\n\nResult:\n```\n{result[:500]}\n```"
-        await self.broadcast(msg)
-    
-    async def notify_task_failed(self, task_id: str, project: str, error: str = None):
-        """Notify users when a task fails."""
-        msg = f"❌ *Task Failed*\n\nProject: `{project}`\nTask: `{task_id}`"
-        if error:
-            msg += f"\n\nError:\n```\n{error[:500]}\n```"
-        await self.broadcast(msg)
-    
 
+    async def broadcast_session_event(
+        self,
+        text: str,
+        session_id: str,
+        event_type: str,
+        status: str,
+    ):
+        """Send an interactive session notification card with inline buttons to all allowed users."""
+        if not self._bot or not self.allowed_users:
+            return
+        
+        buttons = []
+        if status in ("verifying", "ready_for_review"):
+            buttons = [
+                [
+                    ("✅ Accept & Complete", f"accept_session:{session_id}"),
+                    ("📋 View Proof", f"proof_session:{session_id}"),
+                ],
+                [
+                    ("💬 Instruct", f"instruct_prompt:{session_id}"),
+                    ("🛑 Stop", f"cancel_session:{session_id}"),
+                ],
+            ]
+        elif status in ("waiting", "needs_you"):
+            buttons = [
+                [
+                    ("💬 Send Input", f"instruct_prompt:{session_id}"),
+                    ("🛑 Cancel", f"cancel_session:{session_id}"),
+                ]
+            ]
+        elif status == "failed":
+            buttons = [
+                [
+                    ("🔄 Retry", f"retry_session:{session_id}"),
+                    ("📜 Logs", f"logs_project:{session_id}"),
+                ]
+            ]
+        elif status in ("running", "working"):
+            buttons = [
+                [
+                    ("💬 Instruct", f"instruct_prompt:{session_id}"),
+                    ("🛑 Cancel", f"cancel_session:{session_id}"),
+                ]
+            ]
+        
+        keyboard = self._make_keyboard(buttons) if buttons else None
+        
+        for user_id in self.allowed_users:
+            try:
+                await self._bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard,
+                )
+            except Exception as e:
+                logger.error(f"Failed to send session notification to {user_id}: {e}")

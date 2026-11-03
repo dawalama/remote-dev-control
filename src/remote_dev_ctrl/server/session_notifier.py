@@ -144,7 +144,10 @@ def notify_session_event(
                 import asyncio
 
                 async def _broadcast():
-                    await bot.broadcast(text)
+                    if hasattr(bot, "broadcast_session_event"):
+                        await bot.broadcast_session_event(text, session_id=session_id, event_type=event, status=status)
+                    else:
+                        await bot.broadcast(text)
 
                 try:
                     loop = asyncio.get_running_loop()
