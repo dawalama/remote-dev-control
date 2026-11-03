@@ -95,6 +95,76 @@ def create_server() -> Server:
             },
         ))
 
+        tools.append(Tool(
+            name="list_agent_wrappers",
+            description="List all registered AI agent wrappers, model providers, cognitive tiers, and local/self-hosted model endpoints in Remote Dev Control (RDC).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ))
+
+        tools.append(Tool(
+            name="register_agent_wrapper",
+            description="Self-register or update an AI coding CLI wrapper or model provider in Remote Dev Control (RDC). Use this when a user asks you to add yourself or a custom model wrapper (e.g. aider, opencode, goose, grok, codex-oss, claude-custom) as an available provider.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Unique wrapper ID (e.g. 'aider-qwen-local', 'grok-fast')"},
+                    "label": {"type": "string", "description": "Human-readable label (e.g. 'Aider (Local Qwen3-Coder)')"},
+                    "driver": {
+                        "type": "string",
+                        "enum": ["codex", "claude", "cursor", "grok", "aider", "opencode", "goose", "generic"],
+                        "description": "Execution driver family",
+                    },
+                    "model_provider": {
+                        "type": "string",
+                        "description": "Model provider (openai, anthropic, openrouter, ollama, vllm, mlx, xai, vendor)",
+                    },
+                    "default_model": {"type": "string", "description": "Default model slug (e.g. 'qwen3-coder:32b', 'claude-sonnet-4-5')"},
+                    "model_tier": {
+                        "type": "string",
+                        "enum": ["decision", "fast", "coding", "reasoning"],
+                        "description": "Cognitive tier this wrapper is best suited for",
+                    },
+                    "hosting": {
+                        "type": "string",
+                        "enum": ["cloud", "local", "self_hosted", "hybrid"],
+                        "description": "Where inference runs",
+                    },
+                    "api_base_url": {"type": "string", "description": "Optional custom OpenAI/Anthropic-compatible base URL"},
+                    "executable": {"type": "string", "description": "CLI binary name (e.g. 'aider', 'claude', 'codex')"},
+                    "terminal_command": {"type": "string", "description": "Command to launch interactive TUI in terminal"},
+                    "session_command_template": {
+                        "type": "string",
+                        "description": "Optional non-interactive supervised session command template containing {prompt}",
+                    },
+                    "setup_command": {"type": "string", "description": "Optional setup/login command"},
+                    "description": {"type": "string", "description": "Short description of this wrapper"},
+                },
+                "required": ["id", "label"],
+            },
+        ))
+
+        tools.append(Tool(
+            name="evaluate_decision",
+            description="Run RDC's System 1 Decision Engine (Jev / Choice / Score / Noul) to evaluate structured probabilistic decisions in <50ms.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "state": {
+                        "description": "Application state (string or JSON object) to evaluate",
+                    },
+                    "questions": {
+                        "type": "object",
+                        "description": "Map of question_id -> {type: 'choice'|'score'|'noul', instructions: str, criteria?: dict[str, str]}",
+                    },
+                },
+                "required": ["state", "questions"],
+            },
+        ))
+
         return tools
 
     @server.call_tool()
@@ -106,17 +176,30 @@ def create_server() -> Server:
             return await _tool_get_context(arguments)
         if name == "capture_browser_context":
             return await _tool_capture_context(arguments)
+        if name == "list_agent_wrappers":
+            return _tool_list_agent_wrappers()
+        if name == "register_agent_wrapper":
+            return _tool_register_agent_wrapper(arguments)
+        if name == "evaluate_decision":
+            return _tool_evaluate_decision(arguments)
 
         return [TextContent(type="text", text=f"Error: Tool not found: {name}")]
 
     # =========================================================================
-    # RESOURCES - Browser contexts
+    # RESOURCES - Browser contexts & Self-registration instructions
     # =========================================================================
 
     @server.list_resources()
     async def list_resources() -> ListResourcesResult:
         """List all available resources."""
-        resources = []
+        resources = [
+            Resource(
+                uri="rdc://instructions/wrapper-self-registration",
+                name="RDC Wrapper Self-Registration Instructions",
+                description="How any CLI agent or model wrapper can register itself as an available provider in RDC",
+                mimeType="application/json",
+            )
+        ]
 
         # Browser contexts
         try:
@@ -153,11 +236,83 @@ def create_server() -> Server:
 
         category = parts[0]
 
+        if category == "instructions" and len(parts) >= 2 and parts[1] == "wrapper-self-registration":
+            from ..server.agent_registry import get_wrapper_self_registration_instructions
+            info = get_wrapper_self_registration_instructions(RDC_SERVER_URL)
+            return [TextContent(type="text", text=json.dumps(info, indent=2))]
+
         # Browser context
         if category == "context" and len(parts) >= 2:
             return await _read_context_resource(parts[1])
 
         return [TextContent(type="text", text=f"Unknown resource: {uri}")]
+
+    def _tool_list_agent_wrappers() -> CallToolResult:
+        from ..server.agent_registry import (
+            discover_model_providers,
+            get_model_tier_matrix,
+            list_provider_readiness,
+            load_agent_provider_policy,
+        )
+        payload = {
+            "policy": load_agent_provider_policy(),
+            "wrappers": list_provider_readiness(),
+            "model_providers": discover_model_providers(),
+            "tier_matrix": get_model_tier_matrix(),
+        }
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+    def _tool_register_agent_wrapper(arguments: dict) -> CallToolResult:
+        from ..server.agent_registry import (
+            AgentWrapperSpec,
+            register_dropin_wrapper,
+            upsert_wrapper_spec,
+        )
+        wid = str(arguments.get("id") or "").strip()
+        if not wid:
+            return [TextContent(type="text", text="Error: 'id' is required")]
+        driver = str(arguments.get("driver") or "generic").strip()
+        executable = arguments.get("executable") or wid
+        spec = AgentWrapperSpec(
+            id=wid,
+            label=str(arguments.get("label") or wid),
+            driver=driver,
+            description=str(arguments.get("description") or f"Registered via MCP ({driver})"),
+            model_provider=str(arguments.get("model_provider") or "vendor"),
+            default_model=arguments.get("default_model"),
+            model_tier=str(arguments.get("model_tier") or "coding"),
+            hosting=str(arguments.get("hosting") or "cloud"),
+            api_base_url=arguments.get("api_base_url"),
+            executable=executable,
+            terminal_command=str(arguments.get("terminal_command") or executable),
+            session_command_template=arguments.get("session_command_template"),
+            setup_command=arguments.get("setup_command"),
+            source="dropin",
+            supports_sessions=True,
+            show_in_terminal_menu=True,
+        )
+        saved = upsert_wrapper_spec(spec)
+        dropin_path = register_dropin_wrapper(saved)
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "registered": True,
+                        "wrapper": saved.model_dump(),
+                        "dropin_manifest": str(dropin_path),
+                    },
+                    indent=2,
+                ),
+            )
+        ]
+
+    def _tool_evaluate_decision(arguments: dict) -> CallToolResult:
+        from ..server.decision import get_decision_engine
+        state = arguments.get("state")
+        questions = arguments.get("questions") or {}
+        res = get_decision_engine().evaluate(state=state, questions=questions)
+        return [TextContent(type="text", text=json.dumps(res.model_dump(), indent=2))]
 
     # =========================================================================
     # Browser Context Helpers

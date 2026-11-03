@@ -1648,5 +1648,98 @@ def queue_stats():
     ))
 
 
+wrapper_app = typer.Typer(help="Manage AI agent wrappers, model providers, and self-registration")
+app.add_typer(wrapper_app, name="wrapper")
+
+
+@wrapper_app.command("list")
+def wrapper_list():
+    """List all registered agent wrappers, model providers, and readiness."""
+    from .server.agent_registry import list_provider_readiness, load_agent_provider_policy
+
+    policy = load_agent_provider_policy()
+    preferred = policy.get("preferred_provider")
+    rows = list_provider_readiness()
+    table = Table(title=f"Registered Agent Wrappers (Preferred: {preferred})")
+    table.add_column("ID", style="cyan")
+    table.add_column("Label")
+    table.add_column("Driver")
+    table.add_column("Provider / Model")
+    table.add_column("Hosting")
+    table.add_column("Status")
+    for r in rows:
+        prov_mod = f"{r.get('model_provider', 'vendor')}"
+        if r.get("default_model"):
+            prov_mod += f" / {r['default_model']}"
+        status_str = "[green]Ready[/green]" if r.get("ready") else f"[yellow]{r.get('status')}[/yellow]"
+        table.add_row(
+            str(r["id"]),
+            str(r.get("label", "")),
+            str(r.get("driver", "")),
+            prov_mod,
+            str(r.get("hosting", "cloud")),
+            status_str,
+        )
+    console.print(table)
+
+
+@wrapper_app.command("register")
+def wrapper_register(
+    wrapper_id: Annotated[str, typer.Argument(help="Unique wrapper ID (e.g. aider-qwen-local)")],
+    label: Annotated[Optional[str], typer.Option("--label", "-l", help="Display label")] = None,
+    driver: Annotated[str, typer.Option("--driver", "-d", help="Driver family (codex, claude, cursor, grok, aider, opencode, goose, generic)")] = "generic",
+    model_provider: Annotated[str, typer.Option("--model-provider", help="Model provider (openai, anthropic, openrouter, ollama, vllm, mlx, xai)")] = "vendor",
+    model: Annotated[Optional[str], typer.Option("--model", "-m", help="Default model slug")] = None,
+    tier: Annotated[str, typer.Option("--tier", help="Cognitive tier (decision, fast, coding, reasoning)")] = "coding",
+    hosting: Annotated[str, typer.Option("--hosting", help="Hosting mode (cloud, local, self_hosted, hybrid)")] = "cloud",
+    api_base_url: Annotated[Optional[str], typer.Option("--api-base-url", help="Custom OpenAI/Anthropic base URL")] = None,
+    executable: Annotated[Optional[str], typer.Option("--executable", "-e", help="CLI executable binary")] = None,
+    terminal_cmd: Annotated[Optional[str], typer.Option("--terminal-cmd", help="Interactive terminal launch command")] = None,
+    session_cmd: Annotated[Optional[str], typer.Option("--session-cmd", help="Supervised session command template with {prompt}")] = None,
+    setup_cmd: Annotated[Optional[str], typer.Option("--setup-cmd", help="Auth/setup command")] = None,
+    description: Annotated[Optional[str], typer.Option("--desc", help="Short description")] = None,
+):
+    """Register or update an AI agent wrapper in RDC."""
+    from .server.agent_registry import AgentWrapperSpec, register_dropin_wrapper, upsert_wrapper_spec
+
+    exe = executable or wrapper_id
+    spec = AgentWrapperSpec(
+        id=wrapper_id,
+        label=label or wrapper_id,
+        driver=driver,
+        description=description or f"{driver} wrapper ({model_provider})",
+        model_provider=model_provider,
+        default_model=model,
+        model_tier=tier,
+        hosting=hosting,
+        api_base_url=api_base_url,
+        executable=exe,
+        terminal_command=terminal_cmd or exe,
+        session_command_template=session_cmd,
+        setup_command=setup_cmd,
+        source="dropin",
+        supports_sessions=True,
+        show_in_terminal_menu=True,
+    )
+    saved = upsert_wrapper_spec(spec)
+    manifest_path = register_dropin_wrapper(saved)
+    rprint(f"[green]✓[/green] Registered wrapper [bold]{saved.id}[/bold] ({saved.label})")
+    rprint(f"   Manifest: {manifest_path}")
+
+
+@wrapper_app.command("instructions")
+def wrapper_instructions(
+    as_json: Annotated[bool, typer.Option("--json", help="Output raw JSON")] = False,
+):
+    """Print self-registration instructions for an AI agent or model wrapper."""
+    from .server.agent_registry import get_wrapper_self_registration_instructions
+
+    info = get_wrapper_self_registration_instructions()
+    if as_json:
+        print(json.dumps(info, indent=2))
+    else:
+        rprint(Panel(info["agent_prompt"], title="Wrapper Self-Registration Prompt", border_style="cyan"))
+
+
 if __name__ == "__main__":
     app()

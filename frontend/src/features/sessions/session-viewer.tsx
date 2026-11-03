@@ -41,6 +41,13 @@ interface SuggestedNextStep {
   prompt?: string
 }
 
+interface DecisionTriageResult {
+  outcome_satisfied?: number
+  ready_for_host_commit?: number
+  blocker_type?: { type: string; value: string; confidence: number; probabilities?: Record<string, number> }
+  recommended_action?: { type: string; value: string; confidence: number; probabilities?: Record<string, number> }
+}
+
 interface SessionGitStatus {
   has_git: boolean
   branch?: string
@@ -54,6 +61,7 @@ interface SessionGitStatus {
   remote_url?: string
   suggested_commit_message?: string
   detected_blocker?: string | null
+  decision_triage?: DecisionTriageResult
   suggested_next_steps?: SuggestedNextStep[]
 }
 
@@ -772,10 +780,17 @@ export function SessionViewer({
       {["verifying", "completed", "done", "failed", "cancelled"].includes(session.status) && (
         <div className="border-t border-gray-800 bg-gray-900/95 px-3 py-2 flex-shrink-0 space-y-2">
           {/* 1-Click Suggested Next-Step Chips */}
-          {gitStatus?.suggested_next_steps && gitStatus.suggested_next_steps.length > 0 && (
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-              <span className="text-[10px] font-medium uppercase tracking-wider text-gray-500 flex-shrink-0 mr-1">Next steps:</span>
-              {gitStatus.suggested_next_steps.map((step) => (
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-gray-500 flex-shrink-0 mr-1">Next steps:</span>
+            {gitStatus?.decision_triage?.blocker_type?.value && gitStatus.decision_triage.blocker_type.value !== "none" && (
+              <span
+                className="flex-shrink-0 rounded-full border border-amber-500/30 bg-amber-950/40 px-2.5 py-0.5 text-[9.5px] font-medium text-amber-300"
+                title={`System 1 Calibrated Blocker Triage (${Math.round((gitStatus.decision_triage.blocker_type.confidence || 0.8) * 100)}% confidence)`}
+              >
+                ⚠️ {gitStatus.decision_triage.blocker_type.value.replace(/_/g, " ")}
+              </span>
+            )}
+            {gitStatus?.suggested_next_steps && gitStatus.suggested_next_steps.map((step) => (
                 <button
                   key={step.id}
                   disabled={sendingInstruction || committingGit || verifyingEvidence}
@@ -819,7 +834,6 @@ export function SessionViewer({
                 )
               )}
             </div>
-          )}
 
           {/* Compact Single-Line Follow-Up Bar */}
           <div className="flex items-center gap-2">

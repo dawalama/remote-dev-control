@@ -31,12 +31,20 @@ logger = logging.getLogger(__name__)
 class AgentWrapperSpec(BaseModel):
     id: str
     label: str
-    driver: str = "generic"  # "codex" | "claude" | "cursor" | "grok" | "generic" | "diagnostic" | "shell"
+    driver: str = "generic"  # "codex" | "claude" | "cursor" | "grok" | "aider" | "opencode" | "goose" | "generic" | "diagnostic" | "shell"
     icon: str = "•"
     description: str = ""
     enabled: bool = True
     builtin: bool = False
-    source: str = "builtin"  # "builtin" | "alias" | "custom"
+    source: str = "builtin"  # "builtin" | "alias" | "custom" | "dropin"
+
+    # Model Provider, Cognitive Tier & Hosting Metadata
+    model_provider: str = "vendor"  # "openai" | "anthropic" | "cursor" | "xai" | "openrouter" | "ollama" | "vllm" | "mlx" | "vendor"
+    default_model: str | None = None
+    model_tier: str = "coding"  # "decision" | "fast" | "coding" | "reasoning"
+    hosting: str = "cloud"  # "cloud" | "local" | "self_hosted" | "hybrid"
+    api_base_url: str | None = None
+    env_overrides: dict[str, str] = Field(default_factory=dict)
 
     # 1. Readiness & Auth Verification
     executable: str | None = None
@@ -65,6 +73,10 @@ _BUILTIN_SPECS: list[AgentWrapperSpec] = [
         description="OpenAI Codex CLI",
         builtin=True,
         source="builtin",
+        model_provider="openai",
+        default_model="gpt-5.2-codex",
+        model_tier="coding",
+        hosting="cloud",
         executable="codex",
         auth_check_args=["login", "status"],
         setup_command="codex login",
@@ -82,6 +94,10 @@ _BUILTIN_SPECS: list[AgentWrapperSpec] = [
         description="Anthropic Claude Code",
         builtin=True,
         source="builtin",
+        model_provider="anthropic",
+        default_model="claude-sonnet-4-5",
+        model_tier="coding",
+        hosting="cloud",
         executable="claude",
         auth_check_args=["auth", "status"],
         setup_command="claude auth login",
@@ -99,6 +115,10 @@ _BUILTIN_SPECS: list[AgentWrapperSpec] = [
         description="Cursor AI Agent",
         builtin=True,
         source="builtin",
+        model_provider="cursor",
+        default_model="auto",
+        model_tier="coding",
+        hosting="cloud",
         executable="cursor-agent",
         auth_check_args=["about"],
         setup_command="cursor-agent login",
@@ -116,6 +136,10 @@ _BUILTIN_SPECS: list[AgentWrapperSpec] = [
         description="No-op diagnostic verification runner",
         builtin=True,
         source="builtin",
+        model_provider="local",
+        default_model="deterministic",
+        model_tier="decision",
+        hosting="local",
         executable=None,
         supports_sessions=True,
         show_in_terminal_menu=False,
@@ -129,6 +153,9 @@ _BUILTIN_SPECS: list[AgentWrapperSpec] = [
         description="Plain login shell",
         builtin=True,
         source="builtin",
+        model_provider="local",
+        model_tier="fast",
+        hosting="local",
         executable=None,
         supports_sessions=False,
         show_in_terminal_menu=True,
@@ -211,6 +238,12 @@ def classify_agent_family(name: str, expansion: str) -> str | None:
         return "cursor"
     if name_l.startswith(("grok-", "grok_")) or re.search(r"\bgrok\b", name_l):
         return "grok"
+    if name_l.startswith(("aider-", "aider_")) or re.search(r"\baider\b", name_l):
+        return "aider"
+    if name_l.startswith(("opencode-", "opencode_")) or re.search(r"\bopencode\b", name_l):
+        return "opencode"
+    if name_l.startswith(("goose-", "goose_")) or re.search(r"\bgoose\b", name_l):
+        return "goose"
     if re.search(r"(?:^|\s|/)codex(?:\s|$)", exp_l):
         return "codex"
     if re.search(r"(?:^|\s|/)claude(?:\s|$)", exp_l):
@@ -219,6 +252,12 @@ def classify_agent_family(name: str, expansion: str) -> str | None:
         return "cursor"
     if re.search(r"(?:^|\s|/)grok(?:\s|$)", exp_l):
         return "grok"
+    if re.search(r"(?:^|\s|/)aider(?:\s|$)", exp_l):
+        return "aider"
+    if re.search(r"(?:^|\s|/)opencode(?:\s|$)", exp_l):
+        return "opencode"
+    if re.search(r"(?:^|\s|/)goose(?:\s|$)", exp_l):
+        return "goose"
     return None
 
 
@@ -309,8 +348,49 @@ def _registry_path() -> Path:
     return get_rdc_home() / "agent_providers.json"
 
 
+def _dropin_wrappers_dir() -> Path:
+    return get_rdc_home() / "wrappers.d"
+
+
 def _legacy_policy_path() -> Path:
     return get_rdc_home() / "agent_provider_policy.json"
+
+
+def _load_dropin_wrappers() -> dict[str, AgentWrapperSpec]:
+    """Load drop-in wrapper manifests from ~/.rdc/wrappers.d/*.json."""
+    d = _dropin_wrappers_dir()
+    if not d.is_dir():
+        return {}
+    found: dict[str, AgentWrapperSpec] = {}
+    for p in sorted(d.glob("*.json")):
+        try:
+            raw = json.loads(p.read_text(errors="replace"))
+            if not isinstance(raw, dict):
+                continue
+            wid = str(raw.get("id") or p.stem).strip()
+            if not wid or wid.lower() == "gemini":
+                continue
+            raw["id"] = wid
+            raw.setdefault("label", wid)
+            raw.setdefault("source", "dropin")
+            found[wid] = AgentWrapperSpec(**raw)
+        except Exception:
+            continue
+    return found
+
+
+def register_dropin_wrapper(spec: AgentWrapperSpec) -> Path:
+    """Write a wrapper self-registration manifest to ~/.rdc/wrappers.d/<id>.json."""
+    if spec.id.lower() == "gemini":
+        raise ValueError("gemini CLI wrapper is deprecated and cannot be registered")
+    d = _dropin_wrappers_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", spec.id.strip())
+    path = d / f"{safe_id}.json"
+    payload = spec.model_dump()
+    payload["source"] = "dropin"
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return path
 
 
 def _load_registry_store() -> dict[str, Any]:
@@ -354,11 +434,11 @@ def _save_registry_store(store: dict[str, Any]) -> None:
 
 
 def list_registered_wrappers(*, include_disabled: bool = False) -> list[AgentWrapperSpec]:
-    """Return all registered wrappers (discovered aliases + custom wrappers + builtins)."""
+    """Return all registered wrappers (discovered aliases + drop-in manifests + custom wrappers + builtins)."""
     store = _load_registry_store()
     disabled_ids = set(store.get("disabled_ids") or [])
     custom_raw = store.get("custom_wrappers") or []
-    custom_by_id: dict[str, AgentWrapperSpec] = {}
+    custom_by_id: dict[str, AgentWrapperSpec] = _load_dropin_wrappers()
     for item in custom_raw:
         if not isinstance(item, dict) or not item.get("id"):
             continue
@@ -371,10 +451,13 @@ def list_registered_wrappers(*, include_disabled: bool = False) -> list[AgentWra
             continue
 
     family_meta = {
-        "codex": ("Codex CLI", "codex", ["login", "status"], "O", "OPENAI_API_KEY"),
-        "claude": ("Claude Code", "claude", ["auth", "status"], "A", "ANTHROPIC_API_KEY"),
-        "cursor": ("Cursor Agent", "cursor-agent", ["about"], "C", "CURSOR_API_KEY"),
-        "grok": ("Grok CLI", "grok", ["--version"], "G", "XAI_API_KEY"),
+        "codex": ("Codex CLI", "codex", ["login", "status"], "O", "OPENAI_API_KEY", "openai", "gpt-5.2-codex", "cloud"),
+        "claude": ("Claude Code", "claude", ["auth", "status"], "A", "ANTHROPIC_API_KEY", "anthropic", "claude-sonnet-4-5", "cloud"),
+        "cursor": ("Cursor Agent", "cursor-agent", ["about"], "C", "CURSOR_API_KEY", "cursor", "auto", "cloud"),
+        "grok": ("Grok CLI", "grok", ["--version"], "G", "XAI_API_KEY", "xai", "grok-code-fast-1", "cloud"),
+        "aider": ("Aider", "aider", ["--version"], "Ai", None, "ollama", "qwen3-coder", "local"),
+        "opencode": ("OpenCode", "opencode", ["--version"], "OC", None, "openrouter", "qwen3-coder", "hybrid"),
+        "goose": ("Goose Agent", "goose", ["--version"], "Gs", None, "ollama", "qwen3-coder", "local"),
     }
 
     specs: list[AgentWrapperSpec] = []
@@ -384,8 +467,8 @@ def list_registered_wrappers(*, include_disabled: bool = False) -> list[AgentWra
     aliases = discover_agent_aliases()
     for alias_id, info in sorted(aliases.items()):
         fam = info["family"]
-        base_label, base_bin, auth_args, icon, env_key = family_meta.get(
-            fam, (fam.title(), fam, ["--version"], "•", None)
+        base_label, base_bin, auth_args, icon, env_key, mod_prov, def_mod, hosting = family_meta.get(
+            fam, (fam.title(), fam, ["--version"], "•", None, "vendor", None, "cloud")
         )
         setup_cmd = f"{alias_id} auth login" if fam == "claude" else f"{alias_id} login"
         resume_cmd = (
@@ -405,6 +488,10 @@ def list_registered_wrappers(*, include_disabled: bool = False) -> list[AgentWra
                 enabled=alias_id not in disabled_ids,
                 builtin=False,
                 source="alias",
+                model_provider=mod_prov,
+                default_model=def_mod,
+                model_tier="coding",
+                hosting=hosting,
                 executable=base_bin,
                 auth_check_args=auth_args,
                 setup_command=setup_cmd,
@@ -429,7 +516,7 @@ def list_registered_wrappers(*, include_disabled: bool = False) -> list[AgentWra
             specs.append(spec)
         seen_ids.add(builtin.id)
 
-    # 3. User-added custom wrappers (e.g., grok, aider, goose, custom scripts)
+    # 3. User-added or drop-in self-registered wrappers (e.g., grok, aider, opencode, goose, custom scripts)
     for wid, spec in custom_by_id.items():
         if wid in seen_ids:
             continue
@@ -452,7 +539,7 @@ def upsert_wrapper_spec(spec: AgentWrapperSpec) -> AgentWrapperSpec:
         if isinstance(item, dict) and item.get("id") != spec.id
     ]
     payload = spec.model_dump()
-    if spec.source not in {"builtin", "alias"}:
+    if spec.source not in {"builtin", "alias", "dropin"}:
         payload["source"] = "custom"
     custom_list.append(payload)
     store["custom_wrappers"] = custom_list
@@ -467,7 +554,7 @@ def upsert_wrapper_spec(spec: AgentWrapperSpec) -> AgentWrapperSpec:
 
 
 def remove_wrapper_spec(wrapper_id: str) -> bool:
-    """Remove a custom wrapper or disable a builtin/alias wrapper."""
+    """Remove a custom/drop-in wrapper or disable a builtin/alias wrapper."""
     store = _load_registry_store()
     before = len(store.get("custom_wrappers") or [])
     store["custom_wrappers"] = [
@@ -475,6 +562,14 @@ def remove_wrapper_spec(wrapper_id: str) -> bool:
         if isinstance(item, dict) and item.get("id") != wrapper_id
     ]
     after = len(store["custom_wrappers"])
+    dropin_file = _dropin_wrappers_dir() / f"{wrapper_id}.json"
+    removed_dropin = False
+    if dropin_file.exists():
+        try:
+            dropin_file.unlink()
+            removed_dropin = True
+        except OSError:
+            pass
     builtin_or_alias = wrapper_id in {b.id for b in _BUILTIN_SPECS} or wrapper_id in discover_agent_aliases()
     if builtin_or_alias:
         disabled = set(store.get("disabled_ids") or [])
@@ -482,7 +577,7 @@ def remove_wrapper_spec(wrapper_id: str) -> bool:
         store["disabled_ids"] = sorted(disabled)
         _save_registry_store(store)
         return True
-    if after < before:
+    if after < before or removed_dropin:
         _save_registry_store(store)
         return True
     return False
@@ -704,6 +799,26 @@ def build_agent_command(
         run_call = f"{wrap_alias_invocation(alias_info, base_exe, f'-p {prompt}')} > \"$rdc_final\""
         inner = _wrap_final_capture("grok", run_call)
 
+    elif driver == "aider":
+        base_exe = spec.executable or "aider"
+        model_arg = f"--model {shlex.quote(spec.default_model)} " if spec.default_model else ""
+        run_args = f"--yes-always {model_arg}--message {prompt}"
+        run_call = f"{wrap_alias_invocation(alias_info, base_exe, run_args)} > \"$rdc_final\""
+        inner = _wrap_final_capture("aider", run_call)
+
+    elif driver == "opencode":
+        base_exe = spec.executable or "opencode"
+        model_arg = f"-m {shlex.quote(spec.default_model)} " if spec.default_model else ""
+        run_args = f"run {model_arg}{prompt}"
+        run_call = f"{wrap_alias_invocation(alias_info, base_exe, run_args)} > \"$rdc_final\""
+        inner = _wrap_final_capture("opencode", run_call)
+
+    elif driver == "goose":
+        base_exe = spec.executable or "goose"
+        run_args = f"run --text {prompt}"
+        run_call = f"{wrap_alias_invocation(alias_info, base_exe, run_args)} > \"$rdc_final\""
+        inner = _wrap_final_capture("goose", run_call)
+
     elif driver == "generic":
         base_exe = spec.executable or spec.terminal_command or provider
         run_call = f"{wrap_alias_invocation(alias_info, base_exe, prompt)} > \"$rdc_final\""
@@ -712,7 +827,19 @@ def build_agent_command(
     else:
         raise ValueError(f"Unsupported session provider: {provider}")
 
-    return f"trap 'echo __RDC_EXIT:$?' EXIT; {inner}"
+    # Inject non-secret environment overrides (e.g., OPENAI_BASE_URL, ANTHROPIC_BASE_URL, OLLAMA_HOST)
+    env_parts: list[str] = []
+    if spec.api_base_url:
+        if driver == "claude":
+            env_parts.append(f"ANTHROPIC_BASE_URL={shlex.quote(spec.api_base_url)}")
+        else:
+            env_parts.append(f"OPENAI_BASE_URL={shlex.quote(spec.api_base_url)}")
+    for k, v in (spec.env_overrides or {}).items():
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(k)):
+            env_parts.append(f"{k}={shlex.quote(str(v))}")
+    env_prefix = f"export {' '.join(env_parts)}; " if env_parts else ""
+
+    return f"trap 'echo __RDC_EXIT:$?' EXIT; {env_prefix}{inner}"
 
 
 def check_provider_blocker(
@@ -808,6 +935,11 @@ def list_provider_readiness(
             "source": spec.source,
             "icon": spec.icon,
             "description": spec.description,
+            "model_provider": spec.model_provider,
+            "default_model": spec.default_model,
+            "model_tier": spec.model_tier,
+            "hosting": spec.hosting,
+            "api_base_url": spec.api_base_url,
             "installed": installed,
             "ready": blocker is None,
             "status": "ready" if blocker is None else ("needs_auth" if installed else "not_installed"),
@@ -911,3 +1043,229 @@ def resolve_interactive_terminal_command(
         return f"{base_cmd} {tail}".strip()
 
     return f"{head} {tail}".strip()
+
+
+# ---------------------------------------------------------------------------
+# Model Providers, Open-Source / Self-Hosted Discovery & Tier Matrix
+# ---------------------------------------------------------------------------
+
+def infer_model_tier(model_name: str) -> str:
+    """Infer the appropriate cognitive tier ('decision', 'fast', 'coding', 'reasoning') for a model."""
+    m = model_name.lower()
+    if any(k in m for k in ("jev", "laya", "openjev", "guard", "classifier")):
+        return "decision"
+    if any(k in m for k in ("r1", "qwq", "opus", "o1", "o3", "reason", "thinking", "pro")):
+        return "reasoning"
+    if any(k in m for k in ("coder", "codex", "sonnet", "deepseek-v3", "devstral", "starcoder", "codellama")):
+        return "coding"
+    return "fast"
+
+
+def discover_local_ollama_models(run_fn: Callable[..., Any] = subprocess.run) -> list[dict[str, Any]]:
+    """Return locally pulled open-source models from Ollama (`ollama list`)."""
+    if not shutil.which("ollama"):
+        return []
+    try:
+        res = run_fn(
+            ["ollama", "list"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+        if res.returncode != 0:
+            return []
+        lines = [line.strip() for line in (res.stdout or "").splitlines() if line.strip()]
+        models: list[dict[str, Any]] = []
+        for line in lines[1:]:
+            parts = line.split()
+            if not parts:
+                continue
+            name = parts[0]
+            models.append({
+                "id": f"ollama/{name}",
+                "name": name,
+                "provider": "ollama",
+                "hosting": "local",
+                "tier": infer_model_tier(name),
+            })
+        return models
+    except Exception:
+        return []
+
+
+def discover_model_providers() -> list[dict[str, Any]]:
+    """Return cloud, open-source local, and self-hosted inference providers & their readiness."""
+    from .vault import get_secret
+
+    ollama_installed = shutil.which("ollama") is not None
+    ollama_models = discover_local_ollama_models() if ollama_installed else []
+    store = _load_registry_store()
+    custom_endpoints = store.get("model_endpoints") or []
+
+    has_openrouter = bool(get_secret("OPENROUTER_API_KEY") or os.environ.get("OPENROUTER_API_KEY"))
+    has_openai = bool(get_secret("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+    has_anthropic = bool(get_secret("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
+    has_xai = bool(get_secret("XAI_API_KEY") or os.environ.get("XAI_API_KEY"))
+    decision_url = os.environ.get("RDC_DECISION_API_URL", "").strip()
+
+    providers: list[dict[str, Any]] = [
+        {
+            "id": "ollama",
+            "label": "Ollama (Local Open-Source)",
+            "hosting": "local",
+            "base_url": "http://localhost:11434/v1",
+            "ready": ollama_installed,
+            "models": ollama_models,
+            "recommended_models": ["qwen3-coder:32b", "qwen3.5:8b", "deepseek-r1:32b", "gemma4"],
+            "description": "Zero-cost, private local open-weight models on HomeBase.",
+        },
+        {
+            "id": "self_hosted",
+            "label": "Self-Hosted vLLM / MLX / Laya",
+            "hosting": "self_hosted",
+            "base_url": decision_url or (custom_endpoints[0].get("base_url") if custom_endpoints else "http://localhost:8000/v1"),
+            "ready": bool(decision_url or custom_endpoints),
+            "models": custom_endpoints,
+            "recommended_models": ["OpenJev-9B", "convaiinnovations/laya", "Qwen/Qwen3-Coder-32B-Instruct", "deepseek-ai/DeepSeek-R1"],
+            "description": "OpenAI-compatible or Jev-compatible inference servers on LAN / Tailscale / Apple Silicon MLX.",
+        },
+        {
+            "id": "typesafe_jev",
+            "label": "TypeSafe Jev / Decision API",
+            "hosting": "hybrid",
+            "base_url": decision_url or "https://openrouter.ai/api/alpha/decisions",
+            "ready": True,  # Always ready via calibrated local System 1 + optional remote Jev
+            "models": [{"id": "typesafe/jev-1.14", "tier": "decision"}, {"id": "rdc-jev-calibrated-v1", "tier": "decision"}],
+            "recommended_models": ["typesafe/jev-1.14", "openjev-latest", "rdc-jev-calibrated-v1"],
+            "description": "System 1 structured probabilistic decisions (Choice, Score, Noul) in <50ms.",
+        },
+        {
+            "id": "openrouter",
+            "label": "OpenRouter (Multi-Provider Cloud)",
+            "hosting": "cloud",
+            "base_url": "https://openrouter.ai/api/v1",
+            "ready": has_openrouter,
+            "models": [],
+            "recommended_models": ["anthropic/claude-sonnet-4", "google/gemini-2.5-flash", "deepseek/deepseek-chat-v3", "typesafe/jev-1.14"],
+            "description": "Unified gateway to frontier cloud and open-weight models.",
+        },
+        {
+            "id": "openai",
+            "label": "OpenAI",
+            "hosting": "cloud",
+            "base_url": "https://api.openai.com/v1",
+            "ready": has_openai or shutil.which("codex") is not None,
+            "models": [],
+            "recommended_models": ["gpt-5.2-codex", "gpt-5.4", "gpt-4o-mini"],
+            "description": "Powers Codex CLI and direct OpenAI reasoning/coding models.",
+        },
+        {
+            "id": "anthropic",
+            "label": "Anthropic",
+            "hosting": "cloud",
+            "base_url": "https://api.anthropic.com/v1",
+            "ready": has_anthropic or shutil.which("claude") is not None,
+            "models": [],
+            "recommended_models": ["claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"],
+            "description": "Powers Claude Code and high-trust multi-file engineering.",
+        },
+        {
+            "id": "xai",
+            "label": "xAI (Grok)",
+            "hosting": "cloud",
+            "base_url": "https://api.x.ai/v1",
+            "ready": has_xai or shutil.which("grok") is not None,
+            "models": [],
+            "recommended_models": ["grok-code-fast-1", "grok-4"],
+            "description": "Powers Grok CLI and fast code synthesis.",
+        },
+    ]
+    return providers
+
+
+def get_model_tier_matrix() -> list[dict[str, Any]]:
+    """Return the 4-tier cognitive routing matrix mapping task types to cloud & open-source models."""
+    return [
+        {
+            "tier": "decision",
+            "label": "Tier 0 · System 1 Decision Engine",
+            "purpose": "Sub-50ms typed probabilistic decisions (Choice, Score, Noul): command risk gating, session blocker triage, intent routing, memory worthiness.",
+            "cloud_models": ["typesafe/jev-1.14 (OpenRouter Decisions API)"],
+            "open_source_models": ["OpenJev-9B", "convaiinnovations/laya (ONNX/MLX)", "rdc-jev-calibrated-v1 (Built-in)"],
+        },
+        {
+            "tier": "fast",
+            "label": "Tier 1 · Fast Utility & Chief-of-Staff Chat",
+            "purpose": "Low-latency workstream briefs, quick Q&A, knowledge extraction, and command translation.",
+            "cloud_models": ["claude-haiku-4-5", "gemini-2.5-flash", "gpt-4o-mini"],
+            "open_source_models": ["ollama/qwen3.5:8b", "ollama/gemma4", "ollama/llama3.2:3b"],
+        },
+        {
+            "tier": "coding",
+            "label": "Tier 2 · Supervised Coding & Implementation",
+            "purpose": "Multi-file feature implementation, test writing, bug fixing, and refactoring in supervised sessions.",
+            "cloud_models": ["gpt-5.2-codex (Codex CLI)", "claude-sonnet-4-5 (Claude Code)", "grok-code-fast-1"],
+            "open_source_models": ["ollama/qwen3-coder:32b (via Aider / Codex --oss / OpenCode)", "deepseek-v3", "devstral-small"],
+        },
+        {
+            "tier": "reasoning",
+            "label": "Tier 3 · Deep Architecture & Root-Cause Review",
+            "purpose": "Complex system architecture, subtle race-condition debugging, security threat modeling, and ambiguity resolution.",
+            "cloud_models": ["claude-opus-4-5", "gpt-5.4-pro / o3"],
+            "open_source_models": ["ollama/deepseek-r1:32b", "ollama/qwq:32b"],
+        },
+    ]
+
+
+def get_wrapper_self_registration_instructions(server_url: str = "http://127.0.0.1:8420") -> dict[str, Any]:
+    """Return self-registration instructions, schema, CLI command, drop-in path, and copyable agent prompt."""
+    dropin_dir = str(_dropin_wrappers_dir())
+    example_manifest = {
+        "id": "aider-qwen-local",
+        "label": "Aider (Local Qwen3-Coder)",
+        "driver": "aider",
+        "icon": "Ai",
+        "description": "Self-hosted open-source coding agent via local Ollama",
+        "model_provider": "ollama",
+        "default_model": "ollama_chat/qwen3-coder:32b",
+        "model_tier": "coding",
+        "hosting": "local",
+        "api_base_url": "http://localhost:11434/v1",
+        "executable": "aider",
+        "auth_check_args": ["--version"],
+        "setup_command": "ollama pull qwen3-coder:32b",
+        "supports_sessions": True,
+        "show_in_terminal_menu": True,
+        "terminal_command": "aider --model ollama_chat/qwen3-coder:32b",
+        "session_command_template": "aider --yes-always --model ollama_chat/qwen3-coder:32b --message {prompt}",
+    }
+
+    agent_prompt = (
+        "Register yourself (or the requested model wrapper) as an available agent provider in Remote Dev Control (RDC).\n"
+        "You can self-register using ANY of these 3 methods:\n\n"
+        "Method 1 (MCP Tool — if connected to `remote-dev-ctrl` MCP server):\n"
+        "  Call the `register_agent_wrapper` MCP tool with your wrapper metadata (id, label, driver, model_provider, default_model, model_tier, hosting, executable, terminal_command, session_command_template).\n\n"
+        f"Method 2 (Drop-in JSON Manifest — zero dependencies, works offline):\n"
+        f"  Write a JSON file to `{dropin_dir}/<your-wrapper-id>.json` matching this schema:\n"
+        f"  {json.dumps(example_manifest, indent=2)}\n\n"
+        "Method 3 (RDC CLI):\n"
+        "  Run: `rdc wrapper register <id> --label \"<Label>\" --driver <codex|claude|cursor|grok|aider|opencode|goose|generic> "
+        "--model-provider <openai|anthropic|openrouter|ollama|vllm> --model <model-name> --hosting <cloud|local|self_hosted> "
+        "--executable <binary> --terminal-cmd \"<cmd>\" --session-cmd \"<cmd with {prompt}>\"`"
+    )
+
+    return {
+        "dropin_directory": dropin_dir,
+        "registry_file": str(_registry_path()),
+        "mcp_tool": "register_agent_wrapper",
+        "cli_command": (
+            "rdc wrapper register <id> --label '<Label>' --driver <driver> "
+            "--model-provider <provider> --model <model> --hosting <cloud|local|self_hosted>"
+        ),
+        "http_endpoint": f"PUT {server_url}/settings/agent-providers/wrappers/{{wrapper_id}}",
+        "example_manifest": example_manifest,
+        "agent_prompt": agent_prompt,
+    }
+

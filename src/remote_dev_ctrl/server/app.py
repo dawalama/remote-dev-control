@@ -9210,6 +9210,12 @@ class UpsertAgentWrapperRequest(BaseModel):
     icon: str = "•"
     description: str = ""
     enabled: bool = True
+    model_provider: str = "vendor"
+    default_model: str | None = None
+    model_tier: str = "coding"
+    hosting: str = "cloud"
+    api_base_url: str | None = None
+    env_overrides: dict[str, str] = Field(default_factory=dict)
     executable: str | None = None
     auth_check_args: list[str] = Field(default_factory=list)
     setup_command: str | None = None
@@ -9220,6 +9226,45 @@ class UpsertAgentWrapperRequest(BaseModel):
     show_in_terminal_menu: bool = True
     terminal_command: str = ""
     terminal_resume_command: str | None = None
+
+
+@app.get("/settings/agent-providers/instructions")
+async def get_agent_wrapper_instructions():
+    """Return self-registration prompt, schema, CLI command, and drop-in folder for wrappers."""
+    from .agent_registry import get_wrapper_self_registration_instructions
+
+    return get_wrapper_self_registration_instructions()
+
+
+@app.get("/settings/model-providers")
+async def get_model_providers_catalog():
+    """Return cloud, local open-source (Ollama), and self-hosted model endpoints & cognitive tiers."""
+    from .agent_registry import discover_model_providers, get_model_tier_matrix
+
+    providers = await asyncio.to_thread(discover_model_providers)
+    tiers = get_model_tier_matrix()
+    return {"providers": providers, "tiers": tiers}
+
+
+class DecisionEvaluationRequest(BaseModel):
+    state: Any
+    questions: dict[str, Any]
+    model: str | None = None
+    prefer_local: bool = False
+
+
+@app.post("/decision/evaluate")
+async def post_evaluate_decision(body: DecisionEvaluationRequest):
+    """Run System 1 Decision Engine (Choice, Score, Noul) in sub-50ms."""
+    from .decision import get_decision_engine
+
+    res = get_decision_engine().evaluate(
+        state=body.state,
+        questions=body.questions,
+        model=body.model,
+        prefer_local=body.prefer_local,
+    )
+    return res.model_dump()
 
 
 @app.put("/settings/agent-providers/wrappers/{wrapper_id}")
@@ -10113,6 +10158,29 @@ async def get_session_git_status(session_id: str):
         })
     project_record = get_project_repo().get(session.project)
     verif_cmd = ((project_record.config or {}).get("profile", {}) if project_record else {}).get("test_command")
+
+    db = sm._db()
+    evidence_rows = db.execute(
+        "SELECT evidence_type, data FROM session_evidence WHERE session_id = ?", (session_id,)
+    ).fetchall()
+    has_git_ev = any(row["evidence_type"] == "git" for row in evidence_rows)
+    has_verif_ev = any(
+        row["evidence_type"] == "verification" and json.loads(row["data"] or "{}").get("exit_code") == 0
+        for row in evidence_rows
+    )
+
+    from .decision import evaluate_session_triage
+    triage = evaluate_session_triage(
+        goal=session.goal or session.description or "",
+        status=session.status.value,
+        output_summary=session.output_summary,
+        dirty=dirty,
+        has_remote=bool(repo_state.get("has_remote")),
+        has_git_evidence=has_git_ev,
+        has_verification_evidence=has_verif_ev,
+        verification_command=verif_cmd,
+    )
+
     if verif_cmd:
         suggested_steps.append({
             "id": "run_verify",
@@ -10139,6 +10207,7 @@ async def get_session_git_status(session_id: str):
         **repo_state,
         "suggested_commit_message": _default_commit_message_for_session(session),
         "detected_blocker": detected_blocker,
+        "decision_triage": triage.get("results"),
         "suggested_next_steps": suggested_steps,
     }
 
