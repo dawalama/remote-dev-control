@@ -105,6 +105,13 @@ def test_session_task_id_and_parent_chain():
     project_repo = get_project_repo()
     test_proj = project_repo.create(Project(name="test-multi-run-proj", path="/tmp/test-proj"))
 
+    from remote_dev_ctrl.server.session_manager import get_session_manager
+    get_session_manager()._db().execute(
+        "INSERT OR IGNORE INTO channels (id, name, type) VALUES (?, ?, ?)",
+        ("ch-test-chain", "Test Chain", "project"),
+    )
+    get_session_manager()._db().commit()
+
     try:
         # Run 1: Initial attempt on task-101
         sess1 = create_supervised_session(

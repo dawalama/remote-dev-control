@@ -521,5 +521,63 @@ def test_hyphenated_function_alias_invocation_and_shell_execution():
     assert "not a valid identifier" not in res.stderr
 
 
+def test_start_supervised_session_does_not_switch_to_ready_family_alias(monkeypatch):
+    import uuid
+    from remote_dev_ctrl.server.db.models import Project
+    from remote_dev_ctrl.server.db.repositories import get_project_repo
+    from remote_dev_ctrl.server.supervised_sessions import (
+        create_supervised_session,
+        start_supervised_session,
+    )
+
+    sm = get_session_manager()
+    db = sm._db()
+    cid = f"ws-alias-test-{uuid.uuid4().hex[:6]}"
+    db.execute(
+        "INSERT OR IGNORE INTO channels (id, name, type) VALUES (?, ?, ?)",
+        (cid, "No Alias Switch", "project"),
+    )
+    db.commit()
+
+    pname = f"proj-{uuid.uuid4().hex[:6]}"
+    get_project_repo().create(Project(name=pname, path=f"/tmp/{pname}"))
+
+    session = create_supervised_session(
+        channel_id=cid,
+        project=pname,
+        goal="Do not switch to alias",
+        provider="codex",
+    )
+    assert session.agent_provider == "codex"
+
+    # Mock discover_agent_aliases to provide a ready alias in the codex family
+    monkeypatch.setattr(
+        "remote_dev_ctrl.server.session_manager.discover_agent_aliases",
+        lambda: {"codex-quill": {"family": "codex", "kind": "alias"}},
+    )
+
+    # Block 'codex', but allow 'codex-quill'
+    def mock_blocker(provider: str):
+        if provider == "codex":
+            return "codex CLI not found in PATH"
+        return None
+
+    monkeypatch.setattr(
+        "remote_dev_ctrl.server.supervised_sessions.agent_provider_blocker",
+        mock_blocker,
+    )
+
+    # Starting session must fail with 'codex CLI not found in PATH' and NOT switch to 'codex-quill'
+    with pytest.raises(RuntimeError, match="codex CLI not found in PATH"):
+        start_supervised_session(session.id)
+
+    fresh = sm.get(session.id)
+    assert fresh is not None
+    assert fresh.agent_provider == "codex"
+    assert fresh.status == SessionStatus.FAILED
+    assert "codex CLI not found in PATH" in (fresh.output_summary or "")
+
+
+
 
 

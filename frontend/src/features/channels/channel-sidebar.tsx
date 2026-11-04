@@ -21,12 +21,6 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
   const currentCollection = useProjectStore((s) => s.currentCollection)
   const selectCollection = useProjectStore((s) => s.selectCollection)
 
-  // Sync client focus with UI store
-  const focusMode = useUIStore((s) => s.sessionsHubFocusMode)
-  const setFocusMode = useUIStore((s) => s.setSessionsHubFocusMode)
-  const selectedClientId = useUIStore((s) => s.sessionsHubSelectedClient)
-  const setSelectedClientId = useUIStore((s) => s.setSessionsHubSelectedClient)
-
   // Activity state from server
   const terminals = useStateStore((s) => s.terminals)
   const actions = useStateStore((s) => s.actions)
@@ -70,51 +64,39 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
   const filteredChannels = useMemo(() => {
     let result = channels
 
-    // Active filter — shows all active workstreams across collections
+    // Active filter — shows active workstreams across collections; system channel always stays visible
     if (filterMode === "active") {
-      return result.filter((ch) => {
-        if (ch.type === "system") return false
+      result = result.filter((ch) => {
+        if (ch.type === "system") return true
         return isChannelActive(ch, activeProjectNames)
       })
     }
 
-    // Client focus narrowing:
-    // 1. If board is focused on client work only:
-    if (focusMode === "client_work") {
-      const clientCollIds = new Set(collections.filter((c) => c.role === "client").map((c) => c.id))
-      return result.filter((ch) => {
-        if (ch.type === "system") return true // system channels always visible
-        return ch.collection_ids.some((id) => clientCollIds.has(id))
-      })
-    }
-
-    // 2. Specific client selected (from board focus or sidebar collection picker):
-    const effectiveClientId = (focusMode === "this_client" && selectedClientId) ? selectedClientId : currentCollection
-    if (effectiveClientId) {
-      return result.filter((ch) => {
-        if (ch.type === "system") return true // system shows everywhere
-        if (ch.collection_ids.length === 0 && ch.project_ids.length === 0) return false // orphaned ephemeral
-        return ch.collection_ids.includes(effectiveClientId)
+    // Collection filter:
+    if (currentCollection) {
+      result = result.filter((ch) => {
+        if (ch.type === "system") return true
+        return ch.collection_id === currentCollection
       })
     }
 
     return result
-  }, [channels, filterMode, focusMode, selectedClientId, currentCollection, collections, activeProjectNames])
+  }, [channels, filterMode, currentCollection, activeProjectNames])
 
   const handleCreate = useCallback(async () => {
     if (!newName.trim()) return
     const projectIds = newProjectId ? [newProjectId] : []
     const type = projectIds.length > 0 ? "project" : "ephemeral"
-    const targetColl = newClientCollId || ((focusMode === "this_client" && selectedClientId) ? selectedClientId : (currentCollection || "general"))
+    const targetColl = newClientCollId || currentCollection || "general"
     await createChannel(newName.trim(), type, projectIds, targetColl)
     setNewName("")
     setNewProjectId("")
     setNewClientCollId("")
     setCreating(false)
-  }, [newName, newProjectId, newClientCollId, createChannel, focusMode, selectedClientId, currentCollection])
+  }, [newName, newProjectId, newClientCollId, createChannel, currentCollection])
 
   const grouped = groupMode === "project" ? groupByProject(filteredChannels) : null
-  const selectedDropdownValue = (focusMode === "this_client" && selectedClientId) ? selectedClientId : (currentCollection ?? "")
+  const selectedDropdownValue = currentCollection ?? ""
 
   return (
     <div className="flex flex-col h-full bg-gray-900 border-r border-gray-800 w-56 flex-shrink-0">
@@ -127,13 +109,6 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
             onChange={(e) => {
               const val = e.target.value || null
               selectCollection(val)
-              if (val) {
-                setSelectedClientId(val)
-                setFocusMode("this_client")
-              } else {
-                setSelectedClientId(null)
-                setFocusMode("all")
-              }
             }}
             className="flex-1 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none min-w-0"
           >

@@ -1,6 +1,8 @@
 import { useState } from "react"
 import { useUIStore } from "@/stores/ui-store"
 import { useChannelStore } from "@/stores/channel-store"
+import { useProjectStore } from "@/stores/project-store"
+import { briefWorkstreamFilter } from "@/stores/chat-scope-store"
 import { SessionsCard } from "./sessions-card"
 import { ProviderSetup } from "./provider-setup"
 import { ProjectBootstrap } from "./project-bootstrap"
@@ -27,7 +29,14 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
     setBriefing(true)
     setBriefText(null)
     try {
-      const brief = await GET<{ spoken_summary?: string }>("/homebase/brief")
+      const filter = briefWorkstreamFilter()
+      const currentCollection = useProjectStore.getState().currentCollection
+      const collectionId = !filter && activeChannelId === "ch-system" ? currentCollection : null
+      const params = new URLSearchParams()
+      if (filter) params.set("workstream_id", filter)
+      else if (collectionId) params.set("collection_id", collectionId)
+      const qs = params.toString() ? `?${params.toString()}` : ""
+      const brief = await GET<{ spoken_summary?: string }>(`/homebase/brief${qs}`)
       const text = brief.spoken_summary || "No brief available."
       setBriefText(text)
       toast(text.slice(0, 140), "info")

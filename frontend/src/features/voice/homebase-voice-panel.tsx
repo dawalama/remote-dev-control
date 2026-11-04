@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react"
 import { useUIStore } from "@/stores/ui-store"
 import { useChannelStore } from "@/stores/channel-store"
+import { useProjectStore } from "@/stores/project-store"
 import { briefWorkstreamFilter, orchestratorWorkstreamId } from "@/stores/chat-scope-store"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
 import { useVoice } from "@/hooks/use-voice"
@@ -120,7 +121,12 @@ export function HomeBaseVoicePanel() {
     setTtsPath(null)
     try {
       const filter = briefWorkstreamFilter()
-      const qs = filter ? `?workstream_id=${encodeURIComponent(filter)}` : ""
+      const currentCollection = useProjectStore.getState().currentCollection
+      const collectionId = !filter && useChannelStore.getState().activeChannelId === "ch-system" ? currentCollection : null
+      const params = new URLSearchParams()
+      if (filter) params.set("workstream_id", filter)
+      else if (collectionId) params.set("collection_id", collectionId)
+      const qs = params.toString() ? `?${params.toString()}` : ""
       const brief = await GET<{ spoken_summary?: string }>(`/homebase/brief${qs}`)
       const text = brief.spoken_summary || "No brief available."
       setLastReply(text)

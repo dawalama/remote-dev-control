@@ -68,6 +68,8 @@ class BriefInput:
     pending_approvals: list[PendingApproval] = field(default_factory=list)
     waiting_terminals: list[WaitingTerminal] = field(default_factory=list)
     workstream_id: Optional[str] = None
+    collection_id: Optional[str] = None
+    channel_collections: dict[str, str] = field(default_factory=dict)
     default_workstream_hint: Optional[str] = None
     generated_at: Optional[datetime] = None
 
@@ -111,6 +113,11 @@ def assemble_brief(data: BriefInput) -> dict[str, Any]:
     sessions = list(data.sessions)
     if data.workstream_id:
         sessions = [s for s in sessions if s.channel_id == data.workstream_id]
+    elif data.collection_id:
+        sessions = [
+            s for s in sessions
+            if (getattr(s, "collection_id", None) or data.channel_collections.get(s.channel_id)) == data.collection_id
+        ]
 
     approvals = sorted(
         data.pending_approvals,
@@ -167,8 +174,8 @@ def assemble_brief(data: BriefInput) -> dict[str, Any]:
 
     covered_sessions = {item["session_id"] for item in needs_you if item.get("session_id")}
     for term in data.waiting_terminals:
-        # A pinned brief has no workstream for a terminal that is not in a session.
-        if data.workstream_id and not term.session_id:
+        # A scoped brief has no workstream for a terminal that is not in a session.
+        if (data.workstream_id or data.collection_id) and not term.session_id:
             continue
         if term.session_id and term.session_id in covered_sessions:
             continue
@@ -224,8 +231,9 @@ def assemble_brief(data: BriefInput) -> dict[str, Any]:
 
     return {
         "homebase": {"label": "HomeBase"},
-        "scope": "workstream" if data.workstream_id else "homebase",
+        "scope": "workstream" if data.workstream_id else ("collection" if data.collection_id else "homebase"),
         "workstream_id": data.workstream_id,
+        "collection_id": data.collection_id,
         "generated_at": generated.isoformat(),
         "needs_you": needs_you,
         "active_sessions": active_payload,
@@ -379,6 +387,7 @@ def collect_waiting_terminals(
 def build_homebase_brief(
     *,
     workstream_id: Optional[str] = None,
+    collection_id: Optional[str] = None,
     session_manager=None,
     terminal_manager=None,
 ) -> dict[str, Any]:
@@ -389,6 +398,13 @@ def build_homebase_brief(
         session_manager = get_session_manager()
 
     sessions = session_manager.list_active()
+    channel_collections: dict[str, str] = {}
+    try:
+        c_rows = session_manager._db().execute("SELECT id, collection_id FROM channels").fetchall()
+        channel_collections = {r["id"]: r["collection_id"] for r in c_rows}
+    except Exception:
+        pass
+
     approvals = list_pending_approvals_from_db(
         session_manager._db(),
         session_ids={session.id for session in sessions},
@@ -407,9 +423,10 @@ def build_homebase_brief(
 
     default_hint = workstream_id
     if not default_hint and sessions:
-        # Prefer most recently updated session's workstream as idle hint fallback
-        newest = max(sessions, key=lambda s: s.updated_at or s.created_at)
-        default_hint = newest.channel_id
+        cand = [s for s in sessions if (getattr(s, "collection_id", None) or channel_collections.get(s.channel_id)) == collection_id] if collection_id else sessions
+        if cand:
+            newest = max(cand, key=lambda s: s.updated_at or s.created_at)
+            default_hint = newest.channel_id
 
     return assemble_brief(
         BriefInput(
@@ -417,6 +434,8 @@ def build_homebase_brief(
             pending_approvals=approvals,
             waiting_terminals=waiting,
             workstream_id=workstream_id,
+            collection_id=collection_id,
+            channel_collections=channel_collections,
             default_workstream_hint=default_hint,
         )
     )

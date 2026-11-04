@@ -12,22 +12,26 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
 
   const [collections, setCollections] = useState<Collection[]>([])
   const [allProjects, setAllProjects] = useState<Project[]>([])
+  const [agents, setAgents] = useState<Array<{ id: string; label: string; ready: boolean }>>([])
   const [expanded, setExpanded] = useState<string | null>(null)
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState("")
   const [newDesc, setNewDesc] = useState("")
   const [newRole, setNewRole] = useState<"unsorted" | "own" | "client">("unsorted")
+  const [newAgent, setNewAgent] = useState<string>("")
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
     setLoading(true)
     try {
-      const [colls, projs] = await Promise.all([
+      const [colls, projs, agentData] = await Promise.all([
         GET<Collection[]>("/collections"),
         GET<Project[]>("/projects"),
+        GET<{ providers: Array<{ id: string; label: string; ready: boolean }> }>("/settings/agent-providers").catch(() => null),
       ])
       setCollections(colls || [])
       setAllProjects(projs || [])
+      setAgents(agentData?.providers || [])
     } catch { /* */ }
     setLoading(false)
   }
@@ -43,10 +47,12 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
         name: newName.trim(),
         description: newDesc.trim() || null,
         role: newRole,
+        default_agent_id: newAgent.trim() || null,
       })
       setNewName("")
       setNewDesc("")
       setNewRole("unsorted")
+      setNewAgent("")
       setShowNew(false)
       await load()
       void loadCollections()
@@ -64,6 +70,17 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
       toast(`Updated role for "${c.name}"`, "success")
     } catch {
       toast("Failed to update role", "error")
+    }
+  }
+
+  const handleAgentChange = async (c: Collection, default_agent_id: string) => {
+    try {
+      await PATCH(`/collections/${c.id}`, { default_agent_id: default_agent_id || "" })
+      await load()
+      void loadCollections()
+      toast(`Updated default agent for "${c.name}"`, "success")
+    } catch {
+      toast("Failed to update default agent", "error")
     }
   }
 
@@ -153,6 +170,19 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
               <option value="client">Client</option>
               <option value="own">Company (own)</option>
             </select>
+            <select
+              value={newAgent}
+              onChange={(e) => setNewAgent(e.target.value)}
+              className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200 outline-none max-w-[130px] truncate"
+              title="Default agent"
+            >
+              <option value="">Machine default</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.label} {a.ready ? "✓" : "✗"}
+                </option>
+              ))}
+            </select>
             <button
               className="px-2.5 py-1 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white font-medium"
               onClick={handleCreate}
@@ -207,6 +237,20 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
                             <option value="own">Company (own)</option>
                           </select>
                         )}
+                        {/* Default agent selector */}
+                        <select
+                          value={c.default_agent_id || ""}
+                          onChange={(e) => handleAgentChange(c, e.target.value)}
+                          className="rounded border border-gray-600 bg-gray-900 px-1.5 py-0.5 text-[10px] text-gray-300 outline-none max-w-[110px] truncate"
+                          title="Default agent"
+                        >
+                          <option value="">Machine default</option>
+                          {agents.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.label} {a.ready ? "✓" : "✗"}
+                            </option>
+                          ))}
+                        </select>
                         {!isGeneral && (
                           <div className="flex gap-1">
                             <button

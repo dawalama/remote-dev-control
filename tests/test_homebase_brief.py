@@ -327,6 +327,47 @@ def test_brief_workstream_filter():
     assert brief["active_sessions"][0]["id"] == "s1"
 
 
+def test_brief_collection_filter_and_precedence():
+    now = datetime.now()
+    sessions = [
+        FakeSession(id="s1", channel_id="ws-sugar", goal="Sugarwork goal", created_at=now),
+        FakeSession(id="s2", channel_id="ws-quill", goal="Quill goal", created_at=now),
+        FakeSession(id="s3", channel_id="ws-other", goal="Other goal", created_at=now),
+    ]
+    channel_colls = {
+        "ws-sugar": "coll-sugar",
+        "ws-quill": "coll-quill",
+        "ws-other": "coll-other",
+    }
+    # 1. collection_id keeps sessions from other collections out
+    brief_coll = assemble_brief(
+        BriefInput(sessions=sessions, collection_id="coll-sugar", channel_collections=channel_colls)
+    )
+    assert brief_coll["scope"] == "collection"
+    assert len(brief_coll["active_sessions"]) == 1
+    assert brief_coll["active_sessions"][0]["id"] == "s1"
+
+    # 2. workstream_id still wins when both are set
+    brief_both = assemble_brief(
+        BriefInput(
+            sessions=sessions,
+            workstream_id="ws-quill",
+            collection_id="coll-sugar",
+            channel_collections=channel_colls,
+        )
+    )
+    assert brief_both["scope"] == "workstream"
+    assert len(brief_both["active_sessions"]) == 1
+    assert brief_both["active_sessions"][0]["id"] == "s2"
+
+    # 3. No arguments still returns every session
+    brief_none = assemble_brief(
+        BriefInput(sessions=sessions, channel_collections=channel_colls)
+    )
+    assert brief_none["scope"] == "homebase"
+    assert len(brief_none["active_sessions"]) == 3
+
+
 def test_brief_global_mentions_multiple_projects():
     now = datetime.now()
     sessions = [

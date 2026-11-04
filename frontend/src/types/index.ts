@@ -24,6 +24,7 @@ export interface Collection {
   description?: string
   sort_order?: number
   role?: "unsorted" | "own" | "client"
+  default_agent_id?: string | null
   projects?: string[]
   project_count?: number
 }

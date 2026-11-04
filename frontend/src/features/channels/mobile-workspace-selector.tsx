@@ -53,7 +53,7 @@ export function WorkspaceSelectorSheet({
       )
     } else if (currentCollection) {
       // Collection filter — only when not in active mode
-      result = result.filter((c) => c.collection_ids?.includes(currentCollection))
+      result = result.filter((c) => c.collection_id === currentCollection)
     }
 
     // Search filter

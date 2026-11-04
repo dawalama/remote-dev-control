@@ -109,9 +109,14 @@ function normalizeCommandText(input: string): string {
 }
 
 async function fetchHomebaseBrief(scopeWorkstreamId?: string | null): Promise<OrchestratorResult> {
-  // Default: whole HomeBase. Only filter when chat scope is pinned (or explicit arg).
   const filter = scopeWorkstreamId === undefined ? briefWorkstreamFilter() : scopeWorkstreamId
-  const qs = filter ? `?workstream_id=${encodeURIComponent(filter)}` : ""
+  const collectionId = !filter && useChannelStore.getState().activeChannelId === "ch-system"
+    ? useProjectStore.getState().currentCollection
+    : null
+  const params = new URLSearchParams()
+  if (filter) params.set("workstream_id", filter)
+  else if (collectionId) params.set("collection_id", collectionId)
+  const qs = params.toString() ? `?${params.toString()}` : ""
   try {
     const brief = await GET<{
       spoken_summary?: string
@@ -120,15 +125,16 @@ async function fetchHomebaseBrief(scopeWorkstreamId?: string | null): Promise<Or
       active_sessions?: unknown[]
       scope?: string
     }>(`/homebase/brief${qs}`)
-    const pinLabel = filter ? " (pinned workstream)" : " (all of HomeBase)"
+    const scopeLabel = filter ? " (workstream)" : collectionId ? " (client collection)" : " (all of HomeBase)"
     return {
-      response: (brief.spoken_summary || "HomeBase brief unavailable.") + (brief.spoken_summary ? "" : pinLabel),
+      response: (brief.spoken_summary || "HomeBase brief unavailable.") + (brief.spoken_summary ? "" : scopeLabel),
       actions: [
         {
           action: "brief_homebase",
           success: true,
-          scope: filter ? "pinned" : "homebase",
+          scope: filter ? "workstream" : collectionId ? "collection" : "homebase",
           workstream_id: filter || undefined,
+          collection_id: collectionId || undefined,
           recommended_next: brief.recommended_next,
           needs_you: brief.needs_you,
           active_sessions: brief.active_sessions,

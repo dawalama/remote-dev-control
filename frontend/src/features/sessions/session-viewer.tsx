@@ -27,6 +27,13 @@ interface SessionData {
   review_mode: "advisory" | "implementation"
   parent_session_id: string | null
   verification_command: string | null
+  followup_instructions?: Array<{ instruction: string; created_at?: string | null }>
+}
+
+interface SessionDiffFile {
+  path: string
+  status: string
+  patch: string
 }
 
 interface SessionEvidence { id: string; evidence_type: string; title: string; data: Record<string, unknown> }
@@ -123,6 +130,8 @@ export function SessionViewer({
   const [continuation, setContinuation] = useState<SessionData | null>(null)
   const [nextInstruction, setNextInstruction] = useState("")
   const [sendingInstruction, setSendingInstruction] = useState(false)
+  const [pinnedRun, setPinnedRun] = useState<number | null>(null)
+  const [runDiff, setRunDiff] = useState<SessionDiffFile[] | null>(null)
   const redrawRef = useRef<() => void>(() => {})
   const toast = useUIStore((s) => s.toast)
   const layout = useUIStore((s) => s.layout)
@@ -132,6 +141,7 @@ export function SessionViewer({
     void loadSupervision()
     void loadArtifact()
     void loadGitStatus()
+    void loadRunDiff()
     void GET<{ providers: Array<{ id: string; label: string; ready: boolean }> }>("/settings/agent-providers")
       .then((res) => {
         if (res?.providers?.length) {
@@ -148,9 +158,17 @@ export function SessionViewer({
       void loadGitStatus()
       void loadEvents()
       void loadLog()
+      void loadRunDiff()
     }, 5000)
     return () => window.clearInterval(interval)
   })
+
+  const loadRunDiff = async () => {
+    try {
+      const data = await GET<{ files: SessionDiffFile[] }>(`/sessions/${sessionId}/diff`)
+      setRunDiff(data?.files ?? [])
+    } catch { /* ignore */ }
+  }
 
   const loadArtifact = async () => {
     try {
@@ -404,6 +422,10 @@ export function SessionViewer({
   const criteriaResolved = criteria.every((criterion) => ["passed", "waived"].includes(criterion.status))
   const needsImplementationEvidence = session.review_mode === "implementation"
   const canComplete = criteriaResolved && (!needsImplementationEvidence || (hasGitEvidence && hasPassingVerification))
+  const followups = session.followup_instructions ?? []
+  const runCount = 1 + followups.length
+  const activeRun = pinnedRun == null ? runCount - 1 : Math.min(pinnedRun, runCount - 1)
+  const activeFollowup = activeRun > 0 ? followups[activeRun - 1] : null
   const canRestoreReview = session.status === "cancelled" && Boolean(session.output_summary)
   const runnableVerificationCommand = verificationCommand.trim() || session.verification_command
   const activeBlocker = session.blocker || gitStatus?.detected_blocker || null
@@ -768,12 +790,12 @@ export function SessionViewer({
 
           <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800">
             <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} artifact={artifact} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
-              loadEvents={loadEvents} loadLog={loadLog} compact />
+              loadEvents={loadEvents} loadLog={loadLog} compact activeRun={activeRun} runCount={runCount} activeFollowup={activeFollowup} runDiff={runDiff} onSelectRun={setPinnedRun} />
           </div>
         </>
       ) : (
         <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} artifact={artifact} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
-          loadEvents={loadEvents} loadLog={loadLog} />
+          loadEvents={loadEvents} loadLog={loadLog} activeRun={activeRun} runCount={runCount} activeFollowup={activeFollowup} runDiff={runDiff} onSelectRun={setPinnedRun} />
       )}
 
       {/* 5. Bottom Contextual Next Steps Dock (1-Click Chips + Compact Follow-up Input) */}
@@ -881,10 +903,40 @@ export function SessionViewer({
   )
 }
 
+function RunChanges({ instruction, files, compact }: { instruction: string; files: SessionDiffFile[] | null; compact?: boolean }) {
+  return (
+    <div className={`overflow-y-auto px-4 py-3 ${compact ? "max-h-36" : "flex-1 min-h-[420px]"}`}>
+      <div className="mb-3 text-sm text-gray-100">{instruction}</div>
+      {files == null ? (
+        <div className="text-xs text-gray-500">Loading the files from this run…</div>
+      ) : files.length === 0 ? (
+        <div className="text-xs text-gray-500">This run has no uncommitted changes.</div>
+      ) : (
+        <div className="space-y-2">
+          {files.map((file, index) => (
+            <details key={file.path} open={index < 4} className="rounded border border-gray-800 bg-gray-950">
+              <summary className="cursor-pointer px-3 py-2 text-xs text-gray-200">
+                <span className="font-mono">{file.path}</span>
+                <span className="ml-2 text-[10px] uppercase text-gray-500">{file.status}</span>
+              </summary>
+              {file.patch ? (
+                <pre className="max-h-80 overflow-auto border-t border-gray-800 px-3 py-2 text-[11px] leading-5 text-gray-300">{file.patch}</pre>
+              ) : (
+                <div className="border-t border-gray-800 px-3 py-2 text-[11px] text-gray-500">No text diff for this file.</div>
+              )}
+            </details>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Tabbed content (used both as compact strip and full view) ──
 
 function SessionTabs({
   sessionId, tab, setTab, artifact, events, log, session, evidence, loadSupervision, loadEvents, loadLog, compact,
+  activeRun = 0, runCount = 1, activeFollowup = null, runDiff = null, onSelectRun,
 }: {
   sessionId: string
   tab: "artifact" | "summary" | "timeline" | "log"
@@ -898,7 +950,13 @@ function SessionTabs({
   loadEvents: () => void
   loadLog: () => void
   compact?: boolean
+  activeRun?: number
+  runCount?: number
+  activeFollowup?: { instruction: string; created_at?: string | null } | null
+  runDiff?: SessionDiffFile[] | null
+  onSelectRun?: (index: number | null) => void
 }) {
+  const showingFollowup = activeRun > 0
   return (
     <div className={compact ? "" : "flex-1 flex flex-col min-h-0"}>
       {/* Tab bar */}
@@ -916,7 +974,7 @@ function SessionTabs({
             }`}
           >
             {t === "artifact"
-              ? "Proof Artifact"
+              ? (showingFollowup ? "This run" : "Proof Artifact")
               : t === "summary"
                 ? "Details & Evidence"
                 : t === "log"
@@ -924,17 +982,44 @@ function SessionTabs({
                   : "Timeline"}
           </button>
         ))}
-        {artifact?.source === "custom" && (
+        {artifact?.source === "custom" && !showingFollowup && (
           <span className="ml-auto rounded bg-purple-500/20 px-2 py-0.5 text-[10px] text-purple-300">
             Custom Agent Artifact
           </span>
+        )}
+        {runCount > 1 && onSelectRun && (
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              disabled={activeRun === 0}
+              onClick={() => onSelectRun(activeRun - 1)}
+              className="rounded border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-300 disabled:opacity-30"
+            >
+              Previous run
+            </button>
+            <span className="text-[10px] text-gray-400">Run {activeRun + 1} of {runCount}</span>
+            <button
+              type="button"
+              disabled={activeRun >= runCount - 1}
+              onClick={() => onSelectRun(activeRun + 1 >= runCount - 1 ? null : activeRun + 1)}
+              className="rounded border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-300 disabled:opacity-30"
+            >
+              Next run
+            </button>
+          </div>
         )}
       </div>
 
       {/* Content */}
       <div className={`overflow-y-auto ${tab === "artifact" && !compact ? "flex-1 min-h-0 flex flex-col" : `px-3 py-2 ${compact ? "max-h-36" : "flex-1 min-h-0"}`}`}>
         {tab === "artifact" && (
-          artifact?.html ? (
+          showingFollowup ? (
+            <RunChanges
+              instruction={activeFollowup?.instruction || "Follow-up run"}
+              files={runDiff}
+              compact={compact}
+            />
+          ) : artifact?.html ? (
             <iframe
               title={`Session ${sessionId} Proof Artifact`}
               sandbox="allow-scripts"

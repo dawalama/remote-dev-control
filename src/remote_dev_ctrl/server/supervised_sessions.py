@@ -128,7 +128,42 @@ def create_supervised_session(
 ) -> Session:
     """Create a durable supervised session with evidence/git baseline metadata."""
     if not resolve_project_id(project):
-        raise ValueError(f"Project not found: {project}")
+        raise LookupError(f"Project not found: {project}")
+
+    sm = get_session_manager()
+    db = sm._db()
+
+    # Channel constraints: channel must exist and not be system
+    ch_row = db.execute("SELECT id, type, collection_id FROM channels WHERE id = ?", (channel_id,)).fetchone()
+    if not ch_row:
+        raise LookupError(f"Channel not found: {channel_id}")
+    if ch_row["id"] == "ch-system" or ch_row["type"] == "system":
+        raise ValueError(f"Cannot create goals on system channel: {channel_id}")
+
+    # Channel-project constraints: if channel has linked projects, project must be one of them
+    cp_rows = db.execute(
+        "SELECT p.name, p.id FROM projects p JOIN channel_projects cp ON cp.project_id = p.id WHERE cp.channel_id = ?",
+        (channel_id,),
+    ).fetchall()
+    if cp_rows:
+        linked_names = {r["name"] for r in cp_rows} | {r["id"] for r in cp_rows}
+        if project not in linked_names:
+            raise ValueError(f"Project '{project}' is not linked to channel '{channel_id}'")
+
+    # Resolve concrete agent provider: explicit -> collection default -> preferred_provider
+    requested = (provider or "").strip()
+    if requested and requested != "orchestrated":
+        concrete_provider = requested
+    else:
+        coll_default = None
+        if ch_row["collection_id"]:
+            c_row = db.execute(
+                "SELECT default_agent_id FROM collections WHERE id = ?",
+                (ch_row["collection_id"],),
+            ).fetchone()
+            if c_row and c_row["default_agent_id"]:
+                coll_default = c_row["default_agent_id"].strip()
+        concrete_provider = coll_default or _load_agent_provider_policy().get("preferred_provider", "codex")
 
     metadata: dict[str, Any] = {
         "supervised": True,
@@ -140,12 +175,11 @@ def create_supervised_session(
 
     session_status = SessionStatus.PROPOSED if status == "proposed" else (SessionStatus(status) if status else SessionStatus.PENDING)
 
-    sm = get_session_manager()
     return sm.create_session(
         channel_id=channel_id,
         project=project,
         description=goal,
-        agent_provider=provider,
+        agent_provider=concrete_provider,
         task_id=task_id,
         metadata=metadata,
         acceptance_criteria=[item.strip() for item in (acceptance_criteria or []) if item.strip()],
@@ -216,23 +250,20 @@ def start_supervised_session(
         sm.log_event(s, "session.run_again" if previous in _RERUN_STATUSES else "session.continued", {})
 
     requested_provider = s.agent_provider or "orchestrated"
-    effective = (
-        _load_agent_provider_policy()["preferred_provider"]
-        if requested_provider == "orchestrated"
-        else requested_provider
-    )
-    provider_blocker = agent_provider_blocker(effective)
-    if provider_blocker and effective in {"claude", "codex", "cursor"}:
-        from .session_manager import discover_agent_aliases
+    if requested_provider in (None, "", "orchestrated"):
+        coll_default = None
+        ch_row = sm._db().execute("SELECT collection_id FROM channels WHERE id = ?", (s.channel_id,)).fetchone()
+        if ch_row and ch_row["collection_id"]:
+            c_row = sm._db().execute("SELECT default_agent_id FROM collections WHERE id = ?", (ch_row["collection_id"],)).fetchone()
+            if c_row and c_row["default_agent_id"]:
+                coll_default = c_row["default_agent_id"].strip()
+        effective = coll_default or _load_agent_provider_policy().get("preferred_provider", "codex")
+        s.agent_provider = effective
+        sm._persist(s)
+    else:
+        effective = requested_provider
 
-        same_family_aliases = [
-            alias_id
-            for alias_id, info in sorted(discover_agent_aliases().items())
-            if info.get("family") == effective and agent_provider_blocker(alias_id) is None
-        ]
-        if same_family_aliases:
-            effective = same_family_aliases[0]
-            provider_blocker = None
+    provider_blocker = agent_provider_blocker(effective)
     if provider_blocker:
         if requested_provider == "orchestrated":
             provider_blocker = (

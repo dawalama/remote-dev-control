@@ -233,27 +233,6 @@ async def lifespan(app: FastAPI):
             metadata={"name": info.name, "role": info.role.value},
         )
     
-    # Sync channel collections with project collections (fix drift)
-    try:
-        from .db.connection import get_db
-        db = get_db("rdc")
-        fixed = db.execute("""
-            UPDATE channels SET collection_id = (
-                SELECT p.collection_id FROM projects p
-                JOIN channel_projects cp ON cp.project_id = p.id
-                WHERE cp.channel_id = channels.id LIMIT 1
-            ) WHERE id IN (
-                SELECT cp.channel_id FROM channel_projects cp
-                JOIN projects p ON p.id = cp.project_id
-                WHERE p.collection_id != channels.collection_id
-            )
-        """).rowcount
-        if fixed:
-            db.commit()
-            logger.info("Synced %d channel collection_ids with projects", fixed)
-    except Exception:
-        logger.debug("Channel collection sync failed", exc_info=True)
-
     # Recover active sessions from previous server run
     try:
         from .session_manager import get_session_manager
@@ -8650,6 +8629,7 @@ async def list_collections():
             "description": c.description,
             "sort_order": c.sort_order,
             "role": getattr(c, "role", "unsorted") or "unsorted",
+            "default_agent_id": getattr(c, "default_agent_id", None),
             "project_count": counts.get(c.id, 0),
         }
         for c in collections
@@ -8660,6 +8640,7 @@ class CreateCollectionRequest(BaseModel):
     name: str
     description: str | None = None
     role: str = "unsorted"  # unsorted, own, client
+    default_agent_id: str | None = None
 
 
 @app.post("/collections")
@@ -8671,8 +8652,21 @@ async def create_collection(req: CreateCollectionRequest):
     if collection_repo.get(req.name):
         raise HTTPException(status_code=409, detail=f"Collection already exists: {req.name}")
     role = req.role if req.role in ("unsorted", "own", "client") else "unsorted"
-    coll = collection_repo.create(Collection(name=req.name, description=req.description, role=role))
-    return {"id": coll.id, "name": coll.name, "description": coll.description, "sort_order": coll.sort_order, "role": coll.role}
+    default_agent = req.default_agent_id.strip() if req.default_agent_id else None
+    if default_agent:
+        from .agent_registry import list_registered_wrappers
+        registered = {w.id for w in list_registered_wrappers(include_disabled=True)}
+        if default_agent not in registered:
+            raise HTTPException(status_code=422, detail=f"Agent wrapper '{default_agent}' not found in registry")
+    coll = collection_repo.create(Collection(name=req.name, description=req.description, role=role, default_agent_id=default_agent))
+    return {
+        "id": coll.id,
+        "name": coll.name,
+        "description": coll.description,
+        "sort_order": coll.sort_order,
+        "role": coll.role,
+        "default_agent_id": coll.default_agent_id,
+    }
 
 
 class UpdateCollectionRequest(BaseModel):
@@ -8680,6 +8674,7 @@ class UpdateCollectionRequest(BaseModel):
     description: str | None = None
     sort_order: int | None = None
     role: str | None = None  # unsorted, own, client
+    default_agent_id: str | None = None
 
 
 @app.patch("/collections/{collection_id}")
@@ -8701,8 +8696,25 @@ async def update_collection(collection_id: str, req: UpdateCollectionRequest):
             coll.role = "unsorted"
         elif req.role in ("unsorted", "own", "client"):
             coll.role = req.role
+    if req.default_agent_id is not None:
+        agent_id = req.default_agent_id.strip()
+        if not agent_id:
+            coll.default_agent_id = None
+        else:
+            from .agent_registry import list_registered_wrappers
+            registered = {w.id for w in list_registered_wrappers(include_disabled=True)}
+            if agent_id not in registered:
+                raise HTTPException(status_code=422, detail=f"Agent wrapper '{agent_id}' not found in registry")
+            coll.default_agent_id = agent_id
     coll = collection_repo.update(coll)
-    return {"id": coll.id, "name": coll.name, "description": coll.description, "sort_order": coll.sort_order, "role": coll.role}
+    return {
+        "id": coll.id,
+        "name": coll.name,
+        "description": coll.description,
+        "sort_order": coll.sort_order,
+        "role": coll.role,
+        "default_agent_id": coll.default_agent_id,
+    }
 
 
 @app.delete("/collections/{collection_id}")
@@ -9459,6 +9471,14 @@ def _session_response(session) -> dict:
         "review_mode": _session_review_mode(session),
         "parent_session_id": metadata.get("parent_session_id"),
         "verification_command": verification_command,
+        "followup_instructions": [
+            {
+                "instruction": str(item.get("instruction") or ""),
+                "created_at": item.get("created_at"),
+            }
+            for item in (metadata.get("followup_instructions") or [])
+            if isinstance(item, dict)
+        ],
     }
 
 
@@ -9671,8 +9691,10 @@ async def create_supervised_session(body: CreateSupervisedSessionRequest):
             task_id=body.task_id,
             metadata_extra={"parent_session_id": body.parent_session_id} if body.parent_session_id else None,
         )
-    except ValueError as e:
+    except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     return _session_response(session)
 
 
@@ -9703,11 +9725,16 @@ async def continue_supervised_session(session_id: str, body: ContinueSessionRequ
             for row in evidence_rows
         ],
     }
+    effective_child_provider = (
+        body.provider
+        if body.provider and body.provider != "orchestrated"
+        else parent.agent_provider
+    )
     child = sm.create_session(
         channel_id=parent.channel_id,
         project=parent.project,
         description=body.goal.strip(),
-        agent_provider=body.provider,
+        agent_provider=effective_child_provider,
         metadata={
             "supervised": True,
             "parent_session_id": parent.id,
@@ -9742,11 +9769,11 @@ async def list_supervised_sessions(channel_id: str | None = None):
 
 
 @app.get("/homebase/brief")
-async def homebase_brief(workstream_id: str | None = None):
+async def homebase_brief(workstream_id: str | None = None, collection_id: str | None = None):
     """Deterministic HomeBase status brief (no LLM). For voice/text "brief me"."""
     from .brief import build_homebase_brief
 
-    return build_homebase_brief(workstream_id=workstream_id)
+    return build_homebase_brief(workstream_id=workstream_id, collection_id=collection_id)
 
 
 @app.get("/channels/{channel_id}/sessions")
@@ -10416,6 +10443,81 @@ def _default_commit_message_for_session(session) -> str:
     if "bug" in lower or "fix" in lower or "issue" in lower:
         return f"fix: {raw[0].lower() + raw[1:]}" if raw else "fix: resolve session issues"
     return f"feat: {raw[0].lower() + raw[1:]}" if raw else "feat: apply session changes"
+
+
+def _session_working_diff(path) -> dict:
+    """Working-tree diff for one session run. Caps each file so the viewer can page it."""
+
+    def git(*args: str) -> str:
+        res = subprocess.run(
+            ["git", *args], cwd=path, text=True, capture_output=True, timeout=15, check=False,
+        )
+        return res.stdout if res.returncode == 0 else ""
+
+    statuses: dict[str, str] = {}
+    for line in git("status", "--short").splitlines():
+        if len(line) < 4:
+            continue
+        statuses[line[3:].strip()] = line[:2].strip() or "M"
+
+    files: list[dict] = []
+    current: str | None = None
+    lines: list[str] = []
+
+    def flush() -> None:
+        nonlocal current, lines
+        if current is None:
+            return
+        patch = "\n".join(lines[:250])
+        if len(lines) > 250:
+            patch += "\n… diff truncated"
+        files.append({"path": current, "status": statuses.get(current, "M"), "patch": patch})
+        current = None
+        lines = []
+
+    for line in git("diff", "HEAD").splitlines():
+        if line.startswith("diff --git "):
+            flush()
+            match = re.match(r"diff --git a/(.+?) b/(.+)$", line)
+            current = match.group(2) if match else "unknown"
+            lines = []
+            continue
+        if current is not None:
+            lines.append(line)
+    flush()
+
+    seen = {item["path"] for item in files}
+    for path_name, status in statuses.items():
+        if path_name in seen or ".." in path_name.split("/"):
+            continue
+        preview = ""
+        file_path = path / path_name
+        try:
+            if file_path.is_file() and file_path.stat().st_size < 256_000:
+                text = file_path.read_text(errors="replace").splitlines()[:120]
+                if text and "\x00" not in text[0]:
+                    preview = "\n".join(f"+{line}" for line in text)
+        except OSError:
+            preview = ""
+        files.append({"path": path_name, "status": status, "patch": preview})
+    return {"files": files[:40]}
+
+
+@app.get("/sessions/{session_id}/diff")
+async def get_session_diff(session_id: str):
+    """Return the working-tree diff for this run, separate from any earlier proof artifact."""
+    from .session_manager import get_session_manager
+
+    session = get_session_manager().get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        path = _session_project_path(session.project)
+    except HTTPException:
+        return {"files": []}
+    if not (path / ".git").exists():
+        return {"files": []}
+    return await asyncio.to_thread(_session_working_diff, path)
 
 
 @app.get("/sessions/{session_id}/git-status")

@@ -161,6 +161,7 @@ export function SessionsCard({
   const selectChannel = useChannelStore((s) => s.selectChannel)
   const channels = useChannelStore((s) => s.channels)
   const collections = useProjectStore((s) => s.collections)
+  const currentCollection = useProjectStore((s) => s.currentCollection)
   const projects = useProjectStore((s) => s.projects)
   const openSessionFromHub = useUIStore((s) => s.openSessionFromHub)
   const toast = useUIStore((s) => s.toast)
@@ -168,8 +169,7 @@ export function SessionsCard({
 
   // System vs Focused Workstream Mode
   const activeChannel = channels.find((channel) => channel.id === activeChannelId)
-  const isSystemWorkstream =
-    !activeChannel || activeChannel.type === "system" || activeChannel.name === "#general" || activeChannel.name === "#system"
+  const isSystemWorkstream = activeChannelId === "ch-system"
 
   // Client info for the active workstream
   const activeChannelClient = activeChannel
@@ -177,10 +177,6 @@ export function SessionsCard({
     : null
 
   // Focus & Filter controls (for #system Overview Mode)
-  const focusMode = useUIStore((s) => s.sessionsHubFocusMode)
-  const setFocusMode = useUIStore((s) => s.setSessionsHubFocusMode)
-  const selectedClientId = useUIStore((s) => s.sessionsHubSelectedClient)
-  const setSelectedClientId = useUIStore((s) => s.setSessionsHubSelectedClient)
   const groupBy = useUIStore((s) => s.sessionsHubGroupBy)
   const setGroupBy = useUIStore((s) => s.setSessionsHubGroupBy)
 
@@ -309,6 +305,7 @@ export function SessionsCard({
         status: "pending",
         task_id: taskId,
         parent_session_id: card.latestSession.id,
+        provider: card.latestSession.agent_provider || undefined,
       })
       try {
         await POST(`/sessions/${created.id}/start`)
@@ -329,22 +326,16 @@ export function SessionsCard({
   const allGoalCards = groupSessionsIntoGoalCards(sessions)
 
   // 2. Filter Goal Cards based on operating mode:
-  // If in Focused Workstream Mode (!isSystemWorkstream): strictly this workstream!
-  // If in System Overview Mode (isSystemWorkstream): cross-client overview with focus switch
-  const clientCollections = collections.filter((c) => c.role === "client")
-  const effectiveClientId = selectedClientId || clientCollections[0]?.id || collections[0]?.id || "general"
-
+  // - If in System Overview Mode (isSystemWorkstream, ch-system): roll up every collection, or currentCollection if selected
+  // - If in Focused Workstream Mode (!isSystemWorkstream): strictly this channel's cards
+  // - If channel is missing: empty board
   const filteredGoalCards = isSystemWorkstream
-    ? allGoalCards.filter((card) => {
-        if (focusMode === "client_work") {
-          return card.collection_role === "client"
-        }
-        if (focusMode === "this_client") {
-          return (card.collection_id || "general") === effectiveClientId
-        }
-        return true
-      })
-    : allGoalCards.filter((card) => card.channel_id === activeChannelId)
+    ? (currentCollection
+        ? allGoalCards.filter((card) => (card.collection_id || "general") === currentCollection)
+        : allGoalCards)
+    : (activeChannel
+        ? allGoalCards.filter((card) => card.channel_id === activeChannel.id)
+        : [])
 
   // Attention buckets for Goal Cards
   const needsAttention = filteredGoalCards.filter((c) => c.attention_state === "needs_attention")
@@ -411,54 +402,12 @@ export function SessionsCard({
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-1.5 pr-2 border-r border-gray-800">
               <span className="text-xs font-bold text-gray-200">HomeBase Overview</span>
-              <span className="text-[10px] text-gray-500 font-mono">(All Workstreams)</span>
+              <span className="text-[10px] text-gray-500 font-mono">
+                {currentCollection
+                  ? `(${collections.find((c) => c.id === currentCollection)?.name || currentCollection})`
+                  : "(All Workstreams)"}
+              </span>
             </div>
-
-            {/* Focus Switch */}
-            <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setFocusMode("all")}
-                className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                  focusMode === "all" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
-                }`}
-              >
-                All Clients
-              </button>
-              <button
-                type="button"
-                onClick={() => setFocusMode("client_work")}
-                className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                  focusMode === "client_work" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
-                }`}
-              >
-                Client work
-              </button>
-              <button
-                type="button"
-                onClick={() => setFocusMode("this_client")}
-                className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                  focusMode === "this_client" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
-                }`}
-              >
-                This client
-              </button>
-            </div>
-
-            {/* This Client Dropdown */}
-            {focusMode === "this_client" && (
-              <select
-                value={effectiveClientId}
-                onChange={(e) => setSelectedClientId(e.target.value)}
-                className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-200"
-              >
-                {collections.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} {c.role === "own" ? "(Company)" : c.role === "client" ? "(Client)" : "(Unsorted)"}
-                  </option>
-                ))}
-              </select>
-            )}
 
             {/* Grouping Toggle */}
             <button
@@ -474,19 +423,11 @@ export function SessionsCard({
               {groupBy === "client_workstream" ? "Grouped" : "Flat"}
             </button>
           </div>
-
-          <button
-            type="button"
-            onClick={() => setShowCreate((v) => !v)}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition-colors"
-          >
-            {showCreate ? "Close Form" : "+ New Goal"}
-          </button>
         </div>
       )}
 
       {/* ── New Goal Form ── */}
-      {showCreate && (
+      {showCreate && !isSystemWorkstream && (
         <form
           onSubmit={(e) => {
             e.preventDefault()
@@ -517,21 +458,23 @@ export function SessionsCard({
 
           {showOptions && (
             <div className="space-y-2.5 border-t border-gray-700 pt-3">
-              <div>
-                <span className="mb-1 block text-[11px] text-gray-400">Target Project</span>
-                <select
-                  required
-                  value={selectedProject}
-                  onChange={(e) => setDraft({ ...draft, project: e.target.value })}
-                  className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-200"
-                >
-                  {availableProjects.map((p) => (
-                    <option key={p.name} value={p.name}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {workstreamProjects.length !== 1 && (
+                <div>
+                  <span className="mb-1 block text-[11px] text-gray-400">Target Project</span>
+                  <select
+                    required
+                    value={selectedProject}
+                    onChange={(e) => setDraft({ ...draft, project: e.target.value })}
+                    className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-200"
+                  >
+                    {availableProjects.map((p) => (
+                      <option key={p.name} value={p.name}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div>
                 <span className="mb-1 block text-[11px] text-gray-400">Acceptance Criteria (one per line)</span>
