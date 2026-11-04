@@ -60,6 +60,11 @@ export interface SessionInfo {
   completed_at: string | null
   output_summary: string | null
   acceptance_criteria?: string[]
+  worktree_mode?: "isolated" | "direct" | "reuse"
+  worktree_path?: string | null
+  worktree_branch?: string | null
+  discovered_from?: string | null
+  handoff_brief?: string | null
 }
 
 export interface GoalCard {
@@ -174,6 +179,13 @@ function ActionLinkChip({ action }: { action: Action }) {
   )
 }
 
+interface ProjectGitInfo {
+  is_git: boolean
+  current_branch: string
+  branches: string[]
+  worktrees?: Array<{ path: string; branch?: string }>
+}
+
 export function SessionsCard({
   onOpenTerminal,
 }: {
@@ -214,7 +226,17 @@ export function SessionsCard({
   const [chosenFiles, setChosenFiles] = useState<File[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const [draft, setDraft] = useState({ project: "", goal: "", criteria: "", provider: "orchestrated" })
+  const [projectGitMap, setProjectGitMap] = useState<Record<string, ProjectGitInfo>>({})
+  const [draft, setDraft] = useState({
+    project: "",
+    goal: "",
+    criteria: "",
+    provider: "orchestrated",
+    worktreeMode: "isolated" as "isolated" | "direct",
+    branchOption: "auto" as "auto" | "existing" | "new",
+    selectedBranch: "",
+    newBranchName: "",
+  })
   const [providerOptions, setProviderOptions] = useState<Array<{ id: string; label: string; ready?: boolean }>>([
     { id: "codex", label: "Codex CLI" },
     { id: "claude", label: "Claude Code" },
@@ -232,6 +254,24 @@ export function SessionsCard({
   const activeRunningActions = allActions.filter(
     (a) => a.status === "running" && workstreamProjects.includes(a.project)
   )
+
+  const fetchGitBranches = useCallback(async (projectName: string) => {
+    if (!projectName) return
+    try {
+      const res = await GET<ProjectGitInfo>(`/projects/${encodeURIComponent(projectName)}/branches`)
+      if (res) {
+        setProjectGitMap((prev) => ({ ...prev, [projectName]: res }))
+        if (res.current_branch) {
+          setDraft((prev) => ({
+            ...prev,
+            selectedBranch: prev.selectedBranch || res.current_branch,
+          }))
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -260,6 +300,9 @@ export function SessionsCard({
         if (res?.providers?.length) setProviderOptions(res.providers)
       })
       .catch(() => {})
+    if (selectedProject) {
+      void fetchGitBranches(selectedProject)
+    }
   })
 
   useMountEffect(() => {
@@ -299,6 +342,15 @@ export function SessionsCard({
         acceptance_criteria: draft.criteria.split("\n").map((item) => item.trim()).filter(Boolean),
         provider: draft.provider,
         status: asStaged ? "proposed" : "pending",
+        worktree_mode: draft.worktreeMode,
+        worktree_branch:
+          draft.worktreeMode === "isolated"
+            ? (draft.branchOption === "new"
+                ? draft.newBranchName.trim() || undefined
+                : draft.branchOption === "existing"
+                ? draft.selectedBranch || undefined
+                : undefined)
+            : undefined,
       })
 
       // Step 8: Upload each chosen file as evidence on the session before starting
@@ -316,7 +368,7 @@ export function SessionsCard({
       }
 
       setChosenFiles([])
-      setDraft((value) => ({ ...value, goal: "", criteria: "" }))
+      setDraft((value) => ({ ...value, goal: "", criteria: "", branchOption: "auto", newBranchName: "" }))
       setShowCreate(false)
       setShowOptions(false)
 
@@ -352,6 +404,8 @@ export function SessionsCard({
         task_id: taskId,
         parent_session_id: card.latestSession.id,
         provider: card.latestSession.agent_provider || undefined,
+        worktree_mode: card.latestSession.worktree_mode === "isolated" || card.latestSession.worktree_path ? "reuse" : "direct",
+        worktree_branch: card.latestSession.worktree_branch || undefined,
       })
       if (files.length > 0) {
         for (const file of files) {
@@ -447,6 +501,8 @@ export function SessionsCard({
         ? "bg-purple-500/20 text-purple-300 border-purple-500/30"
         : "bg-gray-800 text-gray-400 border-gray-700"
 
+  const gitInfo = projectGitMap[selectedProject]
+
   return (
     <div className="space-y-4">
       {/* ── MODE A: Focused Workstream Header Toolbar ── */}
@@ -475,7 +531,13 @@ export function SessionsCard({
 
           <button
             type="button"
-            onClick={() => setShowCreate((v) => !v)}
+            onClick={() => {
+              setShowCreate((v) => {
+                const next = !v
+                if (next && selectedProject) void fetchGitBranches(selectedProject)
+                return next
+              })
+            }}
             className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition-colors"
           >
             {showCreate ? "Close Form" : "+ New Goal"}
@@ -540,7 +602,7 @@ export function SessionsCard({
             onClick={() => setShowOptions((v) => !v)}
             className="text-xs text-blue-400 hover:text-blue-300"
           >
-            {showOptions ? "Hide Options ▴" : "Options (Criteria, Provider, Project) ▾"}
+            {showOptions ? "Hide Options ▴" : "Options (Workspace, Provider, Criteria) ▾"}
           </button>
 
           {showOptions && (
@@ -551,7 +613,11 @@ export function SessionsCard({
                   <select
                     required
                     value={selectedProject}
-                    onChange={(e) => setDraft({ ...draft, project: e.target.value })}
+                    onChange={(e) => {
+                      const nextProj = e.target.value
+                      setDraft({ ...draft, project: nextProj })
+                      void fetchGitBranches(nextProj)
+                    }}
                     className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-200"
                   >
                     {availableProjects.map((p) => (
@@ -562,6 +628,102 @@ export function SessionsCard({
                   </select>
                 </div>
               )}
+
+              {/* Workspace Execution Target & Branch Selection */}
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-[11px] font-medium text-gray-300">Workspace Execution Target</span>
+                  <span className="text-[10px] text-gray-400">
+                    {draft.worktreeMode === "isolated" ? "Clean-room isolation" : "Direct working copy"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setDraft({ ...draft, worktreeMode: "isolated" })}
+                    className={`rounded border p-2 text-left transition ${
+                      draft.worktreeMode === "isolated"
+                        ? "border-blue-500 bg-blue-950/40 text-blue-200"
+                        : "border-gray-700 bg-gray-900/60 text-gray-400 hover:border-gray-600"
+                    }`}
+                  >
+                    <div className="font-semibold text-gray-200">Isolated Worktree (Default)</div>
+                    <div className="text-[10px] text-gray-400">Runs in isolated folder outside active checkout</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDraft({ ...draft, worktreeMode: "direct" })}
+                    className={`rounded border p-2 text-left transition ${
+                      draft.worktreeMode === "direct"
+                        ? "border-blue-500 bg-blue-950/40 text-blue-200"
+                        : "border-gray-700 bg-gray-900/60 text-gray-400 hover:border-gray-600"
+                    }`}
+                  >
+                    <div className="font-semibold text-gray-200">Direct Checkout</div>
+                    <div className="text-[10px] text-gray-400">Runs directly in repository on active branch</div>
+                  </button>
+                </div>
+
+                {draft.worktreeMode === "isolated" && gitInfo?.is_git && (
+                  <div className="mt-2 space-y-1.5 rounded border border-gray-700/60 bg-gray-900/60 p-2">
+                    <span className="block text-[11px] text-gray-400">Worktree Branch Target</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={draft.branchOption}
+                        onChange={(e) => {
+                          const opt = e.target.value as "auto" | "existing" | "new"
+                          setDraft({
+                            ...draft,
+                            branchOption: opt,
+                            selectedBranch:
+                              opt === "existing" && gitInfo.branches.length > 0
+                                ? draft.selectedBranch || gitInfo.current_branch || gitInfo.branches[0]
+                                : draft.selectedBranch,
+                          })
+                        }}
+                        className="rounded border border-gray-600 bg-gray-900 px-2 py-1 text-xs text-gray-200"
+                      >
+                        <option value="auto">Auto-generated branch (rdc/sess-...)</option>
+                        {gitInfo.branches && gitInfo.branches.length > 0 && (
+                          <option value="existing">Existing branch...</option>
+                        )}
+                        <option value="new">+ Create custom branch name...</option>
+                      </select>
+
+                      {draft.branchOption === "existing" && gitInfo.branches && (
+                        <select
+                          value={draft.selectedBranch || gitInfo.current_branch}
+                          onChange={(e) => setDraft({ ...draft, selectedBranch: e.target.value })}
+                          className="flex-1 min-w-[140px] rounded border border-gray-600 bg-gray-900 px-2 py-1 text-xs text-gray-200"
+                        >
+                          {gitInfo.branches.map((b) => (
+                            <option key={b} value={b}>
+                              {b} {b === gitInfo.current_branch ? "(current HEAD)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+
+                      {draft.branchOption === "new" && (
+                        <input
+                          type="text"
+                          placeholder="e.g. fix/auth-token-backoff"
+                          value={draft.newBranchName}
+                          onChange={(e) => setDraft({ ...draft, newBranchName: e.target.value })}
+                          className="flex-1 min-w-[140px] rounded border border-gray-600 bg-gray-900 px-2 py-1 text-xs text-gray-200 placeholder:text-gray-500"
+                        />
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {draft.worktreeMode === "direct" && gitInfo?.is_git && (
+                  <div className="mt-1 text-[11px] text-amber-300/80">
+                    Agent will execute directly in <span className="font-mono text-white">{selectedProject}</span> on branch <span className="font-mono text-white">{gitInfo.current_branch || "HEAD"}</span>.
+                  </div>
+                )}
+              </div>
 
               <div>
                 <span className="mb-1 block text-[11px] text-gray-400">Acceptance Criteria (one per line)</span>
@@ -1079,6 +1241,18 @@ function GoalCardItem({
               #{channelName}
             </button>
           )}
+          {latest.worktree_branch ? (
+            <span
+              className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-950/60 border border-indigo-800/40 text-indigo-300 font-mono truncate max-w-[120px]"
+              title={`Worktree branch: ${latest.worktree_branch}`}
+            >
+              ⎇ {latest.worktree_branch}
+            </span>
+          ) : latest.worktree_mode === "direct" ? (
+            <span className="text-[9px] px-1.5 py-0.2 rounded bg-gray-800 text-gray-400 font-mono" title="Direct repository checkout">
+              📁 direct
+            </span>
+          ) : null}
         </div>
         <span className={`rounded border px-1.5 py-0.5 text-[9px] font-medium leading-none flex-shrink-0 ${badgeStyle}`}>
           {statusText}

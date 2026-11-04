@@ -214,6 +214,11 @@ class Session:
     policy: dict = field(default_factory=dict)
     budget: Optional[dict] = None
     unresolved_risks: list[str] = field(default_factory=list)
+    worktree_mode: str = "isolated"
+    worktree_path: Optional[str] = None
+    worktree_branch: Optional[str] = None
+    discovered_from: Optional[str] = None
+    handoff_brief: Optional[str] = None
 
 
 class SessionManager:
@@ -309,6 +314,11 @@ class SessionManager:
         policy: Optional[dict] = None,
         budget: Optional[dict] = None,
         status: Optional[SessionStatus] = None,
+        worktree_mode: str = "isolated",
+        worktree_path: Optional[str] = None,
+        worktree_branch: Optional[str] = None,
+        discovered_from: Optional[str] = None,
+        handoff_brief: Optional[str] = None,
     ) -> Session:
         """Create a new session and persist to DB."""
         session = Session(
@@ -324,6 +334,11 @@ class SessionManager:
             acceptance_criteria=acceptance_criteria or [],
             policy=policy or {},
             budget=budget,
+            worktree_mode=worktree_mode,
+            worktree_path=worktree_path,
+            worktree_branch=worktree_branch,
+            discovered_from=discovered_from,
+            handoff_brief=handoff_brief,
         )
         self._sessions[session.id] = session
         self._persist(session)
@@ -785,8 +800,9 @@ class SessionManager:
                (id, channel_id, project, terminal_id, task_id, description, status,
                 agent_provider, created_at, updated_at, completed_at, output_summary, metadata,
                 goal, acceptance_criteria, control_owner, current_step, blocker, policy,
-                budget, unresolved_risks)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                budget, unresolved_risks, worktree_mode, worktree_path, worktree_branch,
+                discovered_from, handoff_brief)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                  channel_id = excluded.channel_id,
                  project = excluded.project,
@@ -806,7 +822,12 @@ class SessionManager:
                  blocker = excluded.blocker,
                  policy = excluded.policy,
                  budget = excluded.budget,
-                 unresolved_risks = excluded.unresolved_risks""",
+                 unresolved_risks = excluded.unresolved_risks,
+                 worktree_mode = excluded.worktree_mode,
+                 worktree_path = excluded.worktree_path,
+                 worktree_branch = excluded.worktree_branch,
+                 discovered_from = excluded.discovered_from,
+                 handoff_brief = excluded.handoff_brief""",
             (
                 session.id, session.channel_id, session.project,
                 terminal_id, session.task_id, session.description,
@@ -824,6 +845,11 @@ class SessionManager:
                 json.dumps(session.policy),
                 json.dumps(session.budget) if session.budget else None,
                 json.dumps(session.unresolved_risks),
+                session.worktree_mode or "isolated",
+                session.worktree_path,
+                session.worktree_branch,
+                session.discovered_from,
+                session.handoff_brief,
             ),
         )
         db.commit()
@@ -889,6 +915,13 @@ class SessionManager:
         except ValueError:
             status = SessionStatus.PENDING
 
+        keys = row.keys() if hasattr(row, "keys") else ()
+        worktree_mode = row["worktree_mode"] if "worktree_mode" in keys and row["worktree_mode"] else "isolated"
+        worktree_path = row["worktree_path"] if "worktree_path" in keys else None
+        worktree_branch = row["worktree_branch"] if "worktree_branch" in keys else None
+        discovered_from = row["discovered_from"] if "discovered_from" in keys else None
+        handoff_brief = row["handoff_brief"] if "handoff_brief" in keys else None
+
         return Session(
             id=row["id"],
             channel_id=row["channel_id"],
@@ -911,6 +944,11 @@ class SessionManager:
             policy=json.loads(row["policy"] or "{}"),
             budget=json.loads(row["budget"]) if row["budget"] else None,
             unresolved_risks=json.loads(row["unresolved_risks"] or "[]"),
+            worktree_mode=worktree_mode,
+            worktree_path=worktree_path,
+            worktree_branch=worktree_branch,
+            discovered_from=discovered_from,
+            handoff_brief=handoff_brief,
         )
 
 

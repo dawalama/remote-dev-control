@@ -28,6 +28,9 @@ interface SessionData {
   parent_session_id: string | null
   verification_command: string | null
   followup_instructions?: Array<{ instruction: string; created_at?: string | null }>
+  worktree_mode?: "isolated" | "direct" | "reuse"
+  worktree_path?: string | null
+  worktree_branch?: string | null
 }
 
 interface SessionDiffFile {
@@ -476,6 +479,18 @@ export function SessionViewer({
           {activeBlocker && session.status === "verifying" ? "Needs action" : statusLabel(session.status)}
         </span>
         <span className="text-[10px] text-gray-400 flex-shrink-0">{session.project}</span>
+        {session.worktree_branch ? (
+          <span
+            className="rounded border border-indigo-800/50 bg-indigo-950/50 px-1.5 py-0.5 text-[10px] font-mono text-indigo-300 flex-shrink-0"
+            title={`Worktree: ${session.worktree_path || session.worktree_branch}`}
+          >
+            ⎇ {session.worktree_branch}
+          </span>
+        ) : session.worktree_mode === "direct" ? (
+          <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-mono text-gray-400 flex-shrink-0" title="Direct repository checkout">
+            📁 direct
+          </span>
+        ) : null}
         <span className="text-[10px] text-gray-500 flex-shrink-0">{duration}</span>
         {terminalId && (
           <button

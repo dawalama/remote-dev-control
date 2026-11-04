@@ -8516,6 +8516,36 @@ async def get_project(name: str):
     }
 
 
+@app.get("/projects/{name}/branches")
+async def get_project_branches(name: str):
+    """List local git branches and active worktrees for a project."""
+    from .worktree import get_worktree_manager
+
+    db_proj = project_repo.get(name)
+    if not db_proj:
+        raise HTTPException(status_code=404, detail=f"Project not found: {name}")
+
+    path = Path(db_proj.path) if db_proj.path else None
+    if not path or not path.is_dir():
+        return {"is_git": False, "current_branch": "", "branches": [], "worktrees": []}
+
+    wm = get_worktree_manager()
+    is_git = wm.is_git_repo(path)
+    if not is_git:
+        return {"is_git": False, "current_branch": "", "branches": [], "worktrees": []}
+
+    current = wm.get_current_branch(path)
+    branches = wm.list_branches(path)
+    worktrees = wm.list_worktrees(path)
+
+    return {
+        "is_git": True,
+        "current_branch": current,
+        "branches": branches,
+        "worktrees": worktrees,
+    }
+
+
 @app.patch("/projects/{name}/config")
 async def update_project_config(name: str, config: dict):
     """Update project configuration."""
@@ -9469,7 +9499,12 @@ def _session_response(session) -> dict:
         "completed_at": session.completed_at.isoformat() if session.completed_at else None,
         "output_summary": session.output_summary,
         "review_mode": _session_review_mode(session),
-        "parent_session_id": metadata.get("parent_session_id"),
+        "parent_session_id": metadata.get("parent_session_id") or getattr(session, "discovered_from", None),
+        "discovered_from": getattr(session, "discovered_from", None) or metadata.get("parent_session_id"),
+        "worktree_mode": getattr(session, "worktree_mode", "isolated") or "isolated",
+        "worktree_path": getattr(session, "worktree_path", None),
+        "worktree_branch": getattr(session, "worktree_branch", None),
+        "handoff_brief": getattr(session, "handoff_brief", None),
         "verification_command": verification_command,
         "followup_instructions": [
             {
@@ -9493,6 +9528,8 @@ class CreateSupervisedSessionRequest(BaseModel):
     status: str | None = None
     task_id: str | None = None
     parent_session_id: str | None = None
+    worktree_mode: str | None = "isolated"
+    worktree_branch: str | None = None
 
 
 class ContinueSessionRequest(BaseModel):
@@ -9689,6 +9726,9 @@ async def create_supervised_session(body: CreateSupervisedSessionRequest):
             budget=body.budget,
             status=body.status,
             task_id=body.task_id,
+            worktree_mode=body.worktree_mode,
+            worktree_branch=body.worktree_branch,
+            discovered_from=body.parent_session_id,
             metadata_extra={"parent_session_id": body.parent_session_id} if body.parent_session_id else None,
         )
     except LookupError as e:
@@ -9844,6 +9884,13 @@ def _session_project_path(project: str) -> Path:
     return Path(record.path).resolve()
 
 
+def _session_effective_path(session) -> Path:
+    wt_path = getattr(session, "worktree_path", None)
+    if wt_path and Path(wt_path).is_dir():
+        return Path(wt_path).resolve()
+    return _session_project_path(session.project)
+
+
 def _decode_session_row(row) -> dict:
     data = dict(row)
     for key in ("data", "details", "evidence_ids"):
@@ -9933,7 +9980,7 @@ def _parse_unified_diff_to_html(raw_diff: str) -> str:
 
 def _collect_session_diff_html(session, evidence: list[dict]) -> str:
     try:
-        proj_path = _session_project_path(session.project)
+        proj_path = _session_effective_path(session)
         if not (proj_path / ".git").exists():
             return ""
         # 1. Check live uncommitted diff first
@@ -10071,7 +10118,7 @@ def _build_synthesized_session_artifact(session, evidence: list[dict], criteria:
     # If no explicit git evidence was captured yet, include a live lightweight git diff stat
     if not git_cards:
         try:
-            proj_path = _session_project_path(session.project)
+            proj_path = _session_effective_path(session)
             diff_res = subprocess.run(
                 ["git", "diff", "--stat", "HEAD"],
                 cwd=proj_path, text=True, capture_output=True, timeout=4, check=False
@@ -10626,7 +10673,7 @@ async def get_session_diff(session_id: str, run: int | None = Query(default=None
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     try:
-        path = _session_project_path(session.project)
+        path = _session_effective_path(session)
     except HTTPException:
         return {"files": [], "run": 0}
     if not (path / ".git").exists():
@@ -10651,7 +10698,7 @@ async def get_session_git_status(session_id: str):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     try:
-        path = _session_project_path(session.project)
+        path = _session_effective_path(session)
     except HTTPException:
         return {"has_git": False, "dirty": False, "changed_files": [], "has_remote": False}
 
@@ -10779,7 +10826,7 @@ async def commit_session_git_changes(session_id: str, body: SessionGitCommitRequ
     session = sm.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    path = _session_project_path(session.project)
+    path = _session_effective_path(session)
     if not (path / ".git").exists():
         raise HTTPException(status_code=409, detail="Project is not a Git repository")
 

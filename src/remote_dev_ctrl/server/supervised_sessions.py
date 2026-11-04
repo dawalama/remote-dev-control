@@ -23,10 +23,12 @@ from .session_manager import (
 logger = logging.getLogger(__name__)
 
 
-def session_git_snapshot(project: str) -> dict[str, str]:
+def session_git_snapshot(project: str, override_path: Optional[Path] = None) -> dict[str, str]:
     try:
-        record = get_project_repo().get(project)
-        path = Path(record.path) if record and record.path else None
+        path = override_path
+        if not path:
+            record = get_project_repo().get(project)
+            path = Path(record.path) if record and record.path else None
         if not path or not path.is_dir():
             return {"head": "", "status": ""}
         head = subprocess.run(
@@ -125,6 +127,9 @@ def create_supervised_session(
     metadata_extra: Optional[dict] = None,
     status: Optional[str] = None,
     task_id: Optional[str] = None,
+    worktree_mode: Optional[str] = None,
+    worktree_branch: Optional[str] = None,
+    discovered_from: Optional[str] = None,
 ) -> Session:
     """Create a durable supervised session with evidence/git baseline metadata."""
     if not resolve_project_id(project):
@@ -165,6 +170,29 @@ def create_supervised_session(
                 coll_default = c_row["default_agent_id"].strip()
         concrete_provider = coll_default or _load_agent_provider_policy().get("preferred_provider", "codex")
 
+    # Resolve workspace mode and branch
+    parent_id = discovered_from or (metadata_extra.get("parent_session_id") if metadata_extra else None)
+    effective_worktree_mode = worktree_mode or "isolated"
+    effective_worktree_path = None
+    effective_worktree_branch = worktree_branch
+
+    if parent_id:
+        parent_sess = sm.get(parent_id)
+        if parent_sess:
+            if worktree_mode is None:
+                # Inherit from parent: if parent used worktree, reuse it
+                if parent_sess.worktree_mode == "isolated" or parent_sess.worktree_path:
+                    effective_worktree_mode = "reuse"
+                    effective_worktree_path = parent_sess.worktree_path
+                    effective_worktree_branch = parent_sess.worktree_branch
+                else:
+                    effective_worktree_mode = "direct"
+                    effective_worktree_path = parent_sess.worktree_path
+                    effective_worktree_branch = parent_sess.worktree_branch
+            elif worktree_mode == "reuse":
+                effective_worktree_path = parent_sess.worktree_path
+                effective_worktree_branch = parent_sess.worktree_branch or worktree_branch
+
     metadata: dict[str, Any] = {
         "supervised": True,
         "git_baseline": session_git_snapshot(project),
@@ -186,6 +214,10 @@ def create_supervised_session(
         policy=policy or {},
         budget=budget,
         status=session_status,
+        worktree_mode=effective_worktree_mode,
+        worktree_path=effective_worktree_path,
+        worktree_branch=effective_worktree_branch,
+        discovered_from=parent_id,
     )
 
 
@@ -311,10 +343,60 @@ def start_supervised_session(
     }
     # Always mark supervised for this path
     s.metadata["supervised"] = True
+
+    from .worktree import get_worktree_manager
+
+    wm = get_worktree_manager()
+    record = get_project_repo().get(s.project)
+    project_path = Path(record.path).resolve() if record and record.path else None
+
+    target_cwd: Optional[Path] = None
+    if project_path and wm.is_git_repo(project_path):
+        mode = s.worktree_mode or "isolated"
+        if mode == "isolated":
+            if s.worktree_path and Path(s.worktree_path).is_dir():
+                target_cwd = Path(s.worktree_path)
+            else:
+                try:
+                    wt_path, wt_branch = wm.create_worktree(
+                        project_path,
+                        s.id,
+                        branch_name=s.worktree_branch,
+                    )
+                    if wt_path:
+                        s.worktree_path = str(wt_path)
+                        s.worktree_branch = wt_branch
+                        target_cwd = wt_path
+                except Exception as e:
+                    logger.warning("Could not create worktree for session %s: %s", s.id, e)
+                    s.worktree_mode = "direct"
+                    target_cwd = project_path
+                    s.worktree_path = str(project_path)
+                    s.worktree_branch = wm.get_current_branch(project_path)
+        elif mode == "reuse":
+            if s.worktree_path and Path(s.worktree_path).is_dir():
+                target_cwd = Path(s.worktree_path)
+            else:
+                s.worktree_mode = "direct"
+                target_cwd = project_path
+                s.worktree_path = str(project_path)
+                s.worktree_branch = wm.get_current_branch(project_path)
+        else:  # direct
+            target_cwd = project_path
+            s.worktree_path = str(project_path)
+            s.worktree_branch = wm.get_current_branch(project_path)
+    else:
+        s.worktree_mode = "direct"
+        target_cwd = project_path
+        if project_path:
+            s.worktree_path = str(project_path)
+
+    if target_cwd:
+        s.metadata["git_baseline"] = session_git_snapshot(s.project, override_path=target_cwd)
     sm._persist(s)
 
     try:
-        term = tm.create(project=s.project, command=command)
+        term = tm.create(project=s.project, command=command, cwd=str(target_cwd) if target_cwd else None)
     except Exception as e:
         logger.warning("Supervised session %s failed before the terminal existed: %s", s.id, type(e).__name__)
         try:
