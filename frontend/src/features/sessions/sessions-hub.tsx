@@ -2,6 +2,7 @@ import { useState } from "react"
 import { useUIStore } from "@/stores/ui-store"
 import { useChannelStore } from "@/stores/channel-store"
 import { useProjectStore } from "@/stores/project-store"
+import { useStateStore } from "@/stores/state-store"
 import { briefWorkstreamFilter } from "@/stores/chat-scope-store"
 import { SessionsCard } from "./sessions-card"
 import { ProviderSetup } from "./provider-setup"
@@ -24,6 +25,11 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
   const channels = useChannelStore((state) => state.channels)
   const activeChannelId = useChannelStore((state) => state.activeChannelId)
   const activeChannel = channels.find((c) => c.id === activeChannelId)
+  const allActions = useStateStore((state) => state.actions)
+  const workstreamProjects = activeChannel?.project_names ?? []
+  const runningActions = allActions.filter(
+    (a) => a.status === "running" && workstreamProjects.includes(a.project)
+  )
 
   const runBrief = async () => {
     setBriefing(true)
@@ -71,6 +77,31 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
               </span>
             )}
           </h2>
+          {runningActions.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 pl-2 border-l border-gray-800">
+              {runningActions.map((action) => {
+                const url = action.preview_url || (action.port ? `http://localhost:${action.port}` : null)
+                if (!url) return null
+                return (
+                  <a
+                    key={action.id}
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300 hover:bg-emerald-500/20 hover:text-emerald-200 transition-colors"
+                    title={`Open ${action.name || action.id} (${url}) in new tab`}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+                    <span className="truncate max-w-[140px]">{action.name || action.id}</span>
+                    <span className="text-[10px] text-emerald-400/70 font-mono flex-shrink-0">
+                      {action.preview_url ? action.preview_url.replace(/^https?:\/\//, "") : `:${action.port}`}
+                    </span>
+                    <span className="text-[10px] flex-shrink-0">↗</span>
+                  </a>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         {!onCloseModal && (

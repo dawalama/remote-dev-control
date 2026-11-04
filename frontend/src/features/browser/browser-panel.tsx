@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react"
 import { useBrowserStore } from "@/stores/browser-store"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
+import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { GET, POST, DELETE } from "@/lib/api"
 import { RecordingPlayer } from "./recording-player"
@@ -30,6 +31,13 @@ export function BrowserPanel() {
 
   const processes = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
+  const activeChannel = useChannelStore((s) => {
+    const ch = s.channels.find((c) => c.id === s.activeChannelId)
+    return ch ?? null
+  })
+  const workstreamProjects = activeChannel?.project_names && activeChannel.project_names.length > 0
+    ? activeChannel.project_names
+    : (currentProject ? [currentProject] : [])
   const toast = useUIStore((s) => s.toast)
 
   const [urlInput, setUrlInput] = useState("")
@@ -56,7 +64,7 @@ export function BrowserPanel() {
 
   const runningSessions = sessions.filter((s) => s.status === "running")
   const processesWithPorts = processes.filter(
-    (p) => p.port && p.status === "running" && (!currentProject || p.project === currentProject)
+    (p) => p.port && p.status === "running" && (workstreamProjects.length === 0 || workstreamProjects.includes(p.project))
   )
 
   // Start Docker/screencast session for a process
@@ -74,14 +82,14 @@ export function BrowserPanel() {
     const url = urlInput.trim()
     if (!url) return
     const fullUrl = url.startsWith("http") ? url : `http://${url}`
-    const project = currentProject ?? undefined
+    const project = workstreamProjects[0] ?? currentProject ?? undefined
     const session = await startSession(fullUrl, project)
     if (session) {
       setFullscreen(true)
     } else {
       toast("Failed to start browser", "error")
     }
-  }, [urlInput, startSession, currentProject, toast])
+  }, [urlInput, startSession, workstreamProjects, currentProject, toast])
 
   const handleSessionOpen = (session: typeof runningSessions[0]) => {
     setActiveSession(session)
@@ -332,6 +340,13 @@ function BrowserFullscreen({ onClose }: { onClose: () => void }) {
   const startSession = useBrowserStore((s) => s.startSession)
   const setActiveSession = useBrowserStore((s) => s.setActiveSession)
   const currentProject = useProjectStore((s) => s.currentProject)
+  const activeChannel = useChannelStore((s) => {
+    const ch = s.channels.find((c) => c.id === s.activeChannelId)
+    return ch ?? null
+  })
+  const workstreamProjects = activeChannel?.project_names && activeChannel.project_names.length > 0
+    ? activeChannel.project_names
+    : (currentProject ? [currentProject] : [])
   const toast = useUIStore((s) => s.toast)
 
   const [urlInput, setUrlInput] = useState(activeSession?.target_url || "")
@@ -368,16 +383,17 @@ function BrowserFullscreen({ onClose }: { onClose: () => void }) {
     if (activeSession && activeSession.status === "running") {
       await navigate(fullUrl)
     } else {
-      const project = currentProject ?? undefined
+      const project = workstreamProjects[0] ?? currentProject ?? undefined
       await startSession(fullUrl, project)
     }
-  }, [urlInput, activeSession, navigate, startSession, currentProject])
+  }, [urlInput, activeSession, navigate, startSession, workstreamProjects, currentProject])
 
   const handleCapture = async () => {
     if (!activeSession) return
     try {
       const params = new URLSearchParams({ session_id: activeSession.id })
-      if (currentProject) params.set("project", currentProject)
+      const targetProject = workstreamProjects[0] || currentProject
+      if (targetProject) params.set("project", targetProject)
       await POST(`/context/capture?${params}`)
       toast("Context captured", "success")
     } catch {

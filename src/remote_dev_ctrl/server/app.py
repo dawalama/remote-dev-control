@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, UploadFile, File, Form, Body
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, UploadFile, File, Form, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from pydantic import BaseModel, Field
@@ -10445,8 +10445,63 @@ def _default_commit_message_for_session(session) -> str:
     return f"feat: {raw[0].lower() + raw[1:]}" if raw else "feat: apply session changes"
 
 
-def _session_working_diff(path) -> dict:
-    """Working-tree diff for one session run. Caps each file so the viewer can page it."""
+_GIT_SHA = re.compile(r"^[0-9a-f]{7,40}$")
+_DIFF_LINE_CAP = 500
+_DIFF_FILE_CAP = 60
+
+
+def _valid_git_sha(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    return text if _GIT_SHA.fullmatch(text) else None
+
+
+def _followup_diff_range(metadata: dict, run: int | None) -> tuple[int, str | None, str | None]:
+    """Return (run index, start sha, end sha) for one session run.
+
+    Run 0 is the original review. Later runs start at that follow-up's recorded
+    HEAD, or the session git baseline for the first follow-up. The latest run
+    ends at the working tree; an earlier run ends where the next one started.
+    """
+    followups = [
+        item for item in (metadata.get("followup_instructions") or [])
+        if isinstance(item, dict)
+    ]
+    baseline = None
+    git_baseline = metadata.get("git_baseline")
+    if isinstance(git_baseline, dict):
+        baseline = _valid_git_sha(git_baseline.get("head"))
+    if not followups:
+        return 0, baseline, None
+    latest = len(followups)
+    index = latest if run is None else max(0, min(int(run), latest))
+    if index <= 0:
+        return 0, None, None
+    start = _valid_git_sha(followups[index - 1].get("base_head"))
+    if start is None and index == 1:
+        start = baseline
+    end = None
+    if index < len(followups):
+        end = _valid_git_sha(followups[index].get("base_head"))
+    return index, start, end
+
+
+def _diff_b_path(header: str) -> str:
+    rest = header[len("diff --git "):]
+    if rest.startswith('"'):
+        parts = re.findall(r'"((?:\\.|[^"\\])*)"', rest)
+        if parts:
+            token = parts[-1].replace('\\"', '"')
+            return token[2:] if token.startswith("b/") else token
+    marker = rest.rfind(" b/")
+    if marker >= 0:
+        return rest[marker + 3:]
+    return "unknown"
+
+
+def _session_range_diff(path: Path, start: str | None, end: str | None) -> dict:
+    """Diff one run against its own base, including a later host commit."""
 
     def git(*args: str) -> str:
         res = subprocess.run(
@@ -10454,58 +10509,117 @@ def _session_working_diff(path) -> dict:
         )
         return res.stdout if res.returncode == 0 else ""
 
-    statuses: dict[str, str] = {}
-    for line in git("status", "--short").splitlines():
-        if len(line) < 4:
-            continue
-        statuses[line[3:].strip()] = line[:2].strip() or "M"
+    tracked_status: dict[str, str] = {}
+    if end is None:
+        for line in git("status", "--short", "--untracked-files=all").splitlines():
+            if len(line) < 4:
+                continue
+            name = line[3:].strip()
+            if " -> " in name:
+                name = name.split(" -> ", 1)[1].strip()
+            tracked_status[name] = line[:2].strip() or "M"
+
+    diff_args = ["diff", "--no-ext-diff", "--no-color", "--find-renames"]
+    if start and end:
+        diff_args.extend([start, end])
+    elif start:
+        diff_args.append(start)
+    else:
+        diff_args.append("HEAD")
 
     files: list[dict] = []
     current: str | None = None
     lines: list[str] = []
+    saw_new = False
+    saw_delete = False
+    saw_rename = False
 
     def flush() -> None:
-        nonlocal current, lines
+        nonlocal current, lines, saw_new, saw_delete, saw_rename
         if current is None:
             return
-        patch = "\n".join(lines[:250])
-        if len(lines) > 250:
-            patch += "\n… diff truncated"
-        files.append({"path": current, "status": statuses.get(current, "M"), "patch": patch})
+        if ".." in current.split("/") or current.startswith("/"):
+            current = None
+            lines = []
+            return
+        kept = lines[:_DIFF_LINE_CAP]
+        patch = "\n".join(kept)
+        truncated = len(lines) > _DIFF_LINE_CAP
+        if truncated:
+            patch += f"\n… {len(lines) - _DIFF_LINE_CAP} lines truncated"
+        if saw_new:
+            status = "A"
+        elif saw_delete:
+            status = "D"
+        elif saw_rename:
+            status = "R"
+        else:
+            status = tracked_status.get(current, "M")
+        files.append({
+            "path": current,
+            "status": status,
+            "patch": patch,
+            "truncated": truncated,
+        })
         current = None
         lines = []
+        saw_new = saw_delete = saw_rename = False
 
-    for line in git("diff", "HEAD").splitlines():
+    for line in git(*diff_args).splitlines():
         if line.startswith("diff --git "):
             flush()
-            match = re.match(r"diff --git a/(.+?) b/(.+)$", line)
-            current = match.group(2) if match else "unknown"
+            current = _diff_b_path(line)
             lines = []
             continue
-        if current is not None:
-            lines.append(line)
+        if current is None:
+            continue
+        if line.startswith("new file mode"):
+            saw_new = True
+        elif line.startswith("deleted file mode"):
+            saw_delete = True
+        elif line.startswith("rename from") or line.startswith("rename to"):
+            saw_rename = True
+        lines.append(line)
     flush()
 
-    seen = {item["path"] for item in files}
-    for path_name, status in statuses.items():
-        if path_name in seen or ".." in path_name.split("/"):
-            continue
-        preview = ""
-        file_path = path / path_name
-        try:
-            if file_path.is_file() and file_path.stat().st_size < 256_000:
-                text = file_path.read_text(errors="replace").splitlines()[:120]
-                if text and "\x00" not in text[0]:
-                    preview = "\n".join(f"+{line}" for line in text)
-        except OSError:
+    if end is None:
+        seen = {item["path"] for item in files}
+        root = path.resolve()
+        for path_name, status in tracked_status.items():
+            if path_name in seen or ".." in path_name.split("/") or path_name.startswith("/"):
+                continue
+            file_path = (path / path_name).resolve()
             preview = ""
-        files.append({"path": path_name, "status": status, "patch": preview})
-    return {"files": files[:40]}
+            truncated = False
+            try:
+                if not file_path.is_file() or not file_path.is_relative_to(root):
+                    continue
+                raw = file_path.read_bytes()[:256_000]
+                if b"\x00" in raw[:8192] or file_path.stat().st_size >= 256_000:
+                    preview = "(binary or oversized file)"
+                else:
+                    text = raw.decode(errors="replace").splitlines()
+                    truncated = len(text) > _DIFF_LINE_CAP
+                    preview = "\n".join(f"+{item}" for item in text[:_DIFF_LINE_CAP])
+                    if truncated:
+                        preview += f"\n… {len(text) - _DIFF_LINE_CAP} lines truncated"
+            except OSError:
+                continue
+            files.append({
+                "path": path_name,
+                "status": status,
+                "patch": preview,
+                "truncated": truncated,
+            })
+
+    files.sort(key=lambda item: (item["path"].startswith(".rdc/"), item["path"]))
+    hidden = max(0, len(files) - _DIFF_FILE_CAP)
+    return {"files": files[:_DIFF_FILE_CAP], "truncated_files": hidden}
 
 
 @app.get("/sessions/{session_id}/diff")
-async def get_session_diff(session_id: str):
-    """Return the working-tree diff for this run, separate from any earlier proof artifact."""
+async def get_session_diff(session_id: str, run: int | None = Query(default=None)):
+    """Return the file changes for one session run, separate from an earlier proof page."""
     from .session_manager import get_session_manager
 
     session = get_session_manager().get(session_id)
@@ -10514,10 +10628,17 @@ async def get_session_diff(session_id: str):
     try:
         path = _session_project_path(session.project)
     except HTTPException:
-        return {"files": []}
+        return {"files": [], "run": 0}
     if not (path / ".git").exists():
-        return {"files": []}
-    return await asyncio.to_thread(_session_working_diff, path)
+        return {"files": [], "run": 0}
+    index, start, end = _followup_diff_range(session.metadata or {}, run)
+    if run is not None and index == 0:
+        return {"files": [], "run": 0}
+    payload = await asyncio.to_thread(_session_range_diff, path, start, end)
+    payload["run"] = index
+    if start:
+        payload["base"] = start[:12]
+    return payload
 
 
 @app.get("/sessions/{session_id}/git-status")
@@ -11174,11 +11295,29 @@ async def instruct_session(session_id: str, body: SessionInstructionRequest):
         raise HTTPException(status_code=409, detail="Take control to guide an agent that is still running")
 
     followups = list((session.metadata or {}).get("followup_instructions") or [])
-    followups.append({
+    base_head = None
+    try:
+        project_path = _session_project_path(session.project)
+        if (project_path / ".git").exists():
+            rev = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=project_path,
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            base_head = _valid_git_sha(rev.stdout.strip())
+    except (HTTPException, OSError):
+        base_head = None
+    followup = {
         "instruction": instruction,
         "prior_result": session.output_summary or "No prior outcome was recorded.",
         "created_at": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    if base_head:
+        followup["base_head"] = base_head
+    followups.append(followup)
     prior_metadata = dict(session.metadata or {})
     session.metadata = {**(session.metadata or {}), "followup_instructions": followups, "review_mode": "implementation"}
     sm._persist(session)

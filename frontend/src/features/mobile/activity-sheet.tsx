@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react"
+import { useChannelStore } from "@/stores/channel-store"
+import { useProjectStore } from "@/stores/project-store"
 import { GET } from "@/lib/api"
 import { Sheet } from "./sheet"
 
@@ -16,10 +18,35 @@ export function ActivitySheet({ onClose }: { onClose: () => void }) {
   const [cursor, setCursor] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(true)
 
+  const activeChannel = useChannelStore((s) => {
+    const ch = s.channels.find((c) => c.id === s.activeChannelId)
+    return ch ?? null
+  })
+  const currentProject = useProjectStore((s) => s.currentProject)
+  const workstreamProjects = activeChannel?.project_names && activeChannel.project_names.length > 0
+    ? activeChannel.project_names
+    : (currentProject ? [currentProject] : [])
+
   const loadMore = async (before?: string) => {
     setLoading(true)
     try {
+      if (workstreamProjects.length > 1) {
+        const results = await Promise.all(
+          workstreamProjects.map((p) => {
+            const params = new URLSearchParams({ limit: "30", project: p })
+            if (before) params.set("before", before)
+            return GET<ActivityEvent[]>(`/activity?${params}`).catch(() => [] as ActivityEvent[])
+          })
+        )
+        const merged = results.flat().sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || "")).slice(0, 30)
+        if (merged.length < 30) setHasMore(false)
+        if (merged.length > 0) setCursor(merged[merged.length - 1].timestamp)
+        setEvents((prev) => (before ? [...prev, ...merged] : merged))
+        return
+      }
+
       const params = new URLSearchParams({ limit: "30" })
+      if (workstreamProjects[0]) params.set("project", workstreamProjects[0])
       if (before) params.set("before", before)
       const data = await GET<ActivityEvent[]>(`/activity?${params}`)
       if (data.length < 30) setHasMore(false)

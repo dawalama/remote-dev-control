@@ -77,6 +77,7 @@ export function MobileLayout() {
   const [browserUrlOpen, setBrowserUrlOpen] = useState(false)
   const [playingRecording, setPlayingRecording] = useState<string | null>(null)
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
+  const [moreToolsOpen, setMoreToolsOpen] = useState(false)
 
   // Voice integration
   const terminalSendRef = useRef<((data: string) => void) | null>(null)
@@ -301,19 +302,45 @@ export function MobileLayout() {
         <ProcessesCard
           onLogs={(id, name) => setProcessLog({ id, name })}
         />
-        <BrowserCard
-          onOpenSession={(session) => {
-            useBrowserStore.getState().setActiveSession({
-              id: session.session_id,
-              target_url: "",
-              status: "running",
-              viewer_url: session.viewer_url,
-            } as import("@/types").BrowserSession)
-            setBrowserFullscreen(true)
-          }}
-          onPlayRecording={(id) => setPlayingRecording(id)}
-        />
-        <ContextsCard />
+
+        {/* More Tools (Activity, Browser, Attachments) — closed by default */}
+        <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-2.5 space-y-2">
+          <button
+            type="button"
+            onClick={() => setMoreToolsOpen((v) => !v)}
+            className="flex w-full items-center justify-between text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-200"
+          >
+            <span>More Tools</span>
+            <span className="text-[10px] normal-case text-gray-400 font-medium">
+              Activity, Browser, Attachments {moreToolsOpen ? "▴" : "▾"}
+            </span>
+          </button>
+          {moreToolsOpen && (
+            <div className="mt-2 space-y-3 border-t border-gray-800/80 pt-2.5">
+              <button
+                type="button"
+                onClick={() => setActivityOpen(true)}
+                className="w-full rounded bg-gray-800 px-3 py-2 text-xs font-medium text-gray-200 hover:bg-gray-750 text-left flex items-center justify-between transition-colors"
+              >
+                <span>📜 View Workstream Activity</span>
+                <span className="text-gray-500">→</span>
+              </button>
+              <BrowserCard
+                onOpenSession={(session) => {
+                  useBrowserStore.getState().setActiveSession({
+                    id: session.session_id,
+                    target_url: "",
+                    status: "running",
+                    viewer_url: session.viewer_url,
+                  } as import("@/types").BrowserSession)
+                  setBrowserFullscreen(true)
+                }}
+                onPlayRecording={(id) => setPlayingRecording(id)}
+              />
+              <ContextsCard />
+            </div>
+          )}
+        </div>
         <PhoneDictation />
       </div>
 

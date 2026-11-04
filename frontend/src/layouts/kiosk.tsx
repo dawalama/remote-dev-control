@@ -132,8 +132,15 @@ export function KioskLayout() {
   }, [connect, disconnect])
 
   const attentionTerminals = terminals.filter((t) => t.waiting_for_input)
+  const activeChannel = useChannelStore((s) => {
+    const ch = s.channels.find((c) => c.id === s.activeChannelId)
+    return ch ?? null
+  })
+  const workstreamProjects = activeChannel?.project_names && activeChannel.project_names.length > 0
+    ? activeChannel.project_names
+    : (currentProject ? [currentProject] : [])
   const processesWithPorts = processes.filter(
-    (p) => p.port && p.status === "running" && (!currentProject || p.project === currentProject)
+    (p) => p.port && p.status === "running" && (workstreamProjects.length === 0 || workstreamProjects.includes(p.project))
   )
   const collectionName = collections.find((c) => c.id === currentCollection)?.name
   const presets = useTerminalPresetsStore((s) => s.presets)
@@ -463,13 +470,17 @@ function KioskSideTabs({
 
   const sideTab = GLOBAL_TO_SIDE[globalTab] || "processes"
   const setTab = (t: SideTab) => setGlobalTab(t as TabId)
+  const [moreOpen, setMoreOpen] = useState(false)
 
-  const tabs: { id: SideTab; label: string; short: string }[] = [
-    { id: "project", label: "Project", short: "Proj" },
+  const primaryTabs: { id: SideTab; label: string; short: string }[] = [
     { id: "processes", label: "Actions", short: "Acts" },
+    { id: "project", label: "Project", short: "Proj" },
+  ]
+  const moreTabs: { id: SideTab; label: string; short: string }[] = [
     { id: "browser", label: "Browser", short: "Brws" },
     { id: "attachments", label: "Attachments", short: "Atch" },
   ]
+  const isMoreActive = sideTab === "browser" || sideTab === "attachments"
 
   if (collapsed) {
     return (
@@ -481,7 +492,7 @@ function KioskSideTabs({
         >
           »
         </button>
-        {tabs.map((t) => (
+        {primaryTabs.map((t) => (
           <button
             key={t.id}
             className={`text-[10px] px-1 py-2 rounded writing-vertical ${
@@ -493,6 +504,16 @@ function KioskSideTabs({
             {t.short}
           </button>
         ))}
+        <button
+          className={`text-[10px] px-1 py-2 rounded writing-vertical ${
+            isMoreActive ? "text-white bg-gray-700" : "text-gray-500 hover:text-gray-300"
+          }`}
+          style={{ writingMode: "vertical-rl", textOrientation: "mixed" }}
+          onClick={() => { setMoreOpen((v) => !v); onToggle() }}
+          title="More tools"
+        >
+          More
+        </button>
       </div>
     )
   }
@@ -507,7 +528,7 @@ function KioskSideTabs({
         >
           «
         </button>
-        {tabs.map((t) => (
+        {primaryTabs.map((t) => (
           <button
             key={t.id}
             className={`px-2 py-1 text-xs rounded transition-colors whitespace-nowrap ${
@@ -518,7 +539,41 @@ function KioskSideTabs({
             {t.label}
           </button>
         ))}
+        {/* More Control (closed by default) */}
+        <button
+          type="button"
+          onClick={() => setMoreOpen((v) => !v)}
+          className={`px-2 py-1 text-xs rounded transition-colors whitespace-nowrap flex items-center gap-0.5 ${
+            isMoreActive
+              ? "bg-gray-700 text-white font-medium"
+              : "text-gray-400 hover:text-gray-200"
+          }`}
+          title="More tools (Browser, Attachments)"
+        >
+          <span>More {isMoreActive ? `(${sideTab === "browser" ? "Browser" : "Attachments"})` : ""}</span>
+          <span className="text-[9px]">{moreOpen ? "▴" : "▾"}</span>
+        </button>
       </div>
+
+      {moreOpen && (
+        <div className="flex gap-1.5 flex-shrink-0 px-3 py-1 bg-gray-850 border-b border-gray-700/60 overflow-x-auto scrollbar-none items-center">
+          <span className="text-[9px] uppercase font-semibold text-gray-500 mr-1">More:</span>
+          {moreTabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`px-2 py-0.5 text-xs rounded transition-colors whitespace-nowrap flex-shrink-0 ${
+                sideTab === t.id
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-750 text-gray-300 hover:bg-gray-700 hover:text-white"
+              }`}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="px-3 pb-3 pt-2 flex-1 min-h-0 overflow-auto">
         {sideTab === "project" && (
           <ProjectCard onEdit={onEditProject} />

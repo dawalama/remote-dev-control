@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { useProjectStore } from "@/stores/project-store"
+import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { GET, DELETE as DEL, api } from "@/lib/api"
 import { ContextViewerModal } from "@/features/modals/context-viewer"
@@ -14,6 +15,13 @@ interface ContextSnapshot {
 
 export function ContextsCard({ defaultExpanded = false }: { defaultExpanded?: boolean } = {}) {
   const currentProject = useProjectStore((s) => s.currentProject)
+  const activeChannel = useChannelStore((s) => {
+    const ch = s.channels.find((c) => c.id === s.activeChannelId)
+    return ch ?? null
+  })
+  const workstreamProjects = activeChannel?.project_names && activeChannel.project_names.length > 0
+    ? activeChannel.project_names
+    : (currentProject ? [currentProject] : [])
   const toast = useUIStore((s) => s.toast)
   const [contexts, setContexts] = useState<ContextSnapshot[]>([])
   const [expanded, setExpanded] = useState(defaultExpanded)
@@ -26,14 +34,26 @@ export function ContextsCard({ defaultExpanded = false }: { defaultExpanded?: bo
   }, [defaultExpanded])
 
   const load = () => {
+    if (workstreamProjects.length > 1) {
+      Promise.all(
+        workstreamProjects.map((p) => {
+          const params = new URLSearchParams({ limit: "20", project: p })
+          return GET<ContextSnapshot[]>(`/context?${params}`).catch(() => [] as ContextSnapshot[])
+        })
+      ).then((results) => {
+        const merged = results.flat().sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""))
+        setContexts(merged)
+      }).catch(() => {})
+      return
+    }
     const params = new URLSearchParams({ limit: "20" })
-    if (currentProject) params.set("project", currentProject)
+    if (workstreamProjects[0]) params.set("project", workstreamProjects[0])
     GET<ContextSnapshot[]>(`/context?${params}`)
       .then(setContexts)
       .catch(() => {})
   }
 
-  useEffect(() => { load() }, [currentProject])
+  useEffect(() => { load() }, [currentProject, workstreamProjects.join(",")])
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -41,7 +61,8 @@ export function ContextsCard({ defaultExpanded = false }: { defaultExpanded?: bo
     e.target.value = ""
     const form = new FormData()
     form.append("file", file)
-    if (currentProject) form.append("project", currentProject)
+    const targetProject = workstreamProjects[0] || currentProject
+    if (targetProject) form.append("project", targetProject)
     try {
       const res = await api<{ id: string; path: string }>("/context/upload", {
         method: "POST",

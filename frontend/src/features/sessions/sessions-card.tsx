@@ -1,10 +1,12 @@
 import { useState, useCallback, useRef } from "react"
 import { useChannelStore } from "@/stores/channel-store"
 import { useTerminalStore } from "@/stores/terminal-store"
-import { GET, POST } from "@/lib/api"
+import { api, GET, POST } from "@/lib/api"
 import { useUIStore } from "@/stores/ui-store"
 import { useProjectStore } from "@/stores/project-store"
+import { useStateStore } from "@/stores/state-store"
 import { useMountEffect } from "@/hooks/use-mount-effect"
+import type { Action } from "@/types"
 
 export const SESSION_STATUS = {
   PROPOSED: "proposed",
@@ -151,6 +153,27 @@ export function groupSessionsIntoGoalCards(sessions: SessionInfo[]): GoalCard[] 
   return cards
 }
 
+function ActionLinkChip({ action }: { action: Action }) {
+  const url = action.preview_url || (action.port ? `http://localhost:${action.port}` : null)
+  if (!url) return null
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300 hover:bg-emerald-500/20 hover:text-emerald-200 transition-colors"
+      title={`Open ${action.name || action.id} (${url}) in new tab`}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+      <span className="truncate max-w-[140px]">{action.name || action.id}</span>
+      <span className="text-[10px] text-emerald-400/70 font-mono flex-shrink-0">
+        {action.preview_url ? action.preview_url.replace(/^https?:\/\//, "") : `:${action.port}`}
+      </span>
+      <span className="text-[10px] flex-shrink-0">↗</span>
+    </a>
+  )
+}
+
 export function SessionsCard({
   onOpenTerminal,
 }: {
@@ -163,6 +186,7 @@ export function SessionsCard({
   const collections = useProjectStore((s) => s.collections)
   const currentCollection = useProjectStore((s) => s.currentCollection)
   const projects = useProjectStore((s) => s.projects)
+  const allActions = useStateStore((s) => s.actions)
   const openSessionFromHub = useUIStore((s) => s.openSessionFromHub)
   const toast = useUIStore((s) => s.toast)
   const setNeedsAttentionCount = useUIStore((s) => s.setNeedsAttentionCount)
@@ -187,6 +211,8 @@ export function SessionsCard({
   const [showClosed, setShowClosed] = useState(false)
   const [creating, setCreating] = useState(false)
   const [startingSessionId, setStartingSessionId] = useState<string | null>(null)
+  const [chosenFiles, setChosenFiles] = useState<File[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [draft, setDraft] = useState({ project: "", goal: "", criteria: "", provider: "orchestrated" })
   const [providerOptions, setProviderOptions] = useState<Array<{ id: string; label: string; ready?: boolean }>>([
@@ -202,6 +228,10 @@ export function SessionsCard({
     ? projects.filter((p) => workstreamProjects.includes(p.name))
     : projects
   const selectedProject = draft.project || availableProjects[0]?.name || (projects[0]?.name ?? "")
+
+  const activeRunningActions = allActions.filter(
+    (a) => a.status === "running" && workstreamProjects.includes(a.project)
+  )
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -270,6 +300,22 @@ export function SessionsCard({
         provider: draft.provider,
         status: asStaged ? "proposed" : "pending",
       })
+
+      // Step 8: Upload each chosen file as evidence on the session before starting
+      if (chosenFiles.length > 0) {
+        for (const file of chosenFiles) {
+          try {
+            const form = new FormData()
+            form.append("file", file)
+            form.append("note", `Attached at goal creation: ${file.name}`)
+            await api(`/sessions/${created.id}/evidence/media`, { method: "POST", body: form })
+          } catch {
+            /* ignore individual upload error so session creation proceeds */
+          }
+        }
+      }
+
+      setChosenFiles([])
       setDraft((value) => ({ ...value, goal: "", criteria: "" }))
       setShowCreate(false)
       setShowOptions(false)
@@ -294,7 +340,7 @@ export function SessionsCard({
   }
 
   // Start a new follow-up run on an existing Goal Card
-  const handleFollowupRun = async (card: GoalCard) => {
+  const handleFollowupRun = async (card: GoalCard, files: File[] = []) => {
     setCreating(true)
     try {
       const taskId = card.id.startsWith("task:") ? card.id.replace(/^task:/, "") : undefined
@@ -307,6 +353,16 @@ export function SessionsCard({
         parent_session_id: card.latestSession.id,
         provider: card.latestSession.agent_provider || undefined,
       })
+      if (files.length > 0) {
+        for (const file of files) {
+          try {
+            const form = new FormData()
+            form.append("file", file)
+            form.append("note", `Attached at follow-up run: ${file.name}`)
+            await api(`/sessions/${created.id}/evidence/media`, { method: "POST", body: form })
+          } catch { /* ignore */ }
+        }
+      }
       try {
         await POST(`/sessions/${created.id}/start`)
       } catch {
@@ -348,16 +404,40 @@ export function SessionsCard({
   const clientGroups = collections
     .map((c) => {
       const clientCards = filteredGoalCards.filter((card) => (card.collection_id || "general") === c.id)
+      const collChannels = channels.filter(
+        (ch) => (ch.collection_id || "general") === c.id && ch.id !== "ch-system"
+      )
+      const wsGroups = collChannels
+        .map((ch) => {
+          const wsCards = clientCards.filter((card) => card.channel_id === ch.id)
+          const wsRunningActions = allActions.filter(
+            (a) => a.status === "running" && (ch.project_names || []).includes(a.project)
+          )
+          return {
+            channel: ch,
+            cards: wsCards,
+            runningActions: wsRunningActions,
+            needsAttention: wsCards.filter((card) => card.attention_state === "needs_attention"),
+            running: wsCards.filter((card) => card.attention_state === "running"),
+            staged: wsCards.filter((card) => card.attention_state === "staged"),
+            accepted: wsCards.filter((card) => card.attention_state === "accepted"),
+          }
+        })
+        .filter((g) => g.cards.length > 0 || g.runningActions.length > 0)
+
+      const orphanCards = clientCards.filter((card) => !collChannels.some((ch) => ch.id === card.channel_id))
       return {
         collection: c,
         cards: clientCards,
+        workstreamGroups: wsGroups,
+        orphanCards,
         needsAttention: clientCards.filter((card) => card.attention_state === "needs_attention"),
         running: clientCards.filter((card) => card.attention_state === "running"),
         staged: clientCards.filter((card) => card.attention_state === "staged"),
         accepted: clientCards.filter((card) => card.attention_state === "accepted"),
       }
     })
-    .filter((g) => g.cards.length > 0)
+    .filter((g) => g.cards.length > 0 || g.workstreamGroups.length > 0)
 
   // Client badge styling
   const clientBadgeColor =
@@ -372,7 +452,7 @@ export function SessionsCard({
       {/* ── MODE A: Focused Workstream Header Toolbar ── */}
       {!isSystemWorkstream && activeChannel && (
         <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-gray-800 bg-gray-900/90 p-2.5">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold text-gray-200">{activeChannel.name}</span>
             {activeChannelClient && (
               <span className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${clientBadgeColor}`}>
@@ -383,6 +463,13 @@ export function SessionsCard({
               <span className="text-[10px] text-gray-400 font-mono">
                 [{workstreamProjects.join(", ")}]
               </span>
+            )}
+            {activeRunningActions.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 pl-2 border-l border-gray-800">
+                {activeRunningActions.map((action) => (
+                  <ActionLinkChip key={action.id} action={action} />
+                ))}
+              </div>
             )}
           </div>
 
@@ -505,6 +592,55 @@ export function SessionsCard({
             </div>
           )}
 
+          {/* File attachments for the goal (Step 8) */}
+          <div className="space-y-1.5 rounded border border-gray-700/60 bg-gray-900/60 p-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium text-gray-300">Goal Evidence &amp; Media</span>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="text-xs text-blue-400 hover:text-blue-300"
+              >
+                + Attach Files
+              </button>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                const files = Array.from(e.target.files || [])
+                if (files.length > 0) {
+                  setChosenFiles((prev) => [...prev, ...files])
+                }
+                e.target.value = ""
+              }}
+            />
+            {chosenFiles.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {chosenFiles.map((file, idx) => (
+                  <span
+                    key={`${file.name}-${idx}`}
+                    className="inline-flex items-center gap-1.5 rounded bg-gray-800 px-2 py-0.5 text-[11px] text-gray-200 border border-gray-700"
+                  >
+                    <span className="truncate max-w-[180px]">{file.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => setChosenFiles((prev) => prev.filter((_, i) => i !== idx))}
+                      className="text-gray-400 hover:text-red-400 font-bold ml-0.5"
+                      title="Remove file"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[10px] text-gray-500">Attach screenshots, logs, or specs to attach directly as session evidence.</p>
+            )}
+          </div>
+
           <div className="flex items-center justify-between pt-1">
             <span className="text-[10px] text-gray-400">Target Project: {selectedProject || "None"}</span>
             <div className="flex gap-2">
@@ -578,18 +714,90 @@ export function SessionsCard({
                   <span className="text-[10px] text-gray-500">({group.cards.length} goals)</span>
                 </div>
 
-                <AttentionColumnsGrid
-                  needsAttention={group.needsAttention}
-                  running={group.running}
-                  staged={group.staged}
-                  accepted={group.accepted}
-                  onOpenSession={openSessionFromHub}
-                  onStartSession={startSession}
-                  onNewRun={handleFollowupRun}
-                  onSelectWorkstream={selectChannel}
-                  startingSessionId={startingSessionId}
-                  onOpenTerminal={onOpenTerminal}
-                />
+                {group.workstreamGroups.length > 0 ? (
+                  <div className="space-y-4">
+                    {group.workstreamGroups.map((wsGroup) => (
+                      <div key={wsGroup.channel.id} className="rounded-lg border border-gray-800/80 bg-gray-900/60 p-2.5 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-800/60 pb-1.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => selectChannel(wsGroup.channel.id)}
+                              className="text-xs font-bold text-gray-200 hover:text-blue-400 font-mono transition-colors"
+                              title={`Open #${wsGroup.channel.name} workstream`}
+                            >
+                              #{wsGroup.channel.name}
+                            </button>
+                            {wsGroup.channel.project_names && wsGroup.channel.project_names.length > 0 && (
+                              <span className="text-[10px] text-gray-500 font-mono">
+                                [{wsGroup.channel.project_names.join(", ")}]
+                              </span>
+                            )}
+                            {wsGroup.runningActions.length > 0 && (
+                              <div className="flex flex-wrap items-center gap-1.5 pl-2 border-l border-gray-800">
+                                {wsGroup.runningActions.map((action) => (
+                                  <ActionLinkChip key={action.id} action={action} />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-gray-500">
+                            {wsGroup.cards.length} goal{wsGroup.cards.length === 1 ? "" : "s"}
+                          </span>
+                        </div>
+
+                        {wsGroup.cards.length > 0 ? (
+                          <AttentionColumnsGrid
+                            needsAttention={wsGroup.needsAttention}
+                            running={wsGroup.running}
+                            staged={wsGroup.staged}
+                            accepted={wsGroup.accepted}
+                            onOpenSession={openSessionFromHub}
+                            onStartSession={startSession}
+                            onNewRun={handleFollowupRun}
+                            onSelectWorkstream={selectChannel}
+                            startingSessionId={startingSessionId}
+                            onOpenTerminal={onOpenTerminal}
+                          />
+                        ) : (
+                          <p className="py-2 text-center text-[10px] text-gray-600">No active goals on this workstream</p>
+                        )}
+                      </div>
+                    ))}
+                    {group.orphanCards.length > 0 && (
+                      <div className="rounded-lg border border-gray-800/80 bg-gray-900/40 p-2.5 space-y-2">
+                        <div className="border-b border-gray-800/60 pb-1.5">
+                          <span className="text-xs font-medium text-gray-400">Other Goals</span>
+                        </div>
+                        <AttentionColumnsGrid
+                          needsAttention={group.orphanCards.filter((card) => card.attention_state === "needs_attention")}
+                          running={group.orphanCards.filter((card) => card.attention_state === "running")}
+                          staged={group.orphanCards.filter((card) => card.attention_state === "staged")}
+                          accepted={group.orphanCards.filter((card) => card.attention_state === "accepted")}
+                          onOpenSession={openSessionFromHub}
+                          onStartSession={startSession}
+                          onNewRun={handleFollowupRun}
+                          onSelectWorkstream={selectChannel}
+                          startingSessionId={startingSessionId}
+                          onOpenTerminal={onOpenTerminal}
+                        />
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <AttentionColumnsGrid
+                    needsAttention={group.needsAttention}
+                    running={group.running}
+                    staged={group.staged}
+                    accepted={group.accepted}
+                    onOpenSession={openSessionFromHub}
+                    onStartSession={startSession}
+                    onNewRun={handleFollowupRun}
+                    onSelectWorkstream={selectChannel}
+                    startingSessionId={startingSessionId}
+                    onOpenTerminal={onOpenTerminal}
+                  />
+                )}
               </div>
             )
           })}

@@ -34,6 +34,7 @@ interface SessionDiffFile {
   path: string
   status: string
   patch: string
+  truncated?: boolean
 }
 
 interface SessionEvidence { id: string; evidence_type: string; title: string; data: Record<string, unknown> }
@@ -127,11 +128,16 @@ export function SessionViewer({
   const [showContinue, setShowContinue] = useState(false)
   const [continuationGoal, setContinuationGoal] = useState("Implement the approved outcome from this analysis. Make the changes, run relevant verification, and summarize the delivered result.")
   const [continuing, setContinuing] = useState(false)
+  const [continuationFiles, setContinuationFiles] = useState<File[]>([])
+  const continuationFileInputRef = useRef<HTMLInputElement>(null)
   const [continuation, setContinuation] = useState<SessionData | null>(null)
   const [nextInstruction, setNextInstruction] = useState("")
   const [sendingInstruction, setSendingInstruction] = useState(false)
   const [pinnedRun, setPinnedRun] = useState<number | null>(null)
   const [runDiff, setRunDiff] = useState<SessionDiffFile[] | null>(null)
+  const pinnedRunRef = useRef<number | null>(null)
+  const diffRequest = useRef(0)
+  pinnedRunRef.current = pinnedRun
   const redrawRef = useRef<() => void>(() => {})
   const toast = useUIStore((s) => s.toast)
   const layout = useUIStore((s) => s.layout)
@@ -164,10 +170,23 @@ export function SessionViewer({
   })
 
   const loadRunDiff = async () => {
+    const run = pinnedRunRef.current
+    const request = ++diffRequest.current
+    const query = run == null ? "" : `?run=${run}`
     try {
-      const data = await GET<{ files: SessionDiffFile[] }>(`/sessions/${sessionId}/diff`)
+      const data = await GET<{ files: SessionDiffFile[] }>(`/sessions/${sessionId}/diff${query}`)
+      if (request !== diffRequest.current) return
       setRunDiff(data?.files ?? [])
-    } catch { /* ignore */ }
+    } catch {
+      if (request === diffRequest.current) setRunDiff([])
+    }
+  }
+
+  const selectRun = (index: number | null) => {
+    pinnedRunRef.current = index
+    setPinnedRun(index)
+    setRunDiff(null)
+    void loadRunDiff()
   }
 
   const loadArtifact = async () => {
@@ -369,6 +388,19 @@ export function SessionViewer({
         review_mode: "implementation",
         acceptance_criteria: ["The requested next outcome is completed", "Relevant verification passes"],
       })
+      if (continuationFiles.length > 0) {
+        for (const file of continuationFiles) {
+          try {
+            const form = new FormData()
+            form.append("file", file)
+            form.append("note", `Attached at continuation: ${file.name}`)
+            await api(`/sessions/${child.id}/evidence/media`, { method: "POST", body: form })
+          } catch {
+            /* ignore individual evidence upload error */
+          }
+        }
+      }
+      setContinuationFiles([])
       try { await POST(`/sessions/${child.id}/retry`, { provider: "orchestrated" }) }
       catch { toast("Continuation created; agent setup is required before it can run", "warning") }
       setContinuation(child)
@@ -790,12 +822,12 @@ export function SessionViewer({
 
           <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800">
             <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} artifact={artifact} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
-              loadEvents={loadEvents} loadLog={loadLog} compact activeRun={activeRun} runCount={runCount} activeFollowup={activeFollowup} runDiff={runDiff} onSelectRun={setPinnedRun} />
+              loadEvents={loadEvents} loadLog={loadLog} compact activeRun={activeRun} runCount={runCount} activeFollowup={activeFollowup} runDiff={runDiff} onSelectRun={selectRun} />
           </div>
         </>
       ) : (
         <SessionTabs sessionId={sessionId} tab={tab} setTab={setTab} artifact={artifact} events={events} log={log} session={session} evidence={evidence} loadSupervision={loadSupervision}
-          loadEvents={loadEvents} loadLog={loadLog} activeRun={activeRun} runCount={runCount} activeFollowup={activeFollowup} runDiff={runDiff} onSelectRun={setPinnedRun} />
+          loadEvents={loadEvents} loadLog={loadLog} activeRun={activeRun} runCount={runCount} activeFollowup={activeFollowup} runDiff={runDiff} onSelectRun={selectRun} />
       )}
 
       {/* 5. Bottom Contextual Next Steps Dock (1-Click Chips + Compact Follow-up Input) */}
@@ -890,11 +922,51 @@ export function SessionViewer({
                   onChange={(event) => setContinuationGoal(event.target.value)}
                   className="flex-1 rounded border border-gray-700 bg-gray-950 px-2.5 py-1 text-xs text-gray-200"
                 />
+                <button
+                  type="button"
+                  onClick={() => continuationFileInputRef.current?.click()}
+                  className="rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:text-white"
+                  title="Attach files to follow-up session"
+                >
+                  📎 {continuationFiles.length > 0 ? `(${continuationFiles.length})` : "Attach"}
+                </button>
+                <input
+                  ref={continuationFileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || [])
+                    if (files.length > 0) {
+                      setContinuationFiles((prev) => [...prev, ...files])
+                    }
+                    e.target.value = ""
+                  }}
+                />
                 <button disabled={continuing || !continuationGoal.trim()} onClick={continueWithImplementation} className="rounded bg-blue-600 px-3 py-1 text-xs text-white disabled:opacity-50">
                   {continuing ? "Starting…" : "Start"}
                 </button>
-                <button onClick={() => setShowContinue(false)} className="px-2 text-[10px] text-gray-400">Cancel</button>
+                <button onClick={() => { setShowContinue(false); setContinuationFiles([]) }} className="px-2 text-[10px] text-gray-400">Cancel</button>
               </div>
+              {continuationFiles.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {continuationFiles.map((file, idx) => (
+                    <span
+                      key={`${file.name}-${idx}`}
+                      className="inline-flex items-center gap-1 rounded bg-gray-800 px-2 py-0.5 text-[10px] text-gray-300 border border-gray-700"
+                    >
+                      <span className="truncate max-w-[140px]">{file.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setContinuationFiles((prev) => prev.filter((_, i) => i !== idx))}
+                        className="text-gray-400 hover:text-red-400 font-bold ml-0.5"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -903,30 +975,81 @@ export function SessionViewer({
   )
 }
 
-function RunChanges({ instruction, files, compact }: { instruction: string; files: SessionDiffFile[] | null; compact?: boolean }) {
+function DiffText({ patch }: { patch: string }) {
   return (
-    <div className={`overflow-y-auto px-4 py-3 ${compact ? "max-h-36" : "flex-1 min-h-[420px]"}`}>
-      <div className="mb-3 text-sm text-gray-100">{instruction}</div>
-      {files == null ? (
-        <div className="text-xs text-gray-500">Loading the files from this run…</div>
-      ) : files.length === 0 ? (
-        <div className="text-xs text-gray-500">This run has no uncommitted changes.</div>
-      ) : (
-        <div className="space-y-2">
-          {files.map((file, index) => (
-            <details key={file.path} open={index < 4} className="rounded border border-gray-800 bg-gray-950">
-              <summary className="cursor-pointer px-3 py-2 text-xs text-gray-200">
-                <span className="font-mono">{file.path}</span>
-                <span className="ml-2 text-[10px] uppercase text-gray-500">{file.status}</span>
-              </summary>
-              {file.patch ? (
-                <pre className="max-h-80 overflow-auto border-t border-gray-800 px-3 py-2 text-[11px] leading-5 text-gray-300">{file.patch}</pre>
-              ) : (
-                <div className="border-t border-gray-800 px-3 py-2 text-[11px] text-gray-500">No text diff for this file.</div>
-              )}
-            </details>
-          ))}
+    <pre className="min-w-0 overflow-auto px-3 py-2 font-mono text-[11px] leading-5">
+      {patch.split("\n").map((line, index) => {
+        const color = line.startsWith("+") && !line.startsWith("+++")
+          ? "text-emerald-300"
+          : line.startsWith("-") && !line.startsWith("---")
+            ? "text-red-300"
+            : line.startsWith("@@") || line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("new file") || line.startsWith("deleted file")
+              ? "text-sky-300"
+              : "text-gray-400"
+        return <div key={index} className={color}>{line || " "}</div>
+      })}
+    </pre>
+  )
+}
+
+function RunChanges({ instruction, files, compact }: { instruction: string; files: SessionDiffFile[] | null; compact?: boolean }) {
+  const reviewFiles = files ?? []
+  const firstCode = reviewFiles.find((file) => file.path.startsWith("src/") || file.path.startsWith("tests/"))?.path
+    ?? reviewFiles.find((file) => !file.path.startsWith("."))?.path
+    ?? reviewFiles[0]?.path
+    ?? null
+  const [picked, setPicked] = useState<string | null>(null)
+  const selectedPath = picked && reviewFiles.some((file) => file.path === picked) ? picked : firstCode
+  const selected = reviewFiles.find((file) => file.path === selectedPath) ?? null
+
+  if (compact) {
+    return (
+      <div className="max-h-36 overflow-y-auto px-3 py-2">
+        <div className="mb-1 line-clamp-2 text-[11px] text-gray-200">{instruction}</div>
+        <div className="text-[10px] text-gray-500">
+          {files == null ? "Loading files…" : files.length === 0 ? "No file changes in this run." : `${files.length} files. Hide the terminal to read them.`}
         </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex-shrink-0 border-b border-gray-800 px-3 py-2 text-xs text-gray-200">{instruction}</div>
+      {files == null ? (
+        <div className="px-3 py-4 text-xs text-gray-500">Loading the files from this run…</div>
+      ) : reviewFiles.length === 0 ? (
+        <div className="px-3 py-4 text-xs text-gray-500">This run has no file changes to review.</div>
+      ) : (
+        <>
+          <div className="flex max-h-28 flex-shrink-0 flex-wrap gap-1 overflow-y-auto border-b border-gray-800 px-3 py-2">
+            {reviewFiles.map((file) => (
+              <button
+                key={file.path}
+                type="button"
+                onClick={() => setPicked(file.path)}
+                className={`rounded border px-2 py-0.5 text-left font-mono text-[10px] ${
+                  file.path === selectedPath
+                    ? "border-blue-500 bg-blue-950/60 text-blue-100"
+                    : "border-gray-700 text-gray-300 hover:border-gray-500"
+                }`}
+              >
+                {file.path}
+                <span className="ml-1 text-[9px] uppercase text-gray-500">{file.status}</span>
+              </button>
+            ))}
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto bg-gray-950">
+            {selected?.patch ? (
+              <DiffText patch={selected.patch} />
+            ) : (
+              <div className="px-3 py-4 text-[11px] text-gray-500">No text diff for this file.</div>
+            )}
+            {selected?.truncated && (
+              <div className="px-3 pb-3 text-[10px] text-amber-300">This file is truncated. The rest is in the repo.</div>
+            )}
+          </div>
+        </>
       )}
     </div>
   )
@@ -974,7 +1097,7 @@ function SessionTabs({
             }`}
           >
             {t === "artifact"
-              ? (showingFollowup ? "This run" : "Proof Artifact")
+              ? (showingFollowup ? "This run" : "Review")
               : t === "summary"
                 ? "Details & Evidence"
                 : t === "log"
@@ -997,7 +1120,11 @@ function SessionTabs({
             >
               Previous run
             </button>
-            <span className="text-[10px] text-gray-400">Run {activeRun + 1} of {runCount}</span>
+            <span className="text-[10px] text-gray-300">
+              {showingFollowup
+                ? `Run ${activeRun + 1} of ${runCount}${runDiff ? ` · ${runDiff.length} files` : ""}`
+                : `Run 1 of ${runCount} · review`}
+            </span>
             <button
               type="button"
               disabled={activeRun >= runCount - 1}
@@ -1011,7 +1138,11 @@ function SessionTabs({
       </div>
 
       {/* Content */}
-      <div className={`overflow-y-auto ${tab === "artifact" && !compact ? "flex-1 min-h-0 flex flex-col" : `px-3 py-2 ${compact ? "max-h-36" : "flex-1 min-h-0"}`}`}>
+      <div className={
+        tab === "artifact" && showingFollowup && !compact
+          ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+          : `overflow-y-auto ${tab === "artifact" && !compact ? "flex min-h-0 flex-1 flex-col" : `px-3 py-2 ${compact ? "max-h-36" : "min-h-0 flex-1"}`}`
+      }>
         {tab === "artifact" && (
           showingFollowup ? (
             <RunChanges

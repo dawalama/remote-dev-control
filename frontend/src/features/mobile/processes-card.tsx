@@ -1,5 +1,6 @@
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
+import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { POST } from "@/lib/api"
 import { AddActionForm } from "@/features/processes/add-action-form"
@@ -12,12 +13,17 @@ export function ProcessesCard({
 }) {
   const actions = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
+  const activeChannel = useChannelStore((s) => {
+    const ch = s.channels.find((c) => c.id === s.activeChannelId)
+    return ch ?? null
+  })
+  const workstreamProjects = activeChannel?.project_names && activeChannel.project_names.length > 0
+    ? activeChannel.project_names
+    : (currentProject ? [currentProject] : [])
   const toast = useUIStore((s) => s.toast)
 
-  // Actions are per-project; empty state when no project is selected.
-  const filtered = currentProject
-    ? actions.filter((p) => p.project === currentProject)
-    : []
+  // Actions are filtered with the open workstream's projects
+  const filtered = actions.filter((p) => workstreamProjects.includes(p.project))
 
   const services = filtered
     .filter((p) => (p.kind || "service") === "service")

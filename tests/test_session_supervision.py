@@ -410,6 +410,77 @@ def test_custom_wrapper_crud_in_agent_registry(monkeypatch, tmp_path):
     assert "grok" not in [p["id"] for p in del_resp.json()["providers"]]
 
 
+def test_followup_run_keeps_its_own_diff_beside_the_review_artifact(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    sp.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+    sp.run(["git", "config", "user.email", "dev@example.com"], cwd=repo_dir, check=True)
+    sp.run(["git", "config", "user.name", "Dev"], cwd=repo_dir, check=True)
+    (repo_dir / "app.ts").write_text("export const x = 1\n")
+    sp.run(["git", "add", "."], cwd=repo_dir, check=True)
+    sp.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True, capture_output=True)
+    (repo_dir / "app.ts").write_text("export const x = 2\n")
+
+    manager = get_session_manager()
+    session = manager.create_session(
+        "test-channel",
+        "test-project",
+        "Review the architecture",
+        metadata={
+            "supervised": True,
+            "followup_instructions": [{
+                "instruction": "Apply the recommendations and leave the files for review.",
+                "created_at": "2026-11-04T15:00:00+00:00",
+            }],
+        },
+    )
+    artifact_dir = repo_dir / ".rdc" / "sessions"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / f"{session.id}.html").write_text("<h1>Architecture review</h1>")
+
+    monkeypatch.setattr("remote_dev_ctrl.server.app._session_project_path", lambda _project: repo_dir)
+    token, _ = get_auth_manager().create_token("followup-diff", Role.ADMIN)
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    session_resp = client.get(f"/sessions/{session.id}", headers=headers)
+    assert session_resp.status_code == 200
+    assert session_resp.json()["followup_instructions"][0]["instruction"].startswith("Apply the recommendations")
+
+    artifact_resp = client.get(f"/sessions/{session.id}/artifact", headers=headers)
+    assert artifact_resp.status_code == 200
+    assert artifact_resp.json()["source"] == "custom"
+    assert "Architecture review" in artifact_resp.json()["html"]
+
+    diff_resp = client.get(f"/sessions/{session.id}/diff", headers=headers)
+    assert diff_resp.status_code == 200
+    files = diff_resp.json()["files"]
+    assert any(item["path"] == "app.ts" and "export const x = 2" in item["patch"] for item in files)
+
+    # The host commit lands after the run. The follow-up view still has to show
+    # those files, while the original review stays the custom artifact.
+    parent = sp.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_dir, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    sp.run(["git", "add", "app.ts"], cwd=repo_dir, check=True, capture_output=True)
+    sp.run(["git", "commit", "-m", "apply"], cwd=repo_dir, check=True, capture_output=True)
+    session.metadata = {
+        **(session.metadata or {}),
+        "git_baseline": {"head": parent, "status": ""},
+    }
+    manager._persist(session)
+
+    committed = client.get(f"/sessions/{session.id}/diff?run=1", headers=headers)
+    assert committed.status_code == 200
+    committed_files = committed.json()["files"]
+    assert any(item["path"] == "app.ts" and "export const x = 2" in item["patch"] for item in committed_files)
+    review = client.get(f"/sessions/{session.id}/diff?run=0", headers=headers)
+    assert review.status_code == 200
+    assert review.json()["files"] == []
+
+
 def test_session_git_status_and_one_click_host_commit(monkeypatch, tmp_path):
     import subprocess as sp
 

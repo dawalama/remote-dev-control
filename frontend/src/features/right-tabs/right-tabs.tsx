@@ -19,11 +19,18 @@ import type { ActivityEvent, Task } from "@/types"
 
 type RightTab = "activity" | "processes" | "browser" | "attachments" | "system" | "dictation"
 
+const MORE_TABS: { id: RightTab; label: string }[] = [
+  { id: "activity", label: "Activity" },
+  { id: "browser", label: "Browser" },
+  { id: "attachments", label: "Attachments" },
+]
+
 export function RightTabs() {
   const globalTab = useUIStore((s) => s.currentTab)
   const setGlobalTab = useUIStore((s) => s.setTab)
   const phone = useStateStore((s) => s.phone)
   const dictationBlocks = useDictationStore((s) => s.blocks)
+  const [moreOpen, setMoreOpen] = useState(false)
 
   // Map global TabId → RightTab (all RightTab values are valid TabIds now)
   const VALID_TABS = new Set<string>(["activity", "processes", "tasks", "browser", "pinchtab", "attachments", "system", "dictation"])
@@ -33,21 +40,20 @@ export function RightTabs() {
   const setTab = (t: RightTab) => setGlobalTab(t)
   const phoneActive = (phone as { active?: boolean })?.active === true
 
-  const tabs: { id: RightTab; label: string; badge?: number }[] = [
-    { id: "activity", label: "Activity" },
+  const primaryTabs: { id: RightTab; label: string; badge?: number }[] = [
     { id: "processes", label: "Actions" },
-    { id: "browser", label: "Browser" },
-    { id: "attachments", label: "Attachments" },
     ...(phoneActive ? [{ id: "dictation" as RightTab, label: "Dictation", badge: dictationBlocks.length > 0 ? dictationBlocks.length : undefined }] : []),
     { id: "system", label: "System" },
   ]
+  const isMoreTab = MORE_TABS.some((t) => t.id === tab)
 
   return (
     <div className="bg-gray-800 rounded-lg flex flex-col h-full min-h-0 min-w-0 overflow-hidden">
-      <div className="flex gap-1 flex-shrink-0 px-3 pt-3 pb-1 overflow-x-auto scrollbar-none">
-        {tabs.map((t) => (
+      <div className="flex gap-1 flex-shrink-0 px-3 pt-3 pb-1 overflow-x-auto scrollbar-none items-center">
+        {primaryTabs.map((t) => (
           <button
             key={t.id}
+            type="button"
             className={`px-3 py-1.5 text-xs rounded transition-colors whitespace-nowrap flex-shrink-0 ${
               tab === t.id
                 ? "bg-gray-700 text-white"
@@ -63,7 +69,43 @@ export function RightTabs() {
             )}
           </button>
         ))}
+
+        {/* More Control (closed by default) */}
+        <button
+          type="button"
+          onClick={() => setMoreOpen((v) => !v)}
+          className={`px-3 py-1.5 text-xs rounded transition-colors whitespace-nowrap flex-shrink-0 flex items-center gap-1 ${
+            isMoreTab
+              ? "bg-gray-700 text-white font-medium"
+              : "text-gray-400 hover:text-gray-200"
+          }`}
+          title="More tools: Activity, Browser, Attachments"
+        >
+          <span>More {isMoreTab ? `(${MORE_TABS.find((t) => t.id === tab)?.label})` : ""}</span>
+          <span className="text-[10px]">{moreOpen ? "▴" : "▾"}</span>
+        </button>
       </div>
+
+      {moreOpen && (
+        <div className="flex gap-1.5 flex-shrink-0 px-3 py-1.5 bg-gray-850 border-b border-gray-700/60 overflow-x-auto scrollbar-none items-center">
+          <span className="text-[10px] uppercase font-semibold text-gray-500 self-center mr-1">More:</span>
+          {MORE_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`px-2.5 py-1 text-xs rounded transition-colors whitespace-nowrap flex-shrink-0 ${
+                tab === t.id
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-750 text-gray-300 hover:bg-gray-700 hover:text-white"
+              }`}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="px-3 pb-3 pt-2 flex-1 min-h-0 overflow-auto">
         {tab === "activity" && <ActivityTab />}
         {tab === "processes" && <ProcessesTab />}
@@ -84,21 +126,33 @@ function ActivityTab() {
   const currentProject = useProjectStore((s) => s.currentProject)
   const wsRef = useRef<ManagedWebSocket | null>(null)
 
-  // Channel-first: use active channel's primary project for filtering
+  // Channel-first: use active channel's projects for filtering
   const activeChannel = useChannelStore((s) => {
     const ch = s.channels.find((c) => c.id === s.activeChannelId)
     return ch ?? null
   })
-  const filterProject = activeChannel?.project_names?.[0] || (currentProject ? currentProject : null)
+  const workstreamProjects = activeChannel?.project_names && activeChannel.project_names.length > 0
+    ? activeChannel.project_names
+    : (currentProject ? [currentProject] : [])
 
   const loadActivity = useCallback(
-    (before?: string) => {
+    async (before?: string) => {
+      if (workstreamProjects.length > 1) {
+        const results = await Promise.all(
+          workstreamProjects.map((p) => {
+            const params = new URLSearchParams({ limit: "30", project: p })
+            if (before) params.set("before", before)
+            return GET<ActivityEvent[]>(`/activity?${params}`).catch(() => [] as ActivityEvent[])
+          })
+        )
+        return results.flat().sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || "")).slice(0, 30)
+      }
       const params = new URLSearchParams({ limit: "30" })
-      if (filterProject) params.set("project", filterProject)
+      if (workstreamProjects[0]) params.set("project", workstreamProjects[0])
       if (before) params.set("before", before)
       return GET<ActivityEvent[]>(`/activity?${params}`)
     },
-    [filterProject]
+    [workstreamProjects]
   )
 
   useEffect(() => {
@@ -123,6 +177,9 @@ function ActivityTab() {
             timestamp: evt.timestamp || new Date().toISOString(),
           }
           setEvents((prev) => {
+            if (workstreamProjects.length > 0 && evt.project && !workstreamProjects.includes(evt.project)) {
+              return prev
+            }
             // Deduplicate consecutive
             if (prev.length > 0 && prev[0].message === newEvent.message) return prev
             return [newEvent, ...prev].slice(0, 100)
@@ -133,7 +190,7 @@ function ActivityTab() {
     ws.connect()
     wsRef.current = ws
     return () => { ws.close(); wsRef.current = null }
-  }, [currentProject])
+  }, [currentProject, workstreamProjects])
 
   const loadMore = async () => {
     if (loadingMore || !hasMore || events.length === 0) return
@@ -187,16 +244,22 @@ function ActivityTab() {
 function ProcessesTab() {
   const actions = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
+  const activeChannel = useChannelStore((s) => {
+    const ch = s.channels.find((c) => c.id === s.activeChannelId)
+    return ch ?? null
+  })
+  const workstreamProjects = activeChannel?.project_names && activeChannel.project_names.length > 0
+    ? activeChannel.project_names
+    : (currentProject ? [currentProject] : [])
   const toast = useUIStore((s) => s.toast)
   const openProcessLog = useLogsStore((s) => s.openProcessLog)
   const [detecting, setDetecting] = useState(false)
   const [settingUp, setSettingUp] = useState(false)
   const [showPorts, setShowPorts] = useState(false)
 
-  // Actions are per-project. With no project selected (e.g. in #system or
-  // any channel without a linked project), show an empty state rather than
-  // leaking every project's actions into the panel.
-  const filtered = (currentProject ? actions.filter((p) => p.project === currentProject) : [])
+  // Actions are filtered with the open workstream's projects
+  const filtered = actions
+    .filter((p) => workstreamProjects.includes(p.project))
     .slice()
     .sort((a, b) => {
       // Services first, then commands
@@ -231,10 +294,14 @@ function ProcessesTab() {
   }
 
   const handleSync = async () => {
-    if (!currentProject) { toast("Select a project first", "warning"); return }
+    if (workstreamProjects.length === 0) { toast("No project associated with this workstream", "warning"); return }
     setDetecting(true)
     try {
-      await POST(`/projects/${encodeURIComponent(currentProject)}/detect-actions?force_rediscover=true`)
+      await Promise.all(
+        workstreamProjects.map((p) =>
+          POST(`/projects/${encodeURIComponent(p)}/detect-actions?force_rediscover=true`)
+        )
+      )
       toast("Sync complete", "success")
     } catch { toast("Sync failed", "error") }
     setDetecting(false)
@@ -785,18 +852,37 @@ function ContextsTab() {
   const [contexts, setContexts] = useState<ContextSnapshot[]>([])
   const [viewId, setViewId] = useState<string | null>(null)
   const currentProject = useProjectStore((s) => s.currentProject)
+  const activeChannel = useChannelStore((s) => {
+    const ch = s.channels.find((c) => c.id === s.activeChannelId)
+    return ch ?? null
+  })
+  const workstreamProjects = activeChannel?.project_names && activeChannel.project_names.length > 0
+    ? activeChannel.project_names
+    : (currentProject ? [currentProject] : [])
   const toast = useUIStore((s) => s.toast)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const load = () => {
+    if (workstreamProjects.length > 1) {
+      Promise.all(
+        workstreamProjects.map((p) => {
+          const params = new URLSearchParams({ limit: "50", project: p })
+          return GET<ContextSnapshot[]>(`/context?${params}`).catch(() => [] as ContextSnapshot[])
+        })
+      ).then((results) => {
+        const merged = results.flat().sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""))
+        setContexts(merged)
+      }).catch(() => {})
+      return
+    }
     const params = new URLSearchParams({ limit: "50" })
-    if (currentProject) params.set("project", currentProject)
+    if (workstreamProjects[0]) params.set("project", workstreamProjects[0])
     GET<ContextSnapshot[]>(`/context?${params}`)
       .then(setContexts)
       .catch(() => {})
   }
 
-  useEffect(() => { load() }, [currentProject])
+  useEffect(() => { load() }, [currentProject, workstreamProjects.join(",")])
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -804,7 +890,8 @@ function ContextsTab() {
     e.target.value = ""
     const form = new FormData()
     form.append("file", file)
-    if (currentProject) form.append("project", currentProject)
+    const targetProject = workstreamProjects[0] || currentProject
+    if (targetProject) form.append("project", targetProject)
     try {
       const res = await api<{ id: string; path: string }>("/context/upload", {
         method: "POST",
