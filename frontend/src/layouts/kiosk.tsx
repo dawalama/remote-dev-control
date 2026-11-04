@@ -48,6 +48,7 @@ export function KioskLayout() {
   const terminals = useStateStore((s) => s.terminals)
   const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
+  const needsAttentionCount = useUIStore((s) => s.needsAttentionCount)
   const openProcessLog = useLogsStore((s) => s.openProcessLog)
 
   const [projectSheetOpen, setProjectSheetOpen] = useState(false)
@@ -217,14 +218,29 @@ export function KioskLayout() {
         </div>
       </div>
 
-      {attentionTerminals.length > 0 && (
-        <div className="mx-3 mt-2 bg-yellow-900/50 rounded-lg px-4 py-2 flex items-center gap-3 flex-shrink-0">
-          <span className="text-xs font-semibold text-yellow-300">Attention ({attentionTerminals.length})</span>
-          <div className="flex gap-2 overflow-x-auto">
+      {(needsAttentionCount > 0 || attentionTerminals.length > 0) && (
+        <div className="mx-3 mt-2 bg-amber-950/40 border border-amber-500/40 rounded-lg px-4 py-2 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+            <span className="text-xs font-semibold text-amber-200">
+              {needsAttentionCount > 0
+                ? `${needsAttentionCount} session${needsAttentionCount === 1 ? "" : "s"} need your review`
+                : `Terminal input required (${attentionTerminals.length})`}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {needsAttentionCount > 0 && (
+              <button
+                onClick={() => useUIStore.getState().setSessionsHubOpen(true)}
+                className="px-2.5 py-1 text-xs rounded bg-amber-600 hover:bg-amber-500 text-white font-medium transition-colors"
+              >
+                Review Sessions →
+              </button>
+            )}
             {attentionTerminals.map((t) => (
               <button
                 key={t.id}
-                className="px-3 py-1 text-xs rounded bg-yellow-700 hover:bg-yellow-600 text-yellow-100 whitespace-nowrap"
+                className="px-2.5 py-1 text-xs rounded bg-yellow-700 hover:bg-yellow-600 text-yellow-100 whitespace-nowrap"
                 onClick={() => setTerminalOverlayId(t.id)}
               >
                 {t.project || t.id}

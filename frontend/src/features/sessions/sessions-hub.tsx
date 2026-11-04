@@ -1,5 +1,4 @@
 import { useState } from "react"
-import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { SessionsCard } from "./sessions-card"
 import { ProviderSetup } from "./provider-setup"
@@ -15,17 +14,10 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
   const [briefText, setBriefText] = useState<string | null>(null)
   const toast = useUIStore((state) => state.toast)
   const setVoicePanelOpen = useUIStore((state) => state.setVoicePanelOpen)
-  const channels = useChannelStore((state) => state.channels)
-  const activeChannelId = useChannelStore((state) => state.activeChannelId)
-  const scope = useUIStore((state) => state.sessionsHubScope)
-  const setScope = useUIStore((state) => state.setSessionsHubScope)
   const viewingSessionId = useUIStore((state) => state.viewingSessionId)
   const setViewingSessionId = useUIStore((state) => state.setViewingSessionId)
   const workspaceMode = useUIStore((state) => state.workspaceMode)
   const setWorkspaceMode = useUIStore((state) => state.setWorkspaceMode)
-
-  const workstreams = channels.filter((channel) => channel.type !== "system" && !channel.archived_at)
-  const activeWorkstream = workstreams.find((c) => c.id === activeChannelId)
 
   const runBrief = async () => {
     setBriefing(true)
@@ -59,48 +51,8 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
       <header className="flex flex-wrap items-center gap-2.5 border-b border-gray-800 px-4 py-2.5 bg-gray-900/90">
         <div className="min-w-0 flex-1 flex items-center gap-2">
           <h2 className="text-sm font-semibold text-gray-100">
-            {scope === "all"
-              ? "All Workstreams"
-              : activeWorkstream
-                ? `#${activeWorkstream.name.replace(/^#+/, "")}`
-                : "Goal Loops"}
+            Goals &amp; Reviews
           </h2>
-          {onCloseModal && (
-            <select
-              value={activeChannelId ?? ""}
-              onChange={(event) => {
-                useChannelStore.getState().selectChannel(event.target.value)
-                setScope("workstream")
-              }}
-              className="max-w-44 rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300"
-            >
-              <option value="" disabled>Select workstream</option>
-              {workstreams.map((channel) => (
-                <option key={channel.id} value={channel.id}>
-                  {channel.name.replace(/^#+/, "")}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-
-        <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5">
-          <button
-            onClick={() => setScope("workstream")}
-            className={`rounded px-2.5 py-1 text-xs transition-colors ${
-              scope === "workstream" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
-            }`}
-          >
-            This workstream
-          </button>
-          <button
-            onClick={() => setScope("all")}
-            className={`rounded px-2.5 py-1 text-xs transition-colors ${
-              scope === "all" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
-            }`}
-          >
-            All workstreams
-          </button>
         </div>
 
         <button
@@ -178,13 +130,7 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
             <EvidenceSetup />
           </div>
         )}
-        {scope === "workstream" && !activeChannelId ? (
-          <div className="rounded-lg border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">
-            Select a workstream on the left (or switch to <strong>All workstreams</strong>) to launch and review Goal Loops.
-          </div>
-        ) : (
-          <SessionsCard key={scope} scope={scope} />
-        )}
+        <SessionsCard />
       </div>
 
       {showProjectBootstrap && <ProjectBootstrap onClose={() => setShowProjectBootstrap(false)} />}

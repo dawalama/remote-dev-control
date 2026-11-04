@@ -6,7 +6,8 @@ import { useUIStore } from "@/stores/ui-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 
-const SESSION_STATUS = {
+export const SESSION_STATUS = {
+  PROPOSED: "proposed",
   PENDING: "pending",
   RUNNING: "running",
   WAITING: "waiting",
@@ -17,18 +18,38 @@ const SESSION_STATUS = {
   CANCELLED: "cancelled",
 } as const
 
-type SessionStatusValue = (typeof SESSION_STATUS)[keyof typeof SESSION_STATUS]
+export type SessionStatusValue = (typeof SESSION_STATUS)[keyof typeof SESSION_STATUS]
 
-const ACTIVE_STATUSES: SessionStatusValue[] = [SESSION_STATUS.PENDING, SESSION_STATUS.RUNNING, SESSION_STATUS.WAITING, SESSION_STATUS.VERIFYING]
-const TERMINAL_STATUSES: SessionStatusValue[] = [SESSION_STATUS.DONE, SESSION_STATUS.COMPLETED, SESSION_STATUS.FAILED, SESSION_STATUS.CANCELLED]
+export type AttentionState = "needs_attention" | "running" | "staged" | "accepted" | "closed"
 
-interface SessionInfo {
+export function getSessionAttentionState(status: string): AttentionState {
+  if (status === "waiting" || status === "verifying" || status === "failed") {
+    return "needs_attention"
+  }
+  if (status === "pending" || status === "running") {
+    return "running"
+  }
+  if (status === "proposed") {
+    return "staged"
+  }
+  if (status === "completed") {
+    return "accepted"
+  }
+  return "closed"
+}
+
+export interface SessionInfo {
   id: string
   channel_id: string
   project: string
   terminal_ids: string[]
   description: string
+  goal?: string
   status: SessionStatusValue
+  attention_state?: AttentionState
+  collection_id?: string
+  collection_role?: "unsorted" | "own" | "client"
+  collection_name?: string
   agent_provider: string | null
   created_at: string
   updated_at: string
@@ -38,19 +59,36 @@ interface SessionInfo {
 
 export function SessionsCard({
   onOpenTerminal,
-  scope = "workstream",
+  scope = "all",
 }: {
   onOpenTerminal?: (terminalId: string) => void
   scope?: "workstream" | "all"
 }) {
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
   const channels = useChannelStore((s) => s.channels)
+  const collections = useProjectStore((s) => s.collections)
+  const projects = useProjectStore((s) => s.projects)
+  const openSessionFromHub = useUIStore((s) => s.openSessionFromHub)
+  const toast = useUIStore((s) => s.toast)
+  const setNeedsAttentionCount = useUIStore((s) => s.setNeedsAttentionCount)
+
+  // Focus & Filter controls
+  const focusMode = useUIStore((s) => s.sessionsHubFocusMode)
+  const setFocusMode = useUIStore((s) => s.setSessionsHubFocusMode)
+  const selectedClientId = useUIStore((s) => s.sessionsHubSelectedClient)
+  const setSelectedClientId = useUIStore((s) => s.setSessionsHubSelectedClient)
+  const groupBy = useUIStore((s) => s.sessionsHubGroupBy)
+  const setGroupBy = useUIStore((s) => s.setSessionsHubGroupBy)
+
+  const [selectedWorkstreamFilter, setSelectedWorkstreamFilter] = useState<string>("all")
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [showOptions, setShowOptions] = useState(false)
+  const [showClosed, setShowClosed] = useState(false)
   const [creating, setCreating] = useState(false)
-  const projects = useProjectStore((s) => s.projects)
+  const [startingSessionId, setStartingSessionId] = useState<string | null>(null)
+
   const [draft, setDraft] = useState({ project: "", goal: "", criteria: "", provider: "orchestrated" })
   const [providerOptions, setProviderOptions] = useState<Array<{ id: string; label: string; ready?: boolean }>>([
     { id: "codex", label: "Codex CLI" },
@@ -58,211 +96,705 @@ export function SessionsCard({
     { id: "cursor", label: "Cursor Agent" },
     { id: "diagnostic", label: "Diagnostic (no writes)" },
   ])
-  const openSessionFromHub = useUIStore((s) => s.openSessionFromHub)
-  const toast = useUIStore((s) => s.toast)
+
   const activeChannel = channels.find((channel) => channel.id === activeChannelId)
   const workstreamProjects = activeChannel?.project_names ?? []
-  const selectedProject = draft.project || workstreamProjects[0] || ""
-
-  const openSession = (sessionId: string) => {
-    openSessionFromHub(sessionId)
-  }
+  const selectedProject = draft.project || workstreamProjects[0] || (projects[0]?.name ?? "")
 
   const load = useCallback(async () => {
-    if (scope === "workstream" && !activeChannelId) return
     setLoading(true)
     try {
-      const data = await GET<SessionInfo[]>(scope === "all" ? "/sessions" : `/channels/${activeChannelId}/sessions`)
-      setSessions(data ?? [])
-    } catch { /* ignore */ }
-    setLoading(false)
-  }, [activeChannelId, scope])
+      const data = await GET<SessionInfo[]>(scope === "workstream" && activeChannelId ? `/channels/${activeChannelId}/sessions` : "/sessions")
+      const list = data ?? []
+      setSessions(list)
+      const attnCount = list.filter((s) => getSessionAttentionState(s.status) === "needs_attention").length
+      setNeedsAttentionCount(attnCount)
+    } catch {
+      /* ignore */
+    } finally {
+      setLoading(false)
+    }
+  }, [activeChannelId, scope, setNeedsAttentionCount])
+
   const loadRef = useRef(load)
   loadRef.current = load
 
-  // Load on mount and when channel changes
-  const prevChannelRef = useRef(activeChannelId)
-  if (prevChannelRef.current !== activeChannelId) {
-    prevChannelRef.current = activeChannelId
-    load()
-  }
   useMountEffect(() => {
     load()
+    void useProjectStore.getState().loadCollections()
     void GET<{ providers: Array<{ id: string; label: string; ready: boolean }> }>("/settings/agent-providers")
       .then((res) => {
         if (res?.providers?.length) setProviderOptions(res.providers)
       })
       .catch(() => {})
   })
+
   useMountEffect(() => {
-    const interval = window.setInterval(() => { void loadRef.current() }, 5000)
+    const interval = window.setInterval(() => {
+      void loadRef.current()
+    }, 5000)
     return () => window.clearInterval(interval)
   })
 
-  const createSession = async () => {
-    if (!activeChannelId || !selectedProject || !draft.goal.trim()) return
+  // Start a proposed (staged) session
+  const startSession = async (sessionId: string) => {
+    setStartingSessionId(sessionId)
+    try {
+      await POST(`/sessions/${sessionId}/start`)
+      toast("Session launched into execution", "success")
+      await load()
+      openSessionFromHub(sessionId)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err || "")
+      const detail = msg.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] || msg.replace(/^API \d+:\s*/, "") || "Could not start session"
+      toast(detail, "error")
+    } finally {
+      setStartingSessionId(null)
+    }
+  }
+
+  // Create session (either staged or immediately started)
+  const handleCreate = async (asStaged: boolean) => {
+    const targetChannelId = activeChannelId || channels.find((c) => !c.archived_at)?.id
+    if (!targetChannelId || !selectedProject || !draft.goal.trim()) return
     setCreating(true)
     try {
       const created = await POST<SessionInfo>("/sessions", {
-        channel_id: activeChannelId,
+        channel_id: targetChannelId,
         project: selectedProject,
         goal: draft.goal.trim(),
         acceptance_criteria: draft.criteria.split("\n").map((item) => item.trim()).filter(Boolean),
         provider: draft.provider,
+        status: asStaged ? "proposed" : "pending",
       })
       setDraft((value) => ({ ...value, goal: "", criteria: "" }))
       setShowCreate(false)
       setShowOptions(false)
-      try {
-        await POST(`/sessions/${created.id}/retry`)
-      } catch (startErr) {
-        const msg = startErr instanceof Error ? startErr.message : String(startErr || "")
-        const detail = msg.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] || msg.replace(/^API \d+:\s*/, "") || "Session created, but agent could not start"
-        toast(detail, "error")
+
+      if (!asStaged) {
+        try {
+          await POST(`/sessions/${created.id}/start`)
+        } catch {
+          /* start error handled in poll */
+        }
       }
+      toast(asStaged ? "Goal staged on board" : "Session started", "success")
       await load()
-      openSession(created.id)
+      if (!asStaged) openSessionFromHub(created.id)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err || "")
-      const detail = msg.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] || msg.replace(/^API \d+:\s*/, "") || "Could not create the session"
+      const detail = msg.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] || msg.replace(/^API \d+:\s*/, "") || "Could not create session"
       toast(detail, "error")
-    } finally { setCreating(false) }
+    } finally {
+      setCreating(false)
+    }
   }
 
-  // List view — clicking a session opens the full-width viewer
-  const needsAttention = sessions.filter((s) => s.status === SESSION_STATUS.WAITING)
-  const active = sessions.filter((s) => (ACTIVE_STATUSES as string[]).includes(s.status) && s.status !== SESSION_STATUS.WAITING)
-  const completed = sessions.filter((s) => (TERMINAL_STATUSES as string[]).includes(s.status))
+  // Derived Client list
+  const clientCollections = collections.filter((c) => c.role === "client")
+  const effectiveClientId = selectedClientId || clientCollections[0]?.id || collections[0]?.id || "general"
+
+  // Filter sessions according to focus mode
+  const filteredSessions = sessions.filter((s) => {
+    // 1. Workstream filter
+    if (selectedWorkstreamFilter !== "all" && s.channel_id !== selectedWorkstreamFilter) {
+      return false
+    }
+    // 2. Focus switch
+    if (focusMode === "client_work") {
+      return s.collection_role === "client"
+    }
+    if (focusMode === "this_client") {
+      return (s.collection_id || "general") === effectiveClientId
+    }
+    return true
+  })
+
+  // Attention buckets
+  const needsAttention = filteredSessions.filter((s) => getSessionAttentionState(s.status) === "needs_attention")
+  const running = filteredSessions.filter((s) => getSessionAttentionState(s.status) === "running")
+  const staged = filteredSessions.filter((s) => getSessionAttentionState(s.status) === "staged")
+  const accepted = filteredSessions.filter((s) => getSessionAttentionState(s.status) === "accepted")
+  const closed = filteredSessions.filter((s) => getSessionAttentionState(s.status) === "closed")
+
+  // Grouped by Client -> Workstream
+  const clientGroups = collections
+    .map((c) => {
+      const clientSessions = filteredSessions.filter((s) => (s.collection_id || "general") === c.id)
+      return {
+        collection: c,
+        sessions: clientSessions,
+        needsAttention: clientSessions.filter((s) => getSessionAttentionState(s.status) === "needs_attention"),
+        running: clientSessions.filter((s) => getSessionAttentionState(s.status) === "running"),
+        staged: clientSessions.filter((s) => getSessionAttentionState(s.status) === "staged"),
+        accepted: clientSessions.filter((s) => getSessionAttentionState(s.status) === "accepted"),
+      }
+    })
+    .filter((g) => g.sessions.length > 0)
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{scope === "all" ? "All sessions" : "Workstream sessions"}</h3>
-        {scope === "workstream" && <button onClick={() => setShowCreate((value) => !value)} className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white">New session</button>}
+    <div className="space-y-4">
+      {/* 1. Header Toolbar: Focus Switch (All / Client work / This client), Workstream filter & Grouping */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-gray-800 bg-gray-900/90 p-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Focus Switch */}
+          <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 text-xs">
+            <button
+              onClick={() => setFocusMode("all")}
+              className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                focusMode === "all" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              All
+            </button>
+            <button
+              onClick={() => setFocusMode("client_work")}
+              className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                focusMode === "client_work" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              Client work
+            </button>
+            <button
+              onClick={() => setFocusMode("this_client")}
+              className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                focusMode === "this_client" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              This client
+            </button>
+          </div>
+
+          {/* This Client Dropdown (if This client is active) */}
+          {focusMode === "this_client" && (
+            <select
+              value={effectiveClientId}
+              onChange={(e) => setSelectedClientId(e.target.value)}
+              className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-200"
+            >
+              {collections.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} {c.role === "own" ? "(Company)" : c.role === "client" ? "(Client)" : "(Unsorted)"}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* Workstream Filter */}
+          <select
+            value={selectedWorkstreamFilter}
+            onChange={(e) => setSelectedWorkstreamFilter(e.target.value)}
+            className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300"
+          >
+            <option value="all">All workstreams</option>
+            {channels
+              .filter((c) => !c.archived_at && c.type !== "system")
+              .map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name.replace(/^#+/, "")}
+                </option>
+              ))}
+          </select>
+
+          {/* Grouping Toggle */}
+          <button
+            onClick={() => setGroupBy(groupBy === "client_workstream" ? "none" : "client_workstream")}
+            className={`rounded border px-2 py-1 text-xs transition-colors ${
+              groupBy === "client_workstream"
+                ? "border-blue-500/50 bg-blue-500/10 text-blue-300"
+                : "border-gray-700 bg-gray-800 text-gray-400 hover:text-gray-200"
+            }`}
+            title="Toggle between Client/Workstream grouping and Flat Attention Board"
+          >
+            {groupBy === "client_workstream" ? "Grouped" : "Flat"}
+          </button>
+        </div>
+
+        {/* New Goal Button */}
+        <button
+          onClick={() => setShowCreate((v) => !v)}
+          className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition-colors"
+        >
+          {showCreate ? "Close Form" : "+ New Goal"}
+        </button>
       </div>
 
-      {showCreate && <form onSubmit={(event) => { event.preventDefault(); void createSession() }} className="space-y-3 rounded-lg border border-blue-500/30 bg-gray-800 p-4"><label className="block"><span className="mb-1 block text-xs font-medium text-gray-300">What should be accomplished?</span><textarea autoFocus required rows={4} value={draft.goal} onChange={(event) => setDraft({ ...draft, goal: event.target.value })} placeholder="Describe the outcome you want…" className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-3 py-2 text-sm" /></label><button type="button" onClick={() => setShowOptions((value) => !value)} className="text-xs text-gray-400 hover:text-gray-200">{showOptions ? "Hide options" : "Options"}</button>{showOptions && <div className="space-y-2 border-t border-gray-700 pt-3">{(workstreamProjects.length !== 1 || !selectedProject) && <select required value={selectedProject} onChange={(event) => setDraft({ ...draft, project: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.name} value={project.name}>{project.name}</option>)}</select>}<textarea rows={3} value={draft.criteria} onChange={(event) => setDraft({ ...draft, criteria: event.target.value })} placeholder="Optional acceptance criteria — one per line" className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs" /><select value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs"><option value="orchestrated">Orchestrated — use configured preference</option>{providerOptions.map((p) => <option key={p.id} value={p.id}>{p.label}{p.ready === true ? " — Ready" : p.ready === false ? " — Setup required" : ""}</option>)}</select><p className="text-[10px] text-gray-500">RDC will stop and guide setup if the selected provider is unavailable. It will not silently fall back.</p></div>}<div className="flex items-center justify-between gap-2"><span className="truncate text-[10px] text-gray-500">{selectedProject ? `Using ${selectedProject}` : "Select a project in Options"}</span><div className="flex gap-2"><button type="button" onClick={() => { setShowCreate(false); setShowOptions(false) }} className="px-3 py-1.5 text-xs text-gray-400">Cancel</button><button disabled={creating || !selectedProject || !draft.goal.trim()} className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{creating ? "Starting…" : "Start session"}</button></div></div></form>}
+      {/* 2. New Goal Form */}
+      {showCreate && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            void handleCreate(false)
+          }}
+          className="space-y-3 rounded-lg border border-blue-500/40 bg-gray-800/95 p-4 shadow-xl"
+        >
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-200">What outcome should be accomplished?</span>
+            <textarea
+              autoFocus
+              required
+              rows={3}
+              value={draft.goal}
+              onChange={(e) => setDraft({ ...draft, goal: e.target.value })}
+              placeholder="e.g. Implement resilient OAuth refresh token backoff and write regression test..."
+              className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:border-blue-500 focus:outline-none"
+            />
+          </label>
 
+          <button
+            type="button"
+            onClick={() => setShowOptions((v) => !v)}
+            className="text-xs text-blue-400 hover:text-blue-300"
+          >
+            {showOptions ? "Hide Options ▴" : "Options (Criteria, Provider, Project) ▾"}
+          </button>
+
+          {showOptions && (
+            <div className="space-y-2.5 border-t border-gray-700 pt-3">
+              <div>
+                <span className="mb-1 block text-[11px] text-gray-400">Target Project</span>
+                <select
+                  required
+                  value={selectedProject}
+                  onChange={(e) => setDraft({ ...draft, project: e.target.value })}
+                  className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-200"
+                >
+                  {projects.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <span className="mb-1 block text-[11px] text-gray-400">Acceptance Criteria (one per line)</span>
+                <textarea
+                  rows={2}
+                  value={draft.criteria}
+                  onChange={(e) => setDraft({ ...draft, criteria: e.target.value })}
+                  placeholder="pytest tests/test_auth.py passes&#10;Zero unhandled token refresh exceptions"
+                  className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-200"
+                />
+              </div>
+
+              <div>
+                <span className="mb-1 block text-[11px] text-gray-400">Agent Provider</span>
+                <select
+                  value={draft.provider}
+                  onChange={(e) => setDraft({ ...draft, provider: e.target.value })}
+                  className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-200"
+                >
+                  <option value="orchestrated">Orchestrated (Server default)</option>
+                  {providerOptions.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between pt-1">
+            <span className="text-[10px] text-gray-400">Project: {selectedProject || "None selected"}</span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setShowCreate(false)}
+                className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={creating || !draft.goal.trim() || !selectedProject}
+                onClick={() => void handleCreate(true)}
+                className="rounded border border-purple-500/50 bg-purple-950/40 px-3 py-1.5 text-xs font-medium text-purple-300 hover:bg-purple-900/50 disabled:opacity-50"
+                title="Stage goal on board without immediately launching an agent"
+              >
+                ⚪ Stage Goal
+              </button>
+              <button
+                type="submit"
+                disabled={creating || !draft.goal.trim() || !selectedProject}
+                className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
+              >
+                {creating ? "Launching…" : "⚡ Start Session"}
+              </button>
+            </div>
+          </div>
+        </form>
+      )}
+
+      {/* 3. Attention Board Rendering */}
       {loading && sessions.length === 0 && (
-        <p className="text-xs text-gray-500 text-center py-4">Loading...</p>
+        <p className="py-8 text-center text-xs text-gray-500">Loading Attention Board…</p>
       )}
 
-      {!loading && sessions.length === 0 && (
-        <p className="text-xs text-gray-500 text-center py-4">
-          No sessions yet. Start with an outcome you want accomplished.
-        </p>
-      )}
-
-      {needsAttention.length > 0 && (
-        <div className="space-y-1.5 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-2">
-          <span className="text-[10px] font-medium uppercase text-yellow-400">Needs attention</span>
-          {needsAttention.map((s) => <SessionRow key={s.id} session={s} context={scope === "all" ? channels.find((channel) => channel.id === s.channel_id)?.name : undefined} onSelect={() => openSession(s.id)} />)}
+      {!loading && filteredSessions.length === 0 && (
+        <div className="rounded-lg border border-dashed border-gray-800 p-8 text-center text-xs text-gray-500">
+          No sessions found for this client focus. Stage a goal or start a new session.
         </div>
       )}
 
-      {active.length > 0 && (
-        <div className="space-y-1.5">
-          <span className="text-[10px] text-gray-500 uppercase">In progress</span>
-          {active.map((s) => (
-            <SessionRow
-              key={s.id}
-              session={s}
-              context={scope === "all" ? channels.find((channel) => channel.id === s.channel_id)?.name : undefined}
-              onSelect={() => openSession(s.id)}
-              onAction={() => {
-                if (s.terminal_ids.length > 0) {
-                  const tid = s.terminal_ids[0]
-                  if (onOpenTerminal) onOpenTerminal(tid)
-                  else useTerminalStore.getState().setActiveTerminalId(tid)
-                }
-              }}
-            />
-          ))}
+      {/* When Grouped by Client */}
+      {groupBy === "client_workstream" && clientGroups.length > 0 && (
+        <div className="space-y-6">
+          {clientGroups.map((group) => {
+            const roleLabel =
+              group.collection.role === "own"
+                ? "Company"
+                : group.collection.role === "client"
+                  ? "Client"
+                  : group.collection.id === "general"
+                    ? "Unassigned"
+                    : "Unsorted"
+            const roleBadgeColor =
+              group.collection.role === "own"
+                ? "bg-purple-500/20 text-purple-300 border-purple-500/30"
+                : group.collection.role === "client"
+                  ? "bg-blue-500/20 text-blue-300 border-blue-500/30"
+                  : "bg-gray-800 text-gray-400 border-gray-700"
+
+            return (
+              <div key={group.collection.id} className="space-y-2.5">
+                <div className="flex items-center gap-2 border-b border-gray-800 pb-1.5">
+                  <h3 className="text-xs font-bold text-gray-200">{group.collection.name}</h3>
+                  <span className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${roleBadgeColor}`}>
+                    {roleLabel}
+                  </span>
+                  <span className="text-[10px] text-gray-500">({group.sessions.length} sessions)</span>
+                </div>
+
+                <AttentionColumnsGrid
+                  needsAttention={group.needsAttention}
+                  running={group.running}
+                  staged={group.staged}
+                  accepted={group.accepted}
+                  onOpenSession={openSessionFromHub}
+                  onStartSession={startSession}
+                  startingSessionId={startingSessionId}
+                  onOpenTerminal={onOpenTerminal}
+                />
+              </div>
+            )
+          })}
         </div>
       )}
 
-      {completed.length > 0 && (
-        <div className="space-y-1.5">
-          <span className="text-[10px] text-gray-500 uppercase">Recent</span>
-          {completed.map((s) => (
-            <SessionRow
-              key={s.id}
-              session={s}
-              context={scope === "all" ? channels.find((channel) => channel.id === s.channel_id)?.name : undefined}
-              onSelect={() => openSession(s.id)}
-            />
-          ))}
+      {/* Flat Attention Board Grid */}
+      {groupBy === "none" && filteredSessions.length > 0 && (
+        <AttentionColumnsGrid
+          needsAttention={needsAttention}
+          running={running}
+          staged={staged}
+          accepted={accepted}
+          onOpenSession={openSessionFromHub}
+          onStartSession={startSession}
+          startingSessionId={startingSessionId}
+          onOpenTerminal={onOpenTerminal}
+        />
+      )}
+
+      {/* Collapsed Closed / Unsupervised Runs */}
+      {closed.length > 0 && (
+        <div className="border-t border-gray-800 pt-3">
+          <button
+            onClick={() => setShowClosed((v) => !v)}
+            className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          >
+            <span>{showClosed ? "▾" : "▸"}</span>
+            <span>Closed / Cancelled ({closed.length})</span>
+          </button>
+          {showClosed && (
+            <div className="mt-2 space-y-1.5">
+              {closed.map((s) => (
+                <AttentionCardItem
+                  key={s.id}
+                  session={s}
+                  onOpenSession={openSessionFromHub}
+                  onStartSession={startSession}
+                  startingSessionId={startingSessionId}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
   )
 }
 
-// ── Session list row (compact) ──
-
-function SessionRow({
-  session: s,
-  onSelect,
-  onAction,
-  context,
+function AttentionColumnsGrid({
+  needsAttention,
+  running,
+  staged,
+  accepted,
+  onOpenSession,
+  onStartSession,
+  startingSessionId,
+  onOpenTerminal,
 }: {
-  session: SessionInfo
-  onSelect: () => void
-  onAction?: () => void
-  context?: string
+  needsAttention: SessionInfo[]
+  running: SessionInfo[]
+  staged: SessionInfo[]
+  accepted: SessionInfo[]
+  onOpenSession: (id: string) => void
+  onStartSession: (id: string) => void
+  startingSessionId: string | null
+  onOpenTerminal?: (terminalId: string) => void
 }) {
-  const isActive = (ACTIVE_STATUSES as string[]).includes(s.status)
-  const statusColor = s.status === SESSION_STATUS.RUNNING ? "bg-blue-500 animate-pulse"
-    : s.status === SESSION_STATUS.WAITING ? "bg-yellow-500 animate-pulse"
-    : [SESSION_STATUS.DONE, SESSION_STATUS.COMPLETED].includes(s.status as "done" | "completed") ? "bg-green-500"
-    : s.status === SESSION_STATUS.FAILED ? "bg-red-500"
-    : "bg-gray-500"
-
   return (
-    <button
-      onClick={onSelect}
-      className="w-full bg-gray-800 hover:bg-gray-750 rounded-lg px-3 py-2 text-left"
-    >
-      <div className="flex items-center gap-2">
-        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor}`} />
-        <span className="text-xs text-gray-200 flex-1 truncate">{s.description || "Untitled"}</span>
-        <span className="text-[10px] text-gray-500">{formatAge(s.created_at)}</span>
-      </div>
-      <div className="flex items-center gap-2 mt-1 ml-4">
-        <span className="text-[10px] text-gray-500">{context ? `${context} · ${s.project}` : s.project}</span>
-        <div className="flex-1" />
-        {isActive && onAction && s.terminal_ids.length > 0 && (
-          <span
-            onClick={(e) => { e.stopPropagation(); onAction() }}
-            className="text-[10px] text-blue-400 hover:text-blue-300"
-          >
-            View Terminal
+    <div className="grid gap-3 lg:grid-cols-4">
+      {/* 🔴 Needs Attention Column */}
+      <div className="flex flex-col rounded-lg border border-amber-500/30 bg-amber-950/10 p-2.5">
+        <div className="mb-2 flex items-center justify-between border-b border-amber-500/20 pb-1.5">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-amber-300">
+            <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+            Needs Attention
           </span>
-        )}
-        <span className={`text-[10px] ${
-          [SESSION_STATUS.DONE, SESSION_STATUS.COMPLETED].includes(s.status as "done" | "completed") ? "text-green-400" : s.status === SESSION_STATUS.FAILED ? "text-red-400" : "text-gray-400"
-        }`}>
-          {statusLabel(s.status)}
-        </span>
+          <span className="rounded-full bg-amber-500/20 px-1.5 py-0.2 text-[10px] font-bold text-amber-300">
+            {needsAttention.length}
+          </span>
+        </div>
+        <div className="flex-1 space-y-2 overflow-y-auto">
+          {needsAttention.length === 0 ? (
+            <p className="py-4 text-center text-[11px] text-gray-500">All clear</p>
+          ) : (
+            needsAttention.map((s) => (
+              <AttentionCardItem
+                key={s.id}
+                session={s}
+                onOpenSession={onOpenSession}
+                onStartSession={onStartSession}
+                startingSessionId={startingSessionId}
+                onOpenTerminal={onOpenTerminal}
+              />
+            ))
+          )}
+        </div>
       </div>
-    </button>
+
+      {/* 🟡 Running Column */}
+      <div className="flex flex-col rounded-lg border border-blue-500/20 bg-gray-900/50 p-2.5">
+        <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-1.5">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-blue-300">
+            <span className="h-2 w-2 rounded-full bg-blue-400" />
+            Running
+          </span>
+          <span className="rounded-full bg-blue-500/20 px-1.5 py-0.2 text-[10px] font-bold text-blue-300">
+            {running.length}
+          </span>
+        </div>
+        <div className="flex-1 space-y-2 overflow-y-auto">
+          {running.length === 0 ? (
+            <p className="py-4 text-center text-[11px] text-gray-500">No active runs</p>
+          ) : (
+            running.map((s) => (
+              <AttentionCardItem
+                key={s.id}
+                session={s}
+                onOpenSession={onOpenSession}
+                onStartSession={onStartSession}
+                startingSessionId={startingSessionId}
+                onOpenTerminal={onOpenTerminal}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* ⚪ Staged Column */}
+      <div className="flex flex-col rounded-lg border border-purple-500/20 bg-gray-900/50 p-2.5">
+        <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-1.5">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-purple-300">
+            <span className="h-2 w-2 rounded-full bg-purple-400" />
+            Staged
+          </span>
+          <span className="rounded-full bg-purple-500/20 px-1.5 py-0.2 text-[10px] font-bold text-purple-300">
+            {staged.length}
+          </span>
+        </div>
+        <div className="flex-1 space-y-2 overflow-y-auto">
+          {staged.length === 0 ? (
+            <p className="py-4 text-center text-[11px] text-gray-500">None staged</p>
+          ) : (
+            staged.map((s) => (
+              <AttentionCardItem
+                key={s.id}
+                session={s}
+                onOpenSession={onOpenSession}
+                onStartSession={onStartSession}
+                startingSessionId={startingSessionId}
+                onOpenTerminal={onOpenTerminal}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* 🟢 Accepted Column */}
+      <div className="flex flex-col rounded-lg border border-emerald-500/20 bg-gray-900/50 p-2.5">
+        <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-1.5">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
+            <span className="h-2 w-2 rounded-full bg-emerald-400" />
+            Accepted
+          </span>
+          <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.2 text-[10px] font-bold text-emerald-300">
+            {accepted.length}
+          </span>
+        </div>
+        <div className="flex-1 space-y-2 overflow-y-auto">
+          {accepted.length === 0 ? (
+            <p className="py-4 text-center text-[11px] text-gray-500">No accepted goals</p>
+          ) : (
+            accepted.map((s) => (
+              <AttentionCardItem
+                key={s.id}
+                session={s}
+                onOpenSession={onOpenSession}
+                onStartSession={onStartSession}
+                startingSessionId={startingSessionId}
+                onOpenTerminal={onOpenTerminal}
+              />
+            ))
+          )}
+        </div>
+      </div>
+    </div>
   )
 }
 
+function AttentionCardItem({
+  session,
+  onOpenSession,
+  onStartSession,
+  startingSessionId,
+  onOpenTerminal,
+}: {
+  session: SessionInfo
+  onOpenSession: (id: string) => void
+  onStartSession: (id: string) => void
+  startingSessionId: string | null
+  onOpenTerminal?: (terminalId: string) => void
+}) {
+  const goalText = session.goal || session.description || "Untitled Goal"
+  const isVerifying = session.status === "verifying"
+  const isWaiting = session.status === "waiting"
+  const isFailed = session.status === "failed"
+  const isProposed = session.status === "proposed"
+  const isStarting = startingSessionId === session.id
 
+  const badgeStyle = isVerifying
+    ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+    : isWaiting
+      ? "bg-yellow-500/20 text-yellow-300 border-yellow-500/40"
+      : isFailed
+        ? "bg-red-500/20 text-red-300 border-red-500/40"
+        : isProposed
+          ? "bg-purple-500/20 text-purple-300 border-purple-500/40"
+          : session.status === "completed"
+            ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+            : "bg-blue-500/20 text-blue-300 border-blue-500/40"
 
-// ── Helpers ──
+  const statusText = isVerifying
+    ? "Ready for Review"
+    : isWaiting
+      ? "Waiting for Input"
+      : isFailed
+        ? "Run Failed"
+        : isProposed
+          ? "Staged"
+          : session.status
 
-function formatAge(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return "now"
-  if (mins < 60) return `${mins}m`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.floor(hours / 24)}d`
-}
+  return (
+    <div
+      onClick={() => onOpenSession(session.id)}
+      className="group cursor-pointer rounded-md border border-gray-800 bg-gray-900/90 p-2.5 transition-all hover:border-gray-700 hover:bg-gray-850"
+    >
+      <div className="flex items-start justify-between gap-1.5">
+        <span className="text-[10px] font-semibold text-gray-400 truncate max-w-[140px]">{session.project}</span>
+        <span className={`rounded border px-1.5 py-0.5 text-[9px] font-medium leading-none ${badgeStyle}`}>
+          {statusText}
+        </span>
+      </div>
 
-function statusLabel(status: SessionStatusValue): string {
-  return ({ pending: "Queued", running: "Working", waiting: "Needs you", verifying: "Ready for review", done: "Completed", completed: "Completed", failed: "Failed", cancelled: "Cancelled" })[status]
+      <p className="mt-1 line-clamp-2 text-xs font-medium text-gray-200 group-hover:text-white" title={goalText}>
+        {goalText}
+      </p>
+
+      {session.output_summary && session.status === "completed" && (
+        <p className="mt-1 line-clamp-1 text-[10px] text-gray-400 italic">
+          {session.output_summary.replace(/[*_#]/g, "")}
+        </p>
+      )}
+
+      {/* Quick Action Bar */}
+      <div className="mt-2.5 flex items-center justify-between border-t border-gray-800/80 pt-1.5">
+        <span className="text-[9px] text-gray-500">
+          {session.agent_provider || "orchestrated"}
+        </span>
+
+        <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+          {isProposed && (
+            <button
+              disabled={isStarting}
+              onClick={() => onStartSession(session.id)}
+              className="rounded bg-purple-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-purple-500 disabled:opacity-50"
+            >
+              {isStarting ? "Starting…" : "▶ Start"}
+            </button>
+          )}
+
+          {isVerifying && (
+            <button
+              onClick={() => onOpenSession(session.id)}
+              className="rounded bg-amber-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-amber-500"
+            >
+              🔍 Review
+            </button>
+          )}
+
+          {isWaiting && (
+            <button
+              onClick={() => {
+                if (session.terminal_ids?.[0] && onOpenTerminal) {
+                  onOpenTerminal(session.terminal_ids[0])
+                } else {
+                  onOpenSession(session.id)
+                }
+              }}
+              className="rounded bg-yellow-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-yellow-500"
+            >
+              💬 Input
+            </button>
+          )}
+
+          {isFailed && (
+            <button
+              disabled={isStarting}
+              onClick={() => onStartSession(session.id)}
+              className="rounded bg-red-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+            >
+              ↺ Retry
+            </button>
+          )}
+
+          {session.status === "running" && session.terminal_ids?.[0] && (
+            <button
+              onClick={() => {
+                const tid = session.terminal_ids[0]
+                if (onOpenTerminal) onOpenTerminal(tid)
+                else useTerminalStore.getState().setActiveTerminalId(tid)
+              }}
+              className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-[10px] font-mono text-gray-300 hover:bg-gray-700"
+            >
+              &gt;_ Term
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }

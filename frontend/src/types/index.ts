@@ -21,6 +21,9 @@ export interface Project {
 export interface Collection {
   id: string
   name: string
+  description?: string
+  sort_order?: number
+  role?: "unsorted" | "own" | "client"
   projects?: string[]
   project_count?: number
 }

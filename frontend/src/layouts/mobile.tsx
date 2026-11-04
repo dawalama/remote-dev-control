@@ -51,6 +51,7 @@ export function MobileLayout() {
   const terminals = useStateStore((s) => s.terminals)
   const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
+  const needsAttentionCount = useUIStore((s) => s.needsAttentionCount)
 
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
 
@@ -267,6 +268,24 @@ export function MobileLayout() {
 
       {/* Scrollable card area */}
       <div className="flex-1 overflow-auto px-3 py-3 space-y-3">
+        {/* Needs Attention Banner */}
+        {needsAttentionCount > 0 && (
+          <div
+            onClick={() => useUIStore.getState().setSessionsHubOpen(true)}
+            className="rounded-lg border border-amber-500/50 bg-amber-950/30 p-2.5 flex items-center justify-between cursor-pointer hover:bg-amber-950/40 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+              <span className="text-xs font-semibold text-amber-200">
+                {needsAttentionCount} session{needsAttentionCount === 1 ? "" : "s"} need your review
+              </span>
+            </div>
+            <span className="rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+              Review →
+            </span>
+          </div>
+        )}
+
         {/* Attention */}
         {attentionTerminals.length > 0 && (
           <AttentionCard

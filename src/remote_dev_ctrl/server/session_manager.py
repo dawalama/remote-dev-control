@@ -38,6 +38,7 @@ from typing import Any, Optional
 
 
 class SessionStatus(str, enum.Enum):
+    PROPOSED = "proposed"
     PENDING = "pending"
     RUNNING = "running"
     WAITING = "waiting"
@@ -54,6 +55,32 @@ class SessionStatus(str, enum.Enum):
     @classmethod
     def terminal_values(cls) -> tuple[str, ...]:
         return (cls.DONE.value, cls.COMPLETED.value, cls.FAILED.value, cls.CANCELLED.value)
+
+    @classmethod
+    def staged_values(cls) -> tuple[str, ...]:
+        return (cls.PROPOSED.value,)
+
+
+class AttentionState(str, enum.Enum):
+    NEEDS_ATTENTION = "needs_attention"
+    RUNNING = "running"
+    STAGED = "staged"
+    ACCEPTED = "accepted"
+    CLOSED = "closed"
+
+
+def get_attention_state(status: SessionStatus | str) -> AttentionState:
+    """Map internal SessionStatus to high-level AttentionState."""
+    val = status.value if isinstance(status, SessionStatus) else str(status)
+    if val in (SessionStatus.WAITING.value, SessionStatus.VERIFYING.value, SessionStatus.FAILED.value):
+        return AttentionState.NEEDS_ATTENTION
+    if val in (SessionStatus.PENDING.value, SessionStatus.RUNNING.value):
+        return AttentionState.RUNNING
+    if val == SessionStatus.PROPOSED.value:
+        return AttentionState.STAGED
+    if val == SessionStatus.COMPLETED.value:
+        return AttentionState.ACCEPTED
+    return AttentionState.CLOSED
 
 from .scrubber import SecretScrubber
 from .utils import (
@@ -281,6 +308,7 @@ class SessionManager:
         acceptance_criteria: Optional[list[str]] = None,
         policy: Optional[dict] = None,
         budget: Optional[dict] = None,
+        status: Optional[SessionStatus] = None,
     ) -> Session:
         """Create a new session and persist to DB."""
         session = Session(
@@ -288,6 +316,7 @@ class SessionManager:
             channel_id=channel_id,
             project=project,
             description=description,
+            status=status or SessionStatus.PENDING,
             agent_provider=agent_provider,
             task_id=task_id,
             metadata=metadata,
@@ -352,7 +381,7 @@ class SessionManager:
         """
         from .db.connection import get_db_manager
 
-        startable = ["pending", "failed", "cancelled"]
+        startable = ["proposed", "pending", "failed", "cancelled"]
         if continue_review:
             startable.extend(("verifying", "completed", "done"))
         db = self._db()

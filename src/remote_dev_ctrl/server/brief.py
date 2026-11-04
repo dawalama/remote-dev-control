@@ -18,6 +18,7 @@ SPOKEN_LIMIT = 1200
 
 # Product-facing status labels (see sessions hub mapping).
 _STATUS_LABELS: dict[str, str] = {
+    SessionStatus.PROPOSED.value: "staged",
     SessionStatus.PENDING.value: "queued",
     SessionStatus.RUNNING.value: "working",
     SessionStatus.WAITING.value: "needs_you",

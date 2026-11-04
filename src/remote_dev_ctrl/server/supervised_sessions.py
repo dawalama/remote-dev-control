@@ -123,8 +123,9 @@ def create_supervised_session(
     policy: Optional[dict] = None,
     budget: Optional[dict] = None,
     metadata_extra: Optional[dict] = None,
+    status: Optional[str] = None,
 ) -> Session:
-    """Create a durable supervised session (pending) with evidence/git baseline metadata."""
+    """Create a durable supervised session with evidence/git baseline metadata."""
     if not resolve_project_id(project):
         raise ValueError(f"Project not found: {project}")
 
@@ -136,6 +137,8 @@ def create_supervised_session(
     if metadata_extra:
         metadata.update(metadata_extra)
 
+    session_status = SessionStatus.PROPOSED if status == "proposed" else (SessionStatus(status) if status else SessionStatus.PENDING)
+
     sm = get_session_manager()
     return sm.create_session(
         channel_id=channel_id,
@@ -146,6 +149,7 @@ def create_supervised_session(
         acceptance_criteria=[item.strip() for item in (acceptance_criteria or []) if item.strip()],
         policy=policy or {},
         budget=budget,
+        status=session_status,
     )
 
 

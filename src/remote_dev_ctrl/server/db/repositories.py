@@ -209,14 +209,19 @@ class CollectionRepository:
         """Create a new collection. Generates UUID if not set."""
         if not collection.id:
             collection.id = str(uuid_mod.uuid4())
+        role = "unsorted" if collection.id == "general" else (collection.role or "unsorted")
+        collection.role = role
+        if role == "own":
+            self.db.execute("UPDATE collections SET role = 'unsorted' WHERE role = 'own'")
         self.db.execute("""
-            INSERT INTO collections (id, name, description, sort_order, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO collections (id, name, description, sort_order, role, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             collection.id,
             collection.name,
             collection.description,
             collection.sort_order,
+            collection.role,
             collection.created_at.isoformat(),
             collection.updated_at.isoformat(),
         ))
@@ -242,13 +247,18 @@ class CollectionRepository:
     def update(self, collection: Collection) -> Collection:
         """Update a collection."""
         collection.updated_at = datetime.now()
+        role = "unsorted" if collection.id == "general" else (collection.role or "unsorted")
+        collection.role = role
+        if role == "own":
+            self.db.execute("UPDATE collections SET role = 'unsorted' WHERE role = 'own' AND id != ?", (collection.id,))
         self.db.execute("""
-            UPDATE collections SET name = ?, description = ?, sort_order = ?, updated_at = ?
+            UPDATE collections SET name = ?, description = ?, sort_order = ?, role = ?, updated_at = ?
             WHERE id = ?
         """, (
             collection.name,
             collection.description,
             collection.sort_order,
+            collection.role,
             collection.updated_at.isoformat(),
             collection.id,
         ))
@@ -286,6 +296,7 @@ class CollectionRepository:
             name=d["name"],
             description=d.get("description"),
             sort_order=d.get("sort_order", 0),
+            role=d.get("role") or "unsorted",
             created_at=datetime.fromisoformat(d["created_at"]) if d.get("created_at") else datetime.now(),
             updated_at=datetime.fromisoformat(d["updated_at"]) if d.get("updated_at") else datetime.now(),
         )

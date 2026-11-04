@@ -24,6 +24,10 @@ interface UIState {
   returnToSessionsHub: boolean
   sessionsHubOpen: boolean
   sessionsHubScope: "workstream" | "all"
+  sessionsHubFocusMode: "all" | "client_work" | "this_client"
+  sessionsHubSelectedClient: string | null
+  sessionsHubGroupBy: "client_workstream" | "none"
+  needsAttentionCount: number
   workspaceMode: "goals" | "terminal"
   voicePanelOpen: boolean
   projectSettingsOpen: boolean
@@ -60,6 +64,10 @@ interface UIState {
   closeSessionViewer: () => void
   setSessionsHubOpen: (open: boolean) => void
   setSessionsHubScope: (scope: "workstream" | "all") => void
+  setSessionsHubFocusMode: (mode: "all" | "client_work" | "this_client") => void
+  setSessionsHubSelectedClient: (id: string | null) => void
+  setSessionsHubGroupBy: (groupBy: "client_workstream" | "none") => void
+  setNeedsAttentionCount: (count: number) => void
   setWorkspaceMode: (mode: "goals" | "terminal") => void
   setVoicePanelOpen: (open: boolean) => void
   toggleVoicePanel: () => void
@@ -89,6 +97,10 @@ export const useUIStore = create<UIState>((set, get) => ({
   returnToSessionsHub: false,
   sessionsHubOpen: false,
   sessionsHubScope: "workstream",
+  sessionsHubFocusMode: (localStorage.getItem("rdc_board_focus") as "all" | "client_work" | "this_client") || "all",
+  sessionsHubSelectedClient: localStorage.getItem("rdc_board_last_client") || null,
+  sessionsHubGroupBy: (localStorage.getItem("rdc_board_group_by") as "client_workstream" | "none") || "client_workstream",
+  needsAttentionCount: 0,
   workspaceMode: "goals",
   voicePanelOpen: false,
   projectSettingsOpen: false,
@@ -157,6 +169,19 @@ export const useUIStore = create<UIState>((set, get) => ({
   closeSessionViewer: () => set((state) => ({ viewingSessionId: null, sessionsHubOpen: state.returnToSessionsHub, returnToSessionsHub: false })),
   setSessionsHubOpen: (open) => set({ sessionsHubOpen: open }),
   setSessionsHubScope: (scope) => set({ sessionsHubScope: scope }),
+  setSessionsHubFocusMode: (mode) => {
+    localStorage.setItem("rdc_board_focus", mode)
+    set({ sessionsHubFocusMode: mode })
+  },
+  setSessionsHubSelectedClient: (id) => {
+    if (id) localStorage.setItem("rdc_board_last_client", id)
+    set({ sessionsHubSelectedClient: id })
+  },
+  setSessionsHubGroupBy: (groupBy) => {
+    localStorage.setItem("rdc_board_group_by", groupBy)
+    set({ sessionsHubGroupBy: groupBy })
+  },
+  setNeedsAttentionCount: (count) => set({ needsAttentionCount: count }),
   setWorkspaceMode: (mode) => set({ workspaceMode: mode }),
   setVoicePanelOpen: (open) => set({ voicePanelOpen: open }),
   toggleVoicePanel: () => set((s) => ({ voicePanelOpen: !s.voicePanelOpen })),

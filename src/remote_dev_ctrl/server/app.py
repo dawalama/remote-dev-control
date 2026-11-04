@@ -8649,6 +8649,7 @@ async def list_collections():
             "name": c.name,
             "description": c.description,
             "sort_order": c.sort_order,
+            "role": getattr(c, "role", "unsorted") or "unsorted",
             "project_count": counts.get(c.id, 0),
         }
         for c in collections
@@ -8658,6 +8659,7 @@ async def list_collections():
 class CreateCollectionRequest(BaseModel):
     name: str
     description: str | None = None
+    role: str = "unsorted"  # unsorted, own, client
 
 
 @app.post("/collections")
@@ -8668,14 +8670,16 @@ async def create_collection(req: CreateCollectionRequest):
     collection_repo = get_collection_repo()
     if collection_repo.get(req.name):
         raise HTTPException(status_code=409, detail=f"Collection already exists: {req.name}")
-    coll = collection_repo.create(Collection(name=req.name, description=req.description))
-    return {"id": coll.id, "name": coll.name, "description": coll.description, "sort_order": coll.sort_order}
+    role = req.role if req.role in ("unsorted", "own", "client") else "unsorted"
+    coll = collection_repo.create(Collection(name=req.name, description=req.description, role=role))
+    return {"id": coll.id, "name": coll.name, "description": coll.description, "sort_order": coll.sort_order, "role": coll.role}
 
 
 class UpdateCollectionRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     sort_order: int | None = None
+    role: str | None = None  # unsorted, own, client
 
 
 @app.patch("/collections/{collection_id}")
@@ -8692,8 +8696,13 @@ async def update_collection(collection_id: str, req: UpdateCollectionRequest):
         coll.description = req.description
     if req.sort_order is not None:
         coll.sort_order = req.sort_order
+    if req.role is not None:
+        if collection_id == "general":
+            coll.role = "unsorted"
+        elif req.role in ("unsorted", "own", "client"):
+            coll.role = req.role
     coll = collection_repo.update(coll)
-    return {"id": coll.id, "name": coll.name, "description": coll.description, "sort_order": coll.sort_order}
+    return {"id": coll.id, "name": coll.name, "description": coll.description, "sort_order": coll.sort_order, "role": coll.role}
 
 
 @app.delete("/collections/{collection_id}")
@@ -9416,12 +9425,28 @@ def _session_response(session) -> dict:
     project_record = get_project_repo().get(session.project)
     project_profile = (project_record.config or {}).get("profile", {}) if project_record else {}
     verification_command = str(project_profile.get("test_command") or "").strip() or None
+    
+    from .session_manager import get_attention_state, SessionStatus
+    from .channel_manager import get_channel_manager
+    channel = get_channel_manager().get_channel(session.channel_id)
+    collection_id = channel.collection_id if channel and getattr(channel, "collection_id", None) else "general"
+    from .db.repositories import get_collection_repo
+    coll = get_collection_repo().get(collection_id)
+    collection_role = getattr(coll, "role", "unsorted") or "unsorted" if coll else "unsorted"
+    collection_name = coll.name if coll else "General"
+
+    status_val = session.status.value if isinstance(session.status, SessionStatus) else str(session.status)
+
     return {
         "id": session.id, "channel_id": session.channel_id, "project": session.project,
         "terminal_ids": session.terminal_ids, "task_id": session.task_id,
         "description": session.description, "goal": session.goal or session.description,
         "acceptance_criteria": session.acceptance_criteria,
-        "status": session.status, "control_owner": session.control_owner,
+        "status": status_val, "control_owner": session.control_owner,
+        "attention_state": get_attention_state(session.status).value,
+        "collection_id": collection_id,
+        "collection_role": collection_role,
+        "collection_name": collection_name,
         "current_step": session.current_step, "blocker": session.blocker,
         "policy": session.policy, "budget": session.budget,
         "unresolved_risks": session.unresolved_risks,
@@ -9444,6 +9469,7 @@ class CreateSupervisedSessionRequest(BaseModel):
     provider: str | None = None
     policy: dict = Field(default_factory=dict)
     budget: dict | None = None
+    status: str | None = None
 
 
 class ContinueSessionRequest(BaseModel):
@@ -9638,6 +9664,7 @@ async def create_supervised_session(body: CreateSupervisedSessionRequest):
             acceptance_criteria=body.acceptance_criteria,
             policy=body.policy,
             budget=body.budget,
+            status=body.status,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -10999,9 +11026,10 @@ def _session_execution_prompt(session) -> str:
     return session_execution_prompt(session)
 
 
+@app.post("/sessions/{session_id}/start")
 @app.post("/sessions/{session_id}/retry")
 async def retry_session(session_id: str, body: RetrySessionRequest | None = None):
-    """Start or run a failed/cancelled session again with a fresh terminal."""
+    """Start or run a proposed/staged/failed/cancelled session with a fresh terminal."""
     from .supervised_sessions import start_supervised_session
 
     try:
