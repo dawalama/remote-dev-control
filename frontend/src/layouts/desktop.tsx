@@ -211,15 +211,27 @@ export function DesktopLayout() {
           ) : (
             <div className="flex-1 flex flex-col min-h-0">
               <div className="mb-1.5 flex items-center justify-between rounded-md border border-gray-800 bg-gray-900 px-3 py-1.5 text-xs">
-                <span className="text-gray-400 font-mono text-[11px]">
-                  Raw Terminal Fallback {currentProject ? `· ${currentProject}` : ""}
-                </span>
-                <button
-                  onClick={() => setWorkspaceMode("goals")}
-                  className="text-blue-400 hover:text-blue-300 text-xs font-medium"
-                >
-                  ← Back to Goals &amp; Review (⌘J)
-                </button>
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-400 font-mono text-[11px]">
+                    Live Terminal {currentProject ? `· ${currentProject}` : ""}
+                  </span>
+                </div>
+                <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setWorkspaceMode("goals")}
+                    className="rounded px-2.5 py-1 text-xs font-medium text-gray-400 hover:text-gray-200"
+                  >
+                    📋 Board (⌘J)
+                  </button>
+                  <button
+                    type="button"
+                    disabled
+                    className="rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white"
+                  >
+                    💻 Terminal
+                  </button>
+                </div>
               </div>
               <EmbeddedTerminal />
             </div>

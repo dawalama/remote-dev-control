@@ -43,6 +43,8 @@ export interface SessionInfo {
   channel_id: string
   project: string
   terminal_ids: string[]
+  task_id?: string | null
+  parent_session_id?: string | null
   description: string
   goal?: string
   status: SessionStatusValue
@@ -55,11 +57,102 @@ export interface SessionInfo {
   updated_at: string
   completed_at: string | null
   output_summary: string | null
+  acceptance_criteria?: string[]
+}
+
+export interface GoalCard {
+  id: string
+  goal: string
+  project: string
+  channel_id: string
+  collection_id?: string
+  collection_role?: "unsorted" | "own" | "client"
+  collection_name?: string
+  acceptance_criteria?: string[]
+  attention_state: AttentionState
+  latestSession: SessionInfo
+  sessions: SessionInfo[]
+  runsCount: number
+}
+
+export function groupSessionsIntoGoalCards(sessions: SessionInfo[]): GoalCard[] {
+  const sorted = [...sessions].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  )
+
+  const groups = new Map<string, SessionInfo[]>()
+
+  for (const session of sorted) {
+    let groupKey = ""
+    if (session.task_id) {
+      groupKey = `task:${session.task_id}`
+    } else if (session.parent_session_id) {
+      for (const [k, sessList] of groups.entries()) {
+        if (sessList.some((s) => s.id === session.parent_session_id)) {
+          groupKey = k
+          break
+        }
+      }
+    }
+
+    if (!groupKey) {
+      const normGoal = (session.goal || session.description || "").trim().toLowerCase()
+      groupKey = `goal:${session.channel_id}:::${session.project}:::${normGoal}`
+    }
+
+    const list = groups.get(groupKey) || []
+    list.push(session)
+    groups.set(groupKey, list)
+  }
+
+  const cards: GoalCard[] = []
+  for (const [key, sessList] of groups.entries()) {
+    sessList.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    const latest = sessList[sessList.length - 1]
+
+    const hasNeedsAttention = sessList.some(
+      (s) => getSessionAttentionState(s.status) === "needs_attention"
+    )
+    const hasRunning = sessList.some(
+      (s) => getSessionAttentionState(s.status) === "running"
+    )
+
+    let cardAttention: AttentionState
+    if (hasNeedsAttention) {
+      cardAttention = "needs_attention"
+    } else if (hasRunning) {
+      cardAttention = "running"
+    } else {
+      cardAttention = getSessionAttentionState(latest.status)
+    }
+
+    cards.push({
+      id: key,
+      goal: latest.goal || latest.description,
+      project: latest.project,
+      channel_id: latest.channel_id,
+      collection_id: latest.collection_id,
+      collection_role: latest.collection_role,
+      collection_name: latest.collection_name,
+      acceptance_criteria: latest.acceptance_criteria,
+      attention_state: cardAttention,
+      latestSession: latest,
+      sessions: sessList,
+      runsCount: sessList.length,
+    })
+  }
+
+  cards.sort(
+    (a, b) =>
+      new Date(b.latestSession.updated_at || b.latestSession.created_at).getTime() -
+      new Date(a.latestSession.updated_at || a.latestSession.created_at).getTime()
+  )
+
+  return cards
 }
 
 export function SessionsCard({
   onOpenTerminal,
-  scope = "all",
 }: {
   onOpenTerminal?: (terminalId: string) => void
   scope?: "workstream" | "all"
@@ -80,7 +173,12 @@ export function SessionsCard({
   const groupBy = useUIStore((s) => s.sessionsHubGroupBy)
   const setGroupBy = useUIStore((s) => s.setSessionsHubGroupBy)
 
-  const [selectedWorkstreamFilter, setSelectedWorkstreamFilter] = useState<string>("all")
+  // Workstream scope: "active" (scoped to active workstream) vs "all"
+  const activeChannel = channels.find((channel) => channel.id === activeChannelId)
+  const isSystemWorkstream = !activeChannel || activeChannel.type === "system" || activeChannel.name === "#general"
+  const [workstreamScope, setWorkstreamScope] = useState<"active" | "all">("active")
+  const [specificWorkstreamFilter, setSpecificWorkstreamFilter] = useState<string>("all")
+
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
@@ -97,24 +195,24 @@ export function SessionsCard({
     { id: "diagnostic", label: "Diagnostic (no writes)" },
   ])
 
-  const activeChannel = channels.find((channel) => channel.id === activeChannelId)
   const workstreamProjects = activeChannel?.project_names ?? []
   const selectedProject = draft.project || workstreamProjects[0] || (projects[0]?.name ?? "")
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await GET<SessionInfo[]>(scope === "workstream" && activeChannelId ? `/channels/${activeChannelId}/sessions` : "/sessions")
+      const data = await GET<SessionInfo[]>("/sessions")
       const list = data ?? []
       setSessions(list)
-      const attnCount = list.filter((s) => getSessionAttentionState(s.status) === "needs_attention").length
+      const cards = groupSessionsIntoGoalCards(list)
+      const attnCount = cards.filter((c) => c.attention_state === "needs_attention").length
       setNeedsAttentionCount(attnCount)
     } catch {
       /* ignore */
     } finally {
       setLoading(false)
     }
-  }, [activeChannelId, scope, setNeedsAttentionCount])
+  }, [setNeedsAttentionCount])
 
   const loadRef = useRef(load)
   loadRef.current = load
@@ -190,75 +288,158 @@ export function SessionsCard({
     }
   }
 
+  // Start a new follow-up run on an existing Goal Card
+  const handleFollowupRun = async (card: GoalCard) => {
+    setCreating(true)
+    try {
+      const taskId = card.id.startsWith("task:") ? card.id.replace(/^task:/, "") : undefined
+      const created = await POST<SessionInfo>("/sessions", {
+        channel_id: card.channel_id,
+        project: card.project,
+        goal: card.goal,
+        status: "pending",
+        task_id: taskId,
+        parent_session_id: card.latestSession.id,
+      })
+      try {
+        await POST(`/sessions/${created.id}/start`)
+      } catch {
+        /* ignore */
+      }
+      toast(`Follow-up Run #${card.runsCount + 1} launched`, "success")
+      await load()
+      openSessionFromHub(created.id)
+    } catch {
+      toast("Could not launch follow-up run", "error")
+    } finally {
+      setCreating(false)
+    }
+  }
+
   // Derived Client list
   const clientCollections = collections.filter((c) => c.role === "client")
   const effectiveClientId = selectedClientId || clientCollections[0]?.id || collections[0]?.id || "general"
 
-  // Filter sessions according to focus mode
-  const filteredSessions = sessions.filter((s) => {
-    // 1. Workstream filter
-    if (selectedWorkstreamFilter !== "all" && s.channel_id !== selectedWorkstreamFilter) {
-      return false
+  // 1. Group all sessions into Goal Cards
+  const allGoalCards = groupSessionsIntoGoalCards(sessions)
+
+  // 2. Filter Goal Cards according to Workstream Scope and Client Focus
+  const filteredGoalCards = allGoalCards.filter((card) => {
+    // A. Workstream filter:
+    if (!isSystemWorkstream && workstreamScope === "active") {
+      if (card.channel_id !== activeChannelId) return false
+    } else if (specificWorkstreamFilter !== "all") {
+      if (card.channel_id !== specificWorkstreamFilter) return false
     }
-    // 2. Focus switch
+
+    // B. Client focus switch:
     if (focusMode === "client_work") {
-      return s.collection_role === "client"
+      return card.collection_role === "client"
     }
     if (focusMode === "this_client") {
-      return (s.collection_id || "general") === effectiveClientId
+      return (card.collection_id || "general") === effectiveClientId
     }
     return true
   })
 
-  // Attention buckets
-  const needsAttention = filteredSessions.filter((s) => getSessionAttentionState(s.status) === "needs_attention")
-  const running = filteredSessions.filter((s) => getSessionAttentionState(s.status) === "running")
-  const staged = filteredSessions.filter((s) => getSessionAttentionState(s.status) === "staged")
-  const accepted = filteredSessions.filter((s) => getSessionAttentionState(s.status) === "accepted")
-  const closed = filteredSessions.filter((s) => getSessionAttentionState(s.status) === "closed")
+  // Attention buckets for Goal Cards
+  const needsAttention = filteredGoalCards.filter((c) => c.attention_state === "needs_attention")
+  const running = filteredGoalCards.filter((c) => c.attention_state === "running")
+  const staged = filteredGoalCards.filter((c) => c.attention_state === "staged")
+  const accepted = filteredGoalCards.filter((c) => c.attention_state === "accepted")
+  const closed = filteredGoalCards.filter((c) => c.attention_state === "closed")
 
   // Grouped by Client -> Workstream
   const clientGroups = collections
     .map((c) => {
-      const clientSessions = filteredSessions.filter((s) => (s.collection_id || "general") === c.id)
+      const clientCards = filteredGoalCards.filter((card) => (card.collection_id || "general") === c.id)
       return {
         collection: c,
-        sessions: clientSessions,
-        needsAttention: clientSessions.filter((s) => getSessionAttentionState(s.status) === "needs_attention"),
-        running: clientSessions.filter((s) => getSessionAttentionState(s.status) === "running"),
-        staged: clientSessions.filter((s) => getSessionAttentionState(s.status) === "staged"),
-        accepted: clientSessions.filter((s) => getSessionAttentionState(s.status) === "accepted"),
+        cards: clientCards,
+        needsAttention: clientCards.filter((card) => card.attention_state === "needs_attention"),
+        running: clientCards.filter((card) => card.attention_state === "running"),
+        staged: clientCards.filter((card) => card.attention_state === "staged"),
+        accepted: clientCards.filter((card) => card.attention_state === "accepted"),
       }
     })
-    .filter((g) => g.sessions.length > 0)
+    .filter((g) => g.cards.length > 0)
 
   return (
     <div className="space-y-4">
-      {/* 1. Header Toolbar: Focus Switch (All / Client work / This client), Workstream filter & Grouping */}
+      {/* 1. Header Toolbar: Workstream Filter, Focus Switch & Grouping */}
       <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-gray-800 bg-gray-900/90 p-2.5">
         <div className="flex flex-wrap items-center gap-2">
+          {/* Workstream Filter Pill (Active Workstream vs All Workstreams) */}
+          <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 text-xs">
+            <button
+              type="button"
+              disabled={isSystemWorkstream}
+              onClick={() => setWorkstreamScope("active")}
+              className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                !isSystemWorkstream && workstreamScope === "active"
+                  ? "bg-blue-600 text-white"
+                  : "text-gray-400 hover:text-gray-200 disabled:opacity-40"
+              }`}
+              title={isSystemWorkstream ? "System channel shows all workstreams" : `Filter to ${activeChannel?.name}`}
+            >
+              {activeChannel && !isSystemWorkstream ? activeChannel.name : "This Workstream"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkstreamScope("all")}
+              className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                isSystemWorkstream || workstreamScope === "all"
+                  ? "bg-blue-600 text-white"
+                  : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              All Workstreams
+            </button>
+          </div>
+
+          {/* Workstream dropdown (active when viewing All Workstreams) */}
+          {(isSystemWorkstream || workstreamScope === "all") && (
+            <select
+              value={specificWorkstreamFilter}
+              onChange={(e) => setSpecificWorkstreamFilter(e.target.value)}
+              className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300"
+            >
+              <option value="all">Every workstream</option>
+              {channels
+                .filter((c) => !c.archived_at && c.type !== "system")
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name.replace(/^#+/, "")}
+                  </option>
+                ))}
+            </select>
+          )}
+
           {/* Focus Switch */}
           <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 text-xs">
             <button
+              type="button"
               onClick={() => setFocusMode("all")}
               className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                focusMode === "all" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+                focusMode === "all" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
               }`}
             >
-              All
+              All Clients
             </button>
             <button
+              type="button"
               onClick={() => setFocusMode("client_work")}
               className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                focusMode === "client_work" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+                focusMode === "client_work" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
               }`}
             >
               Client work
             </button>
             <button
+              type="button"
               onClick={() => setFocusMode("this_client")}
               className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                focusMode === "this_client" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+                focusMode === "this_client" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
               }`}
             >
               This client
@@ -280,31 +461,16 @@ export function SessionsCard({
             </select>
           )}
 
-          {/* Workstream Filter */}
-          <select
-            value={selectedWorkstreamFilter}
-            onChange={(e) => setSelectedWorkstreamFilter(e.target.value)}
-            className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300"
-          >
-            <option value="all">All workstreams</option>
-            {channels
-              .filter((c) => !c.archived_at && c.type !== "system")
-              .map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name.replace(/^#+/, "")}
-                </option>
-              ))}
-          </select>
-
           {/* Grouping Toggle */}
           <button
+            type="button"
             onClick={() => setGroupBy(groupBy === "client_workstream" ? "none" : "client_workstream")}
             className={`rounded border px-2 py-1 text-xs transition-colors ${
               groupBy === "client_workstream"
                 ? "border-blue-500/50 bg-blue-500/10 text-blue-300"
                 : "border-gray-700 bg-gray-800 text-gray-400 hover:text-gray-200"
             }`}
-            title="Toggle between Client/Workstream grouping and Flat Attention Board"
+            title="Toggle between Client grouping and Flat Attention Board"
           >
             {groupBy === "client_workstream" ? "Grouped" : "Flat"}
           </button>
@@ -312,6 +478,7 @@ export function SessionsCard({
 
         {/* New Goal Button */}
         <button
+          type="button"
           onClick={() => setShowCreate((v) => !v)}
           className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition-colors"
         >
@@ -432,9 +599,9 @@ export function SessionsCard({
         <p className="py-8 text-center text-xs text-gray-500">Loading Attention Board…</p>
       )}
 
-      {!loading && filteredSessions.length === 0 && (
+      {!loading && filteredGoalCards.length === 0 && (
         <div className="rounded-lg border border-dashed border-gray-800 p-8 text-center text-xs text-gray-500">
-          No sessions found for this client focus. Stage a goal or start a new session.
+          No goal cards found for this workstream and client focus. Click &quot;+ New Goal&quot; to stage or start a goal.
         </div>
       )}
 
@@ -464,7 +631,7 @@ export function SessionsCard({
                   <span className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${roleBadgeColor}`}>
                     {roleLabel}
                   </span>
-                  <span className="text-[10px] text-gray-500">({group.sessions.length} sessions)</span>
+                  <span className="text-[10px] text-gray-500">({group.cards.length} goals)</span>
                 </div>
 
                 <AttentionColumnsGrid
@@ -474,6 +641,7 @@ export function SessionsCard({
                   accepted={group.accepted}
                   onOpenSession={openSessionFromHub}
                   onStartSession={startSession}
+                  onNewRun={handleFollowupRun}
                   startingSessionId={startingSessionId}
                   onOpenTerminal={onOpenTerminal}
                 />
@@ -484,7 +652,7 @@ export function SessionsCard({
       )}
 
       {/* Flat Attention Board Grid */}
-      {groupBy === "none" && filteredSessions.length > 0 && (
+      {groupBy === "none" && filteredGoalCards.length > 0 && (
         <AttentionColumnsGrid
           needsAttention={needsAttention}
           running={running}
@@ -492,15 +660,17 @@ export function SessionsCard({
           accepted={accepted}
           onOpenSession={openSessionFromHub}
           onStartSession={startSession}
+          onNewRun={handleFollowupRun}
           startingSessionId={startingSessionId}
           onOpenTerminal={onOpenTerminal}
         />
       )}
 
-      {/* Collapsed Closed / Unsupervised Runs */}
+      {/* Collapsed Closed Goals */}
       {closed.length > 0 && (
         <div className="border-t border-gray-800 pt-3">
           <button
+            type="button"
             onClick={() => setShowClosed((v) => !v)}
             className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
           >
@@ -509,12 +679,13 @@ export function SessionsCard({
           </button>
           {showClosed && (
             <div className="mt-2 space-y-1.5">
-              {closed.map((s) => (
-                <AttentionCardItem
-                  key={s.id}
-                  session={s}
+              {closed.map((card) => (
+                <GoalCardItem
+                  key={card.id}
+                  card={card}
                   onOpenSession={openSessionFromHub}
                   onStartSession={startSession}
+                  onNewRun={handleFollowupRun}
                   startingSessionId={startingSessionId}
                 />
               ))}
@@ -533,15 +704,17 @@ function AttentionColumnsGrid({
   accepted,
   onOpenSession,
   onStartSession,
+  onNewRun,
   startingSessionId,
   onOpenTerminal,
 }: {
-  needsAttention: SessionInfo[]
-  running: SessionInfo[]
-  staged: SessionInfo[]
-  accepted: SessionInfo[]
+  needsAttention: GoalCard[]
+  running: GoalCard[]
+  staged: GoalCard[]
+  accepted: GoalCard[]
   onOpenSession: (id: string) => void
   onStartSession: (id: string) => void
+  onNewRun: (card: GoalCard) => void
   startingSessionId: string | null
   onOpenTerminal?: (terminalId: string) => void
 }) {
@@ -562,12 +735,13 @@ function AttentionColumnsGrid({
           {needsAttention.length === 0 ? (
             <p className="py-4 text-center text-[11px] text-gray-500">All clear</p>
           ) : (
-            needsAttention.map((s) => (
-              <AttentionCardItem
-                key={s.id}
-                session={s}
+            needsAttention.map((card) => (
+              <GoalCardItem
+                key={card.id}
+                card={card}
                 onOpenSession={onOpenSession}
                 onStartSession={onStartSession}
+                onNewRun={onNewRun}
                 startingSessionId={startingSessionId}
                 onOpenTerminal={onOpenTerminal}
               />
@@ -591,12 +765,13 @@ function AttentionColumnsGrid({
           {running.length === 0 ? (
             <p className="py-4 text-center text-[11px] text-gray-500">No active runs</p>
           ) : (
-            running.map((s) => (
-              <AttentionCardItem
-                key={s.id}
-                session={s}
+            running.map((card) => (
+              <GoalCardItem
+                key={card.id}
+                card={card}
                 onOpenSession={onOpenSession}
                 onStartSession={onStartSession}
+                onNewRun={onNewRun}
                 startingSessionId={startingSessionId}
                 onOpenTerminal={onOpenTerminal}
               />
@@ -620,12 +795,13 @@ function AttentionColumnsGrid({
           {staged.length === 0 ? (
             <p className="py-4 text-center text-[11px] text-gray-500">None staged</p>
           ) : (
-            staged.map((s) => (
-              <AttentionCardItem
-                key={s.id}
-                session={s}
+            staged.map((card) => (
+              <GoalCardItem
+                key={card.id}
+                card={card}
                 onOpenSession={onOpenSession}
                 onStartSession={onStartSession}
+                onNewRun={onNewRun}
                 startingSessionId={startingSessionId}
                 onOpenTerminal={onOpenTerminal}
               />
@@ -649,12 +825,13 @@ function AttentionColumnsGrid({
           {accepted.length === 0 ? (
             <p className="py-4 text-center text-[11px] text-gray-500">No accepted goals</p>
           ) : (
-            accepted.map((s) => (
-              <AttentionCardItem
-                key={s.id}
-                session={s}
+            accepted.map((card) => (
+              <GoalCardItem
+                key={card.id}
+                card={card}
                 onOpenSession={onOpenSession}
                 onStartSession={onStartSession}
+                onNewRun={onNewRun}
                 startingSessionId={startingSessionId}
                 onOpenTerminal={onOpenTerminal}
               />
@@ -666,25 +843,28 @@ function AttentionColumnsGrid({
   )
 }
 
-function AttentionCardItem({
-  session,
+function GoalCardItem({
+  card,
   onOpenSession,
   onStartSession,
+  onNewRun,
   startingSessionId,
   onOpenTerminal,
 }: {
-  session: SessionInfo
+  card: GoalCard
   onOpenSession: (id: string) => void
   onStartSession: (id: string) => void
+  onNewRun?: (card: GoalCard) => void
   startingSessionId: string | null
   onOpenTerminal?: (terminalId: string) => void
 }) {
-  const goalText = session.goal || session.description || "Untitled Goal"
-  const isVerifying = session.status === "verifying"
-  const isWaiting = session.status === "waiting"
-  const isFailed = session.status === "failed"
-  const isProposed = session.status === "proposed"
-  const isStarting = startingSessionId === session.id
+  const latest = card.latestSession
+  const goalText = card.goal || "Untitled Goal"
+  const isVerifying = latest.status === "verifying"
+  const isWaiting = latest.status === "waiting"
+  const isFailed = latest.status === "failed"
+  const isProposed = latest.status === "proposed"
+  const isStarting = startingSessionId === latest.id
 
   const badgeStyle = isVerifying
     ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
@@ -694,7 +874,7 @@ function AttentionCardItem({
         ? "bg-red-500/20 text-red-300 border-red-500/40"
         : isProposed
           ? "bg-purple-500/20 text-purple-300 border-purple-500/40"
-          : session.status === "completed"
+          : latest.status === "completed"
             ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
             : "bg-blue-500/20 text-blue-300 border-blue-500/40"
 
@@ -706,41 +886,95 @@ function AttentionCardItem({
         ? "Run Failed"
         : isProposed
           ? "Staged"
-          : session.status
+          : latest.status
+
+  const channels = useChannelStore.getState().channels
+  const ch = channels.find((c) => c.id === card.channel_id)
+  const channelName = ch ? ch.name.replace(/^#+/, "") : null
 
   return (
     <div
-      onClick={() => onOpenSession(session.id)}
+      onClick={() => onOpenSession(latest.id)}
       className="group cursor-pointer rounded-md border border-gray-800 bg-gray-900/90 p-2.5 transition-all hover:border-gray-700 hover:bg-gray-850"
     >
+      {/* Badges: Project, Channel, Status */}
       <div className="flex items-start justify-between gap-1.5">
-        <span className="text-[10px] font-semibold text-gray-400 truncate max-w-[140px]">{session.project}</span>
-        <span className={`rounded border px-1.5 py-0.5 text-[9px] font-medium leading-none ${badgeStyle}`}>
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+          <span className="text-[10px] font-semibold text-gray-400 truncate max-w-[100px]">{card.project}</span>
+          {channelName && (
+            <span className="text-[9px] px-1.5 py-0.2 rounded bg-gray-800 text-gray-400 font-mono truncate max-w-[90px]">
+              #{channelName}
+            </span>
+          )}
+        </div>
+        <span className={`rounded border px-1.5 py-0.5 text-[9px] font-medium leading-none flex-shrink-0 ${badgeStyle}`}>
           {statusText}
         </span>
       </div>
 
+      {/* Goal Title */}
       <p className="mt-1 line-clamp-2 text-xs font-medium text-gray-200 group-hover:text-white" title={goalText}>
         {goalText}
       </p>
 
-      {session.output_summary && session.status === "completed" && (
+      {/* Multiple Runs Badge and Chips */}
+      {card.runsCount > 1 && (
+        <div className="mt-2 flex items-center gap-1 border-t border-gray-800/60 pt-1.5">
+          <span className="text-[9px] text-gray-500 font-medium">Runs ({card.runsCount}):</span>
+          <div className="flex items-center gap-1 overflow-x-auto py-0.5">
+            {card.sessions.map((s, idx) => {
+              const runNum = idx + 1
+              const isLatest = idx === card.sessions.length - 1
+              const st = s.status
+              const runColor =
+                st === "completed"
+                  ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                  : st === "failed"
+                    ? "bg-red-500/20 text-red-300 border-red-500/30"
+                    : st === "verifying"
+                      ? "bg-amber-500/20 text-amber-300 border-amber-500/30"
+                      : st === "running"
+                        ? "bg-blue-500/20 text-blue-300 border-blue-500/30"
+                        : "bg-gray-800 text-gray-400 border-gray-700"
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onOpenSession(s.id)
+                  }}
+                  className={`rounded border px-1.5 py-0.5 text-[9px] font-mono transition-colors hover:brightness-125 ${runColor} ${
+                    isLatest ? "font-bold ring-1 ring-blue-500/40" : ""
+                  }`}
+                  title={`Run #${runNum}: ${s.status}`}
+                >
+                  #{runNum} {st === "completed" ? "✓" : st === "failed" ? "✕" : st === "running" ? "⚡" : ""}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {latest.output_summary && latest.status === "completed" && (
         <p className="mt-1 line-clamp-1 text-[10px] text-gray-400 italic">
-          {session.output_summary.replace(/[*_#]/g, "")}
+          {latest.output_summary.replace(/[*_#]/g, "")}
         </p>
       )}
 
       {/* Quick Action Bar */}
       <div className="mt-2.5 flex items-center justify-between border-t border-gray-800/80 pt-1.5">
         <span className="text-[9px] text-gray-500">
-          {session.agent_provider || "orchestrated"}
+          {latest.agent_provider || "orchestrated"}
         </span>
 
-        <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           {isProposed && (
             <button
+              type="button"
               disabled={isStarting}
-              onClick={() => onStartSession(session.id)}
+              onClick={() => onStartSession(latest.id)}
               className="rounded bg-purple-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-purple-500 disabled:opacity-50"
             >
               {isStarting ? "Starting…" : "▶ Start"}
@@ -749,7 +983,8 @@ function AttentionCardItem({
 
           {isVerifying && (
             <button
-              onClick={() => onOpenSession(session.id)}
+              type="button"
+              onClick={() => onOpenSession(latest.id)}
               className="rounded bg-amber-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-amber-500"
             >
               🔍 Review
@@ -758,11 +993,12 @@ function AttentionCardItem({
 
           {isWaiting && (
             <button
+              type="button"
               onClick={() => {
-                if (session.terminal_ids?.[0] && onOpenTerminal) {
-                  onOpenTerminal(session.terminal_ids[0])
+                if (latest.terminal_ids?.[0] && onOpenTerminal) {
+                  onOpenTerminal(latest.terminal_ids[0])
                 } else {
-                  onOpenSession(session.id)
+                  onOpenSession(latest.id)
                 }
               }}
               className="rounded bg-yellow-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-yellow-500"
@@ -772,19 +1008,44 @@ function AttentionCardItem({
           )}
 
           {isFailed && (
+            <>
+              <button
+                type="button"
+                disabled={isStarting}
+                onClick={() => onStartSession(latest.id)}
+                className="rounded bg-red-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+              >
+                ↺ Retry
+              </button>
+              {onNewRun && (
+                <button
+                  type="button"
+                  onClick={() => onNewRun(card)}
+                  className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-300 hover:bg-gray-700"
+                  title="Launch follow-up run on this goal"
+                >
+                  + Run
+                </button>
+              )}
+            </>
+          )}
+
+          {latest.status === "completed" && onNewRun && (
             <button
-              disabled={isStarting}
-              onClick={() => onStartSession(session.id)}
-              className="rounded bg-red-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+              type="button"
+              onClick={() => onNewRun(card)}
+              className="rounded border border-emerald-500/40 bg-emerald-950/30 px-1.5 py-0.5 text-[10px] text-emerald-300 hover:bg-emerald-900/40"
+              title="Launch follow-up run"
             >
-              ↺ Retry
+              + Follow-up
             </button>
           )}
 
-          {session.status === "running" && session.terminal_ids?.[0] && (
+          {latest.status === "running" && latest.terminal_ids?.[0] && (
             <button
+              type="button"
               onClick={() => {
-                const tid = session.terminal_ids[0]
+                const tid = latest.terminal_ids[0]
                 if (onOpenTerminal) onOpenTerminal(tid)
                 else useTerminalStore.getState().setActiveTerminalId(tid)
               }}

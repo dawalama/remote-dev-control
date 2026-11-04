@@ -94,3 +94,40 @@ def test_collection_roles():
     repo.delete(c1.id)
     repo.delete(c2.id)
     repo.delete(c3.id)
+
+
+def test_session_task_id_and_parent_chain():
+    """Verify session can link to task_id and parent_session_id for multi-run goal cards."""
+    from remote_dev_ctrl.server.supervised_sessions import create_supervised_session
+    from remote_dev_ctrl.server.db.models import Project
+    from remote_dev_ctrl.server.db.repositories import get_project_repo
+
+    project_repo = get_project_repo()
+    test_proj = project_repo.create(Project(name="test-multi-run-proj", path="/tmp/test-proj"))
+
+    try:
+        # Run 1: Initial attempt on task-101
+        sess1 = create_supervised_session(
+            channel_id="ch-test-chain",
+            project="test-multi-run-proj",
+            goal="Add OAuth token refresh",
+            status="proposed",
+            task_id="task-101",
+        )
+        assert sess1.task_id == "task-101"
+        assert sess1.status == SessionStatus.PROPOSED
+
+        # Run 2: Follow-up attempt on task-101 linking to parent sess1
+        sess2 = create_supervised_session(
+            channel_id="ch-test-chain",
+            project="test-multi-run-proj",
+            goal="Add OAuth token refresh",
+            status="pending",
+            task_id="task-101",
+            metadata_extra={"parent_session_id": sess1.id},
+        )
+        assert sess2.task_id == "task-101"
+        assert sess2.metadata.get("parent_session_id") == sess1.id
+        assert sess2.status == SessionStatus.PENDING
+    finally:
+        project_repo.delete(test_proj.id)

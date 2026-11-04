@@ -21,6 +21,12 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
   const currentCollection = useProjectStore((s) => s.currentCollection)
   const selectCollection = useProjectStore((s) => s.selectCollection)
 
+  // Sync client focus with UI store
+  const focusMode = useUIStore((s) => s.sessionsHubFocusMode)
+  const setFocusMode = useUIStore((s) => s.setSessionsHubFocusMode)
+  const selectedClientId = useUIStore((s) => s.sessionsHubSelectedClient)
+  const setSelectedClientId = useUIStore((s) => s.setSessionsHubSelectedClient)
+
   // Activity state from server
   const terminals = useStateStore((s) => s.terminals)
   const actions = useStateStore((s) => s.actions)
@@ -59,7 +65,7 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
     return active
   }, [terminals, actions])
 
-  // Filter channels
+  // Filter channels with client narrowing
   const filteredChannels = useMemo(() => {
     let result = channels
 
@@ -71,46 +77,69 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
       })
     }
 
-    // Collection filter — only when not in active mode
-    if (currentCollection) {
-      result = result.filter((ch) => {
+    // Client focus narrowing:
+    // 1. If board is focused on client work only:
+    if (focusMode === "client_work") {
+      const clientCollIds = new Set(collections.filter((c) => c.role === "client").map((c) => c.id))
+      return result.filter((ch) => {
+        if (ch.type === "system") return true // system channels always visible
+        return ch.collection_ids.some((id) => clientCollIds.has(id))
+      })
+    }
+
+    // 2. Specific client selected (from board focus or sidebar collection picker):
+    const effectiveClientId = (focusMode === "this_client" && selectedClientId) ? selectedClientId : currentCollection
+    if (effectiveClientId) {
+      return result.filter((ch) => {
         if (ch.type === "system") return true // system shows everywhere
         if (ch.collection_ids.length === 0 && ch.project_ids.length === 0) return false // orphaned ephemeral
-        return ch.collection_ids.includes(currentCollection)
+        return ch.collection_ids.includes(effectiveClientId)
       })
     }
 
     return result
-  }, [channels, filterMode, currentCollection, activeProjectNames])
+  }, [channels, filterMode, focusMode, selectedClientId, currentCollection, collections, activeProjectNames])
 
   const handleCreate = useCallback(async () => {
     if (!newName.trim()) return
     const projectIds = newProjectId ? [newProjectId] : []
     const type = projectIds.length > 0 ? "project" : "ephemeral"
-    await createChannel(newName.trim(), type, projectIds, currentCollection ? currentCollection : "general")
+    const targetColl = (focusMode === "this_client" && selectedClientId) ? selectedClientId : (currentCollection || "general")
+    await createChannel(newName.trim(), type, projectIds, targetColl)
     setNewName("")
     setNewProjectId("")
     setCreating(false)
-  }, [newName, newProjectId, createChannel, currentCollection])
+  }, [newName, newProjectId, createChannel, focusMode, selectedClientId, currentCollection])
 
   const grouped = groupMode === "project" ? groupByProject(filteredChannels) : null
+  const selectedDropdownValue = (focusMode === "this_client" && selectedClientId) ? selectedClientId : (currentCollection ?? "")
 
   return (
     <div className="flex flex-col h-full bg-gray-900 border-r border-gray-800 w-56 flex-shrink-0">
       {/* Header with filters */}
       <div className="flex-shrink-0 border-b border-gray-800">
-        {/* Collection selector + create */}
+        {/* Collection / Client selector + create */}
         <div className="px-2 pt-2 pb-1 flex gap-1">
           <select
-            value={currentCollection ?? ""}
-            onChange={(e) => selectCollection(e.target.value || null)}
+            value={selectedDropdownValue}
+            onChange={(e) => {
+              const val = e.target.value || null
+              selectCollection(val)
+              if (val) {
+                setSelectedClientId(val)
+                setFocusMode("this_client")
+              } else {
+                setSelectedClientId(null)
+                setFocusMode("all")
+              }
+            }}
             className="flex-1 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none min-w-0"
           >
-            <option value="">All Collections</option>
+            <option value="">All Collections / Clients</option>
             {collections.map((c) => (
-              <option key={c.id} value={c.id}>{c.name} ({
-                projects.filter((p) => p.collection_id === c.id).length
-              })</option>
+              <option key={c.id} value={c.id}>
+                {c.name} {c.role === "client" ? "(Client)" : c.role === "own" ? "(Own)" : ""}
+              </option>
             ))}
           </select>
           <CollectionCreateButton />

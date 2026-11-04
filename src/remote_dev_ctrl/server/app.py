@@ -9470,6 +9470,8 @@ class CreateSupervisedSessionRequest(BaseModel):
     policy: dict = Field(default_factory=dict)
     budget: dict | None = None
     status: str | None = None
+    task_id: str | None = None
+    parent_session_id: str | None = None
 
 
 class ContinueSessionRequest(BaseModel):
@@ -9665,6 +9667,8 @@ async def create_supervised_session(body: CreateSupervisedSessionRequest):
             policy=body.policy,
             budget=body.budget,
             status=body.status,
+            task_id=body.task_id,
+            metadata_extra={"parent_session_id": body.parent_session_id} if body.parent_session_id else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e

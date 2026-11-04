@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { useUIStore } from "@/stores/ui-store"
+import { useChannelStore } from "@/stores/channel-store"
 import { SessionsCard } from "./sessions-card"
 import { ProviderSetup } from "./provider-setup"
 import { ProjectBootstrap } from "./project-bootstrap"
@@ -18,6 +19,9 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
   const setViewingSessionId = useUIStore((state) => state.setViewingSessionId)
   const workspaceMode = useUIStore((state) => state.workspaceMode)
   const setWorkspaceMode = useUIStore((state) => state.setWorkspaceMode)
+  const channels = useChannelStore((state) => state.channels)
+  const activeChannelId = useChannelStore((state) => state.activeChannelId)
+  const activeChannel = channels.find((c) => c.id === activeChannelId)
 
   const runBrief = async () => {
     setBriefing(true)
@@ -49,11 +53,40 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
   return (
     <section className="flex-1 flex flex-col min-h-0 overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
       <header className="flex flex-wrap items-center gap-2.5 border-b border-gray-800 px-4 py-2.5 bg-gray-900/90">
-        <div className="min-w-0 flex-1 flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-gray-100">
-            Goals &amp; Reviews
+        <div className="min-w-0 flex-1 flex items-center gap-2.5">
+          <h2 className="text-sm font-semibold text-gray-100 flex items-center gap-2">
+            <span>Goal Board</span>
+            {activeChannel && (
+              <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-mono font-medium">
+                {activeChannel.name}
+              </span>
+            )}
           </h2>
         </div>
+
+        {!onCloseModal && (
+          <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5">
+            <button
+              type="button"
+              onClick={() => setWorkspaceMode("goals")}
+              className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                workspaceMode === "goals" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              📋 Board
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkspaceMode("terminal")}
+              className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                workspaceMode === "terminal" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+              }`}
+              title="Switch to raw PTY terminal view (⌘J)"
+            >
+              💻 Terminal (⌘J)
+            </button>
+          </div>
+        )}
 
         <button
           type="button"
@@ -83,16 +116,6 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
         >
           + Project
         </button>
-
-        {!onCloseModal && (
-          <button
-            onClick={() => setWorkspaceMode(workspaceMode === "terminal" ? "goals" : "terminal")}
-            className="rounded border border-gray-700 bg-gray-800 px-2.5 py-1 text-xs font-mono text-gray-300 hover:bg-gray-700"
-            title="Switch to raw PTY terminal view"
-          >
-            &gt;_ Raw Terminal
-          </button>
-        )}
 
         {onCloseModal && (
           <>

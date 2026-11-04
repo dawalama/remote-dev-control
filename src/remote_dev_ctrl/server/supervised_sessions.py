@@ -124,6 +124,7 @@ def create_supervised_session(
     budget: Optional[dict] = None,
     metadata_extra: Optional[dict] = None,
     status: Optional[str] = None,
+    task_id: Optional[str] = None,
 ) -> Session:
     """Create a durable supervised session with evidence/git baseline metadata."""
     if not resolve_project_id(project):
@@ -145,6 +146,7 @@ def create_supervised_session(
         project=project,
         description=goal,
         agent_provider=provider,
+        task_id=task_id,
         metadata=metadata,
         acceptance_criteria=[item.strip() for item in (acceptance_criteria or []) if item.strip()],
         policy=policy or {},
