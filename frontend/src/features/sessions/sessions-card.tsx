@@ -158,6 +158,7 @@ export function SessionsCard({
   scope?: "workstream" | "all"
 }) {
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
+  const selectChannel = useChannelStore((s) => s.selectChannel)
   const channels = useChannelStore((s) => s.channels)
   const collections = useProjectStore((s) => s.collections)
   const projects = useProjectStore((s) => s.projects)
@@ -165,19 +166,23 @@ export function SessionsCard({
   const toast = useUIStore((s) => s.toast)
   const setNeedsAttentionCount = useUIStore((s) => s.setNeedsAttentionCount)
 
-  // Focus & Filter controls
+  // System vs Focused Workstream Mode
+  const activeChannel = channels.find((channel) => channel.id === activeChannelId)
+  const isSystemWorkstream =
+    !activeChannel || activeChannel.type === "system" || activeChannel.name === "#general" || activeChannel.name === "#system"
+
+  // Client info for the active workstream
+  const activeChannelClient = activeChannel
+    ? collections.find((c) => c.id === activeChannel.collection_id)
+    : null
+
+  // Focus & Filter controls (for #system Overview Mode)
   const focusMode = useUIStore((s) => s.sessionsHubFocusMode)
   const setFocusMode = useUIStore((s) => s.setSessionsHubFocusMode)
   const selectedClientId = useUIStore((s) => s.sessionsHubSelectedClient)
   const setSelectedClientId = useUIStore((s) => s.setSessionsHubSelectedClient)
   const groupBy = useUIStore((s) => s.sessionsHubGroupBy)
   const setGroupBy = useUIStore((s) => s.setSessionsHubGroupBy)
-
-  // Workstream scope: "active" (scoped to active workstream) vs "all"
-  const activeChannel = channels.find((channel) => channel.id === activeChannelId)
-  const isSystemWorkstream = !activeChannel || activeChannel.type === "system" || activeChannel.name === "#general"
-  const [workstreamScope, setWorkstreamScope] = useState<"active" | "all">("active")
-  const [specificWorkstreamFilter, setSpecificWorkstreamFilter] = useState<string>("all")
 
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(false)
@@ -195,8 +200,12 @@ export function SessionsCard({
     { id: "diagnostic", label: "Diagnostic (no writes)" },
   ])
 
+  // Multi-project support for workstream
   const workstreamProjects = activeChannel?.project_names ?? []
-  const selectedProject = draft.project || workstreamProjects[0] || (projects[0]?.name ?? "")
+  const availableProjects = workstreamProjects.length > 0
+    ? projects.filter((p) => workstreamProjects.includes(p.name))
+    : projects
+  const selectedProject = draft.project || availableProjects[0]?.name || (projects[0]?.name ?? "")
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -316,31 +325,26 @@ export function SessionsCard({
     }
   }
 
-  // Derived Client list
-  const clientCollections = collections.filter((c) => c.role === "client")
-  const effectiveClientId = selectedClientId || clientCollections[0]?.id || collections[0]?.id || "general"
-
   // 1. Group all sessions into Goal Cards
   const allGoalCards = groupSessionsIntoGoalCards(sessions)
 
-  // 2. Filter Goal Cards according to Workstream Scope and Client Focus
-  const filteredGoalCards = allGoalCards.filter((card) => {
-    // A. Workstream filter:
-    if (!isSystemWorkstream && workstreamScope === "active") {
-      if (card.channel_id !== activeChannelId) return false
-    } else if (specificWorkstreamFilter !== "all") {
-      if (card.channel_id !== specificWorkstreamFilter) return false
-    }
+  // 2. Filter Goal Cards based on operating mode:
+  // If in Focused Workstream Mode (!isSystemWorkstream): strictly this workstream!
+  // If in System Overview Mode (isSystemWorkstream): cross-client overview with focus switch
+  const clientCollections = collections.filter((c) => c.role === "client")
+  const effectiveClientId = selectedClientId || clientCollections[0]?.id || collections[0]?.id || "general"
 
-    // B. Client focus switch:
-    if (focusMode === "client_work") {
-      return card.collection_role === "client"
-    }
-    if (focusMode === "this_client") {
-      return (card.collection_id || "general") === effectiveClientId
-    }
-    return true
-  })
+  const filteredGoalCards = isSystemWorkstream
+    ? allGoalCards.filter((card) => {
+        if (focusMode === "client_work") {
+          return card.collection_role === "client"
+        }
+        if (focusMode === "this_client") {
+          return (card.collection_id || "general") === effectiveClientId
+        }
+        return true
+      })
+    : allGoalCards.filter((card) => card.channel_id === activeChannelId)
 
   // Attention buckets for Goal Cards
   const needsAttention = filteredGoalCards.filter((c) => c.attention_state === "needs_attention")
@@ -349,7 +353,7 @@ export function SessionsCard({
   const accepted = filteredGoalCards.filter((c) => c.attention_state === "accepted")
   const closed = filteredGoalCards.filter((c) => c.attention_state === "closed")
 
-  // Grouped by Client -> Workstream
+  // Client groups (for #system Overview Mode)
   const clientGroups = collections
     .map((c) => {
       const clientCards = filteredGoalCards.filter((card) => (card.collection_id || "general") === c.id)
@@ -364,129 +368,124 @@ export function SessionsCard({
     })
     .filter((g) => g.cards.length > 0)
 
+  // Client badge styling
+  const clientBadgeColor =
+    activeChannelClient?.role === "client"
+      ? "bg-blue-500/20 text-blue-300 border-blue-500/30"
+      : activeChannelClient?.role === "own"
+        ? "bg-purple-500/20 text-purple-300 border-purple-500/30"
+        : "bg-gray-800 text-gray-400 border-gray-700"
+
   return (
     <div className="space-y-4">
-      {/* 1. Header Toolbar: Workstream Filter, Focus Switch & Grouping */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-gray-800 bg-gray-900/90 p-2.5">
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Workstream Filter Pill (Active Workstream vs All Workstreams) */}
-          <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 text-xs">
-            <button
-              type="button"
-              disabled={isSystemWorkstream}
-              onClick={() => setWorkstreamScope("active")}
-              className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                !isSystemWorkstream && workstreamScope === "active"
-                  ? "bg-blue-600 text-white"
-                  : "text-gray-400 hover:text-gray-200 disabled:opacity-40"
-              }`}
-              title={isSystemWorkstream ? "System channel shows all workstreams" : `Filter to ${activeChannel?.name}`}
-            >
-              {activeChannel && !isSystemWorkstream ? activeChannel.name : "This Workstream"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setWorkstreamScope("all")}
-              className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                isSystemWorkstream || workstreamScope === "all"
-                  ? "bg-blue-600 text-white"
-                  : "text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              All Workstreams
-            </button>
+      {/* ── MODE A: Focused Workstream Header Toolbar ── */}
+      {!isSystemWorkstream && activeChannel && (
+        <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-gray-800 bg-gray-900/90 p-2.5">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-gray-200">{activeChannel.name}</span>
+            {activeChannelClient && (
+              <span className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${clientBadgeColor}`}>
+                {activeChannelClient.name}
+              </span>
+            )}
+            {workstreamProjects.length > 0 && (
+              <span className="text-[10px] text-gray-400 font-mono">
+                [{workstreamProjects.join(", ")}]
+              </span>
+            )}
           </div>
 
-          {/* Workstream dropdown (active when viewing All Workstreams) */}
-          {(isSystemWorkstream || workstreamScope === "all") && (
-            <select
-              value={specificWorkstreamFilter}
-              onChange={(e) => setSpecificWorkstreamFilter(e.target.value)}
-              className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300"
-            >
-              <option value="all">Every workstream</option>
-              {channels
-                .filter((c) => !c.archived_at && c.type !== "system")
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name.replace(/^#+/, "")}
-                  </option>
-                ))}
-            </select>
-          )}
-
-          {/* Focus Switch */}
-          <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 text-xs">
-            <button
-              type="button"
-              onClick={() => setFocusMode("all")}
-              className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                focusMode === "all" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              All Clients
-            </button>
-            <button
-              type="button"
-              onClick={() => setFocusMode("client_work")}
-              className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                focusMode === "client_work" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              Client work
-            </button>
-            <button
-              type="button"
-              onClick={() => setFocusMode("this_client")}
-              className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                focusMode === "this_client" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              This client
-            </button>
-          </div>
-
-          {/* This Client Dropdown (if This client is active) */}
-          {focusMode === "this_client" && (
-            <select
-              value={effectiveClientId}
-              onChange={(e) => setSelectedClientId(e.target.value)}
-              className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-200"
-            >
-              {collections.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} {c.role === "own" ? "(Company)" : c.role === "client" ? "(Client)" : "(Unsorted)"}
-                </option>
-              ))}
-            </select>
-          )}
-
-          {/* Grouping Toggle */}
           <button
             type="button"
-            onClick={() => setGroupBy(groupBy === "client_workstream" ? "none" : "client_workstream")}
-            className={`rounded border px-2 py-1 text-xs transition-colors ${
-              groupBy === "client_workstream"
-                ? "border-blue-500/50 bg-blue-500/10 text-blue-300"
-                : "border-gray-700 bg-gray-800 text-gray-400 hover:text-gray-200"
-            }`}
-            title="Toggle between Client grouping and Flat Attention Board"
+            onClick={() => setShowCreate((v) => !v)}
+            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition-colors"
           >
-            {groupBy === "client_workstream" ? "Grouped" : "Flat"}
+            {showCreate ? "Close Form" : "+ New Goal"}
           </button>
         </div>
+      )}
 
-        {/* New Goal Button */}
-        <button
-          type="button"
-          onClick={() => setShowCreate((v) => !v)}
-          className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition-colors"
-        >
-          {showCreate ? "Close Form" : "+ New Goal"}
-        </button>
-      </div>
+      {/* ── MODE B: #system Executive Overview Toolbar ── */}
+      {isSystemWorkstream && (
+        <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-gray-800 bg-gray-900/90 p-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 pr-2 border-r border-gray-800">
+              <span className="text-xs font-bold text-gray-200">HomeBase Overview</span>
+              <span className="text-[10px] text-gray-500 font-mono">(All Workstreams)</span>
+            </div>
 
-      {/* 2. New Goal Form */}
+            {/* Focus Switch */}
+            <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setFocusMode("all")}
+                className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                  focusMode === "all" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                All Clients
+              </button>
+              <button
+                type="button"
+                onClick={() => setFocusMode("client_work")}
+                className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                  focusMode === "client_work" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                Client work
+              </button>
+              <button
+                type="button"
+                onClick={() => setFocusMode("this_client")}
+                className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                  focusMode === "this_client" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                This client
+              </button>
+            </div>
+
+            {/* This Client Dropdown */}
+            {focusMode === "this_client" && (
+              <select
+                value={effectiveClientId}
+                onChange={(e) => setSelectedClientId(e.target.value)}
+                className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-200"
+              >
+                {collections.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} {c.role === "own" ? "(Company)" : c.role === "client" ? "(Client)" : "(Unsorted)"}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {/* Grouping Toggle */}
+            <button
+              type="button"
+              onClick={() => setGroupBy(groupBy === "client_workstream" ? "none" : "client_workstream")}
+              className={`rounded border px-2 py-1 text-xs transition-colors ${
+                groupBy === "client_workstream"
+                  ? "border-blue-500/50 bg-blue-500/10 text-blue-300"
+                  : "border-gray-700 bg-gray-800 text-gray-400 hover:text-gray-200"
+              }`}
+              title="Toggle between Client grouping and Flat Attention Board"
+            >
+              {groupBy === "client_workstream" ? "Grouped" : "Flat"}
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowCreate((v) => !v)}
+            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition-colors"
+          >
+            {showCreate ? "Close Form" : "+ New Goal"}
+          </button>
+        </div>
+      )}
+
+      {/* ── New Goal Form ── */}
       {showCreate && (
         <form
           onSubmit={(e) => {
@@ -526,7 +525,7 @@ export function SessionsCard({
                   onChange={(e) => setDraft({ ...draft, project: e.target.value })}
                   className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-200"
                 >
-                  {projects.map((p) => (
+                  {availableProjects.map((p) => (
                     <option key={p.name} value={p.name}>
                       {p.name}
                     </option>
@@ -564,7 +563,7 @@ export function SessionsCard({
           )}
 
           <div className="flex items-center justify-between pt-1">
-            <span className="text-[10px] text-gray-400">Project: {selectedProject || "None selected"}</span>
+            <span className="text-[10px] text-gray-400">Target Project: {selectedProject || "None"}</span>
             <div className="flex gap-2">
               <button
                 type="button"
@@ -594,19 +593,21 @@ export function SessionsCard({
         </form>
       )}
 
-      {/* 3. Attention Board Rendering */}
+      {/* ── Attention Board Rendering ── */}
       {loading && sessions.length === 0 && (
         <p className="py-8 text-center text-xs text-gray-500">Loading Attention Board…</p>
       )}
 
       {!loading && filteredGoalCards.length === 0 && (
         <div className="rounded-lg border border-dashed border-gray-800 p-8 text-center text-xs text-gray-500">
-          No goal cards found for this workstream and client focus. Click &quot;+ New Goal&quot; to stage or start a goal.
+          {isSystemWorkstream
+            ? "No goal cards found across HomeBase. Select a workstream or click \"+ New Goal\"."
+            : `No goals found for ${activeChannel?.name || "this workstream"}. Click "+ New Goal" to stage or start a goal.`}
         </div>
       )}
 
-      {/* When Grouped by Client */}
-      {groupBy === "client_workstream" && clientGroups.length > 0 && (
+      {/* When in #system Overview and Grouped by Client */}
+      {isSystemWorkstream && groupBy === "client_workstream" && clientGroups.length > 0 && (
         <div className="space-y-6">
           {clientGroups.map((group) => {
             const roleLabel =
@@ -642,6 +643,7 @@ export function SessionsCard({
                   onOpenSession={openSessionFromHub}
                   onStartSession={startSession}
                   onNewRun={handleFollowupRun}
+                  onSelectWorkstream={selectChannel}
                   startingSessionId={startingSessionId}
                   onOpenTerminal={onOpenTerminal}
                 />
@@ -651,8 +653,8 @@ export function SessionsCard({
         </div>
       )}
 
-      {/* Flat Attention Board Grid */}
-      {groupBy === "none" && filteredGoalCards.length > 0 && (
+      {/* Flat Attention Board Grid (Used in Focused Workstream Mode OR Flat Overview Mode) */}
+      {(!isSystemWorkstream || groupBy === "none") && filteredGoalCards.length > 0 && (
         <AttentionColumnsGrid
           needsAttention={needsAttention}
           running={running}
@@ -661,6 +663,7 @@ export function SessionsCard({
           onOpenSession={openSessionFromHub}
           onStartSession={startSession}
           onNewRun={handleFollowupRun}
+          onSelectWorkstream={selectChannel}
           startingSessionId={startingSessionId}
           onOpenTerminal={onOpenTerminal}
         />
@@ -686,6 +689,7 @@ export function SessionsCard({
                   onOpenSession={openSessionFromHub}
                   onStartSession={startSession}
                   onNewRun={handleFollowupRun}
+                  onSelectWorkstream={selectChannel}
                   startingSessionId={startingSessionId}
                 />
               ))}
@@ -705,6 +709,7 @@ function AttentionColumnsGrid({
   onOpenSession,
   onStartSession,
   onNewRun,
+  onSelectWorkstream,
   startingSessionId,
   onOpenTerminal,
 }: {
@@ -715,6 +720,7 @@ function AttentionColumnsGrid({
   onOpenSession: (id: string) => void
   onStartSession: (id: string) => void
   onNewRun: (card: GoalCard) => void
+  onSelectWorkstream?: (channelId: string) => void
   startingSessionId: string | null
   onOpenTerminal?: (terminalId: string) => void
 }) {
@@ -742,6 +748,7 @@ function AttentionColumnsGrid({
                 onOpenSession={onOpenSession}
                 onStartSession={onStartSession}
                 onNewRun={onNewRun}
+                onSelectWorkstream={onSelectWorkstream}
                 startingSessionId={startingSessionId}
                 onOpenTerminal={onOpenTerminal}
               />
@@ -772,6 +779,7 @@ function AttentionColumnsGrid({
                 onOpenSession={onOpenSession}
                 onStartSession={onStartSession}
                 onNewRun={onNewRun}
+                onSelectWorkstream={onSelectWorkstream}
                 startingSessionId={startingSessionId}
                 onOpenTerminal={onOpenTerminal}
               />
@@ -802,6 +810,7 @@ function AttentionColumnsGrid({
                 onOpenSession={onOpenSession}
                 onStartSession={onStartSession}
                 onNewRun={onNewRun}
+                onSelectWorkstream={onSelectWorkstream}
                 startingSessionId={startingSessionId}
                 onOpenTerminal={onOpenTerminal}
               />
@@ -832,6 +841,7 @@ function AttentionColumnsGrid({
                 onOpenSession={onOpenSession}
                 onStartSession={onStartSession}
                 onNewRun={onNewRun}
+                onSelectWorkstream={onSelectWorkstream}
                 startingSessionId={startingSessionId}
                 onOpenTerminal={onOpenTerminal}
               />
@@ -848,6 +858,7 @@ function GoalCardItem({
   onOpenSession,
   onStartSession,
   onNewRun,
+  onSelectWorkstream,
   startingSessionId,
   onOpenTerminal,
 }: {
@@ -855,6 +866,7 @@ function GoalCardItem({
   onOpenSession: (id: string) => void
   onStartSession: (id: string) => void
   onNewRun?: (card: GoalCard) => void
+  onSelectWorkstream?: (channelId: string) => void
   startingSessionId: string | null
   onOpenTerminal?: (terminalId: string) => void
 }) {
@@ -902,9 +914,19 @@ function GoalCardItem({
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <span className="text-[10px] font-semibold text-gray-400 truncate max-w-[100px]">{card.project}</span>
           {channelName && (
-            <span className="text-[9px] px-1.5 py-0.2 rounded bg-gray-800 text-gray-400 font-mono truncate max-w-[90px]">
+            <button
+              type="button"
+              onClick={(e) => {
+                if (onSelectWorkstream) {
+                  e.stopPropagation()
+                  onSelectWorkstream(card.channel_id)
+                }
+              }}
+              className="text-[9px] px-1.5 py-0.2 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 font-mono truncate max-w-[90px] transition-colors"
+              title={`Switch to #${channelName}`}
+            >
               #{channelName}
-            </span>
+            </button>
           )}
         </div>
         <span className={`rounded border px-1.5 py-0.5 text-[9px] font-medium leading-none flex-shrink-0 ${badgeStyle}`}>

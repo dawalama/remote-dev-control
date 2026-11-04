@@ -55,7 +55,7 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
       <header className="flex flex-wrap items-center gap-2.5 border-b border-gray-800 px-4 py-2.5 bg-gray-900/90">
         <div className="min-w-0 flex-1 flex items-center gap-2.5">
           <h2 className="text-sm font-semibold text-gray-100 flex items-center gap-2">
-            <span>Goal Board</span>
+            <span>{activeChannel?.type === "system" ? "HomeBase Overview" : "Goal Board"}</span>
             {activeChannel && (
               <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-mono font-medium">
                 {activeChannel.name}

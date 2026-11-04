@@ -9343,9 +9343,10 @@ async def create_channel(request: Request):
         "name": ch.name,
         "type": ch.type.value,
         "parent_channel_id": ch.parent_channel_id,
+        "collection_id": ch.collection_id,
         "project_ids": ch.project_ids,
         "project_names": project_names,
-        "collection_ids": list(collection_ids),
+        "collection_ids": list(collection_ids | {ch.collection_id}),
         "auto_mode": ch.auto_mode,
         "token_spent": 0,
         "token_budget": None,
@@ -11120,6 +11121,27 @@ async def update_channel(channel_id: str, request: Request):
             "UPDATE channels SET token_budget = ? WHERE id = ?",
             (body["token_budget"], channel_id),
         )
+        cm.db.commit()
+    if "collection_id" in body and body["collection_id"]:
+        cm.db.execute(
+            "UPDATE channels SET collection_id = ? WHERE id = ?",
+            (body["collection_id"], channel_id),
+        )
+        cm.db.commit()
+    if "project_ids" in body and isinstance(body["project_ids"], list):
+        from .db.repositories import ProjectRepository
+        repo = ProjectRepository()
+        resolved_pids = []
+        for name_or_id in body["project_ids"]:
+            proj = repo.get(name_or_id)
+            if proj:
+                resolved_pids.append(proj.id)
+        cm.db.execute("DELETE FROM channel_projects WHERE channel_id = ?", (channel_id,))
+        for pid in resolved_pids:
+            cm.db.execute(
+                "INSERT OR IGNORE INTO channel_projects (channel_id, project_id) VALUES (?, ?)",
+                (channel_id, pid),
+            )
         cm.db.commit()
 
     return {"success": True}

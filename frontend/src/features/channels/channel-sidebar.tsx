@@ -36,6 +36,7 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState("")
   const [newProjectId, setNewProjectId] = useState<string>("")
+  const [newClientCollId, setNewClientCollId] = useState<string>("")
 
   useMountEffect(() => {
     loadChannels()
@@ -104,12 +105,13 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
     if (!newName.trim()) return
     const projectIds = newProjectId ? [newProjectId] : []
     const type = projectIds.length > 0 ? "project" : "ephemeral"
-    const targetColl = (focusMode === "this_client" && selectedClientId) ? selectedClientId : (currentCollection || "general")
+    const targetColl = newClientCollId || ((focusMode === "this_client" && selectedClientId) ? selectedClientId : (currentCollection || "general"))
     await createChannel(newName.trim(), type, projectIds, targetColl)
     setNewName("")
     setNewProjectId("")
+    setNewClientCollId("")
     setCreating(false)
-  }, [newName, newProjectId, createChannel, focusMode, selectedClientId, currentCollection])
+  }, [newName, newProjectId, newClientCollId, createChannel, focusMode, selectedClientId, currentCollection])
 
   const grouped = groupMode === "project" ? groupByProject(filteredChannels) : null
   const selectedDropdownValue = (focusMode === "this_client" && selectedClientId) ? selectedClientId : (currentCollection ?? "")
@@ -192,11 +194,23 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
             onChange={(e) => setNewName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") handleCreate()
-              if (e.key === "Escape") { setCreating(false); setNewName(""); setNewProjectId("") }
+              if (e.key === "Escape") { setCreating(false); setNewName(""); setNewProjectId(""); setNewClientCollId("") }
             }}
             placeholder="workstream name"
             className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-blue-500"
           />
+          <select
+            value={newClientCollId || selectedDropdownValue || "general"}
+            onChange={(e) => setNewClientCollId(e.target.value)}
+            className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
+            title="Assign client to this workstream"
+          >
+            {collections.map((c) => (
+              <option key={c.id} value={c.id}>
+                Client: {c.name} {c.role === "client" ? "(Client)" : c.role === "own" ? "(Own)" : ""}
+              </option>
+            ))}
+          </select>
           <select
             value={newProjectId}
             onChange={(e) => setNewProjectId(e.target.value)}

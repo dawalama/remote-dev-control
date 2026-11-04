@@ -35,6 +35,7 @@ interface ChannelState {
   loadChannels: () => Promise<void>
   selectChannel: (id: string) => void
   createChannel: (name: string, type?: string, projectIds?: string[], collectionId?: string) => Promise<Channel | null>
+  updateChannel: (id: string, updates: { name?: string; collection_id?: string; project_ids?: string[]; auto_mode?: boolean }) => Promise<void>
   archiveChannel: (id: string) => Promise<void>
   deleteChannel: (id: string) => Promise<void>
   loadMessages: (channelId: string) => Promise<void>
@@ -109,6 +110,15 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
       return ch ?? null
     } catch {
       return null
+    }
+  },
+
+  updateChannel: async (id, updates) => {
+    try {
+      await PATCH(`/channels/${id}`, updates)
+      await get().loadChannels()
+    } catch {
+      // ignore
     }
   },
 
