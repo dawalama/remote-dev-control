@@ -24,6 +24,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Callable
+import shutil
 import subprocess
 
 logger = logging.getLogger(__name__)
@@ -565,9 +566,14 @@ class TerminalManager:
             if rdc_bin not in env.get("PATH", ""):
                 env["PATH"] = rdc_bin + ":" + env.get("PATH", "")
 
+            user_shell = os.environ.get("SHELL")
+            if not user_shell or not os.path.exists(user_shell) or not os.access(user_shell, os.X_OK):
+                user_shell = shutil.which("zsh") or shutil.which("bash") or "/bin/sh"
+
             process = subprocess.Popen(
                 command,
                 shell=True,
+                executable=user_shell,
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,

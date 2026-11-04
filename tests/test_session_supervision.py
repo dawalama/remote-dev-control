@@ -493,4 +493,33 @@ def test_session_git_status_and_one_click_host_commit(monkeypatch, tmp_path):
     assert "export const x = 2" in artifact_after.text
 
 
+def test_hyphenated_function_alias_invocation_and_shell_execution():
+    from remote_dev_ctrl.server.agent_registry import wrap_alias_invocation
+    import subprocess
+
+    alias_info = {
+        "id": "codex-personal",
+        "family": "codex",
+        "expansion": "codex-personal() {\n  echo \"ran func with args: $@\"\n}",
+        "kind": "function",
+    }
+    wrapped = wrap_alias_invocation(alias_info, "codex", "--sandbox workspace-write")
+    assert "codex_personal() {" in wrapped
+    assert "codex_personal --sandbox workspace-write" in wrapped
+    assert "codex-personal() {" not in wrapped
+
+    # Verify that standard POSIX /bin/sh (which rejects hyphens in function declarations) parses and runs this cleanly
+    res = subprocess.run(
+        wrapped,
+        shell=True,
+        executable="/bin/sh",
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0
+    assert "ran func with args: --sandbox workspace-write" in res.stdout
+    assert "not a valid identifier" not in res.stderr
+
+
+
 

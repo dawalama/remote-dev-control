@@ -6,6 +6,7 @@ import logging
 import subprocess
 import signal
 import os
+import shutil
 import threading
 from pathlib import Path
 from datetime import datetime
@@ -274,9 +275,14 @@ class ProcessManager:
             env["FORCE_COLOR"] = "1"
             env["NODE_ENV"] = "development"
 
+            user_shell = os.environ.get("SHELL")
+            if not user_shell or not os.path.exists(user_shell) or not os.access(user_shell, os.X_OK):
+                user_shell = shutil.which("zsh") or shutil.which("bash") or "/bin/sh"
+
             process = subprocess.Popen(
                 state.command,
                 shell=True,
+                executable=user_shell,
                 cwd=state.cwd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,

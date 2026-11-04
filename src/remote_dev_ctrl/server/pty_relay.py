@@ -23,6 +23,7 @@ import logging
 import os
 import pty
 import selectors
+import shutil
 import signal
 import socket
 import struct
@@ -146,9 +147,14 @@ class PtyRelay:
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
 
+        user_shell = os.environ.get("SHELL")
+        if not user_shell or not os.path.exists(user_shell) or not os.access(user_shell, os.X_OK):
+            user_shell = shutil.which("zsh") or shutil.which("bash") or "/bin/sh"
+
         proc = subprocess.Popen(
             self.cmd,
             shell=True,
+            executable=user_shell,
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,

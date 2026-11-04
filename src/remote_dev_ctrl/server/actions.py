@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import subprocess
 import threading
 from datetime import datetime
@@ -84,10 +85,15 @@ class ActionManager:
         env = os.environ.copy()
         env["FORCE_COLOR"] = "1"
 
+        user_shell = os.environ.get("SHELL")
+        if not user_shell or not os.path.exists(user_shell) or not os.access(user_shell, os.X_OK):
+            user_shell = shutil.which("zsh") or shutil.which("bash") or "/bin/sh"
+
         try:
             process = subprocess.Popen(
                 state.command,
                 shell=True,
+                executable=user_shell,
                 cwd=state.cwd or None,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,

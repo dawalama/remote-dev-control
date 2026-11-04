@@ -670,6 +670,14 @@ def wrap_alias_invocation(alias_info: dict[str, str] | None, default_cmd: str, a
     expansion = alias_info.get("expansion", default_cmd)
     alias_id = alias_info.get("id", default_cmd)
     if kind == "function":
+        safe_id = re.sub(r"[^A-Za-z0-9_]", "_", alias_id)
+        if safe_id != alias_id:
+            # Shells that strictly adhere to POSIX identifier grammar (e.g. /bin/sh or bash in posix mode)
+            # reject hyphens or dots in function names with "not a valid identifier".
+            # Replace the declaration name with a POSIX-compliant identifier so it works across all shells.
+            pattern = rf"(?m)^\s*(?:function\s+)?{re.escape(alias_id)}\s*(?:\(\s*\))?\s*(?:\r?\n)?\s*\{{"
+            safe_expansion = re.sub(pattern, f"{safe_id}() {{", expansion, count=1)
+            return f"{safe_expansion}\n{safe_id} {args_str}".strip()
         return f"{expansion}\n{alias_id} {args_str}".strip()
     if kind == "zsh_dynamic":
         inner = (
