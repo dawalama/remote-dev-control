@@ -139,9 +139,18 @@ def create_supervised_session(
     db = sm._db()
 
     # #system is the scratch workstream and may own sessions.
-    ch_row = db.execute("SELECT id, collection_id FROM channels WHERE id = ?", (channel_id,)).fetchone()
+    ch_row = db.execute("SELECT id, type, collection_id FROM channels WHERE id = ?", (channel_id,)).fetchone()
     if not ch_row:
         raise LookupError(f"Channel not found: {channel_id}")
+
+    # If the channel is not system, the project's collection must equal the channel's.
+    is_system = ch_row["id"] == "ch-system" or ch_row["type"] == "system"
+    if not is_system:
+        proj_obj = get_project_repo().get(project)
+        p_coll = (proj_obj.collection_id if proj_obj else None) or "general"
+        ch_coll = ch_row["collection_id"] or "general"
+        if p_coll != ch_coll:
+            raise ValueError(f"Project collection '{p_coll}' does not match channel collection '{ch_coll}'")
 
     # Channel-project constraints: if channel has linked projects, project must be one of them
     cp_rows = db.execute(

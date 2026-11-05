@@ -174,13 +174,14 @@ class ProjectRepository:
         self.db.commit()
         return cursor.rowcount > 0
 
-    def move_to_collection(self, project_id: str, collection_id: str) -> bool:
+    def move_to_collection(self, project_id: str, collection_id: str, *, commit: bool = True) -> bool:
         """Move a project to a different collection."""
         cursor = self.db.execute(
             "UPDATE projects SET collection_id = ?, updated_at = ? WHERE id = ?",
             (collection_id, datetime.now().isoformat(), project_id),
         )
-        self.db.commit()
+        if commit:
+            self.db.commit()
         return cursor.rowcount > 0
 
     def _row_to_project(self, row) -> Project:
@@ -205,11 +206,18 @@ class CollectionRepository:
     def __init__(self):
         self.db = get_db("rdc")
 
+    VALID_ROLES = {"unsorted", "own", "client", "personal"}
+
     def create(self, collection: Collection) -> Collection:
         """Create a new collection. Generates UUID if not set."""
         if not collection.id:
             collection.id = str(uuid_mod.uuid4())
-        role = "unsorted" if collection.id == "general" else (collection.role or "unsorted")
+        if collection.id == "general":
+            role = "unsorted"
+        else:
+            role = collection.role or "unsorted"
+            if role not in self.VALID_ROLES:
+                raise ValueError(f"Invalid collection role: {role}")
         collection.role = role
         if role == "own":
             self.db.execute("UPDATE collections SET role = 'unsorted' WHERE role = 'own'")
@@ -248,7 +256,12 @@ class CollectionRepository:
     def update(self, collection: Collection) -> Collection:
         """Update a collection."""
         collection.updated_at = datetime.now()
-        role = "unsorted" if collection.id == "general" else (collection.role or "unsorted")
+        if collection.id == "general":
+            role = "unsorted"
+        else:
+            role = collection.role or "unsorted"
+            if role not in self.VALID_ROLES:
+                raise ValueError(f"Invalid collection role: {role}")
         collection.role = role
         if role == "own":
             self.db.execute("UPDATE collections SET role = 'unsorted' WHERE role = 'own' AND id != ?", (collection.id,))

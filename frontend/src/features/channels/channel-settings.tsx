@@ -108,7 +108,7 @@ function ClientSection({ channel, onDone }: { channel: Channel; onDone: () => vo
   const [selectedColl, setSelectedColl] = useState(channel.collection_id || "general")
 
   const currentColl = collections.find((c) => c.id === channel.collection_id)
-  const clientName = currentColl ? currentColl.name : "General (Unassigned)"
+  const clientName = currentColl ? currentColl.name : "Unclassified"
 
   const save = async () => {
     if (selectedColl !== channel.collection_id) {
@@ -128,11 +128,23 @@ function ClientSection({ channel, onDone }: { channel: Channel; onDone: () => vo
             onChange={(e) => setSelectedColl(e.target.value)}
             className="flex-1 px-2 py-1 text-xs bg-gray-700 border border-gray-600 rounded text-gray-200 outline-none"
           >
-            {collections.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} {c.role === "client" ? "(Client)" : c.role === "own" ? "(Own)" : ""}
-              </option>
-            ))}
+            {collections.map((c) => {
+              const roleLabel =
+                c.id === "general" || c.role === "unsorted"
+                  ? "Unclassified"
+                  : c.role === "own"
+                  ? "Own"
+                  : c.role === "client"
+                  ? "Client"
+                  : c.role === "personal"
+                  ? "Personal"
+                  : "Unclassified"
+              return (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({roleLabel})
+                </option>
+              )
+            })}
           </select>
           <button onClick={save} className="px-2 py-1 text-xs bg-blue-600 rounded text-white">Save</button>
           <button onClick={() => setEditing(false)} className="px-2 py-1 text-xs bg-gray-700 rounded text-gray-300">Cancel</button>
@@ -151,14 +163,28 @@ function ClientSection({ channel, onDone }: { channel: Channel; onDone: () => vo
                 Own
               </span>
             )}
+            {currentColl?.role === "personal" && (
+              <span className="rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.2 text-[9px] font-semibold uppercase">
+                Personal
+              </span>
+            )}
+            {(currentColl?.id === "general" || currentColl?.role === "unsorted") && (
+              <span className="rounded bg-gray-700 text-gray-400 border border-gray-600 px-1.5 py-0.2 text-[9px] font-semibold uppercase">
+                Unclassified
+              </span>
+            )}
           </span>
           {channel.type !== "system" && (
-            <button
-              onClick={() => { setEditing(true); setSelectedColl(channel.collection_id || "general") }}
-              className="text-[10px] text-blue-400 hover:text-blue-300"
-            >
-              Change
-            </button>
+            (channel.project_names || []).length > 0 ? (
+              <span className="text-[10px] text-gray-500">Move the project instead</span>
+            ) : (
+              <button
+                onClick={() => { setEditing(true); setSelectedColl(channel.collection_id || "general") }}
+                className="text-[10px] text-blue-400 hover:text-blue-300"
+              >
+                Change
+              </button>
+            )
           )}
         </div>
       )}
@@ -196,7 +222,9 @@ function ProjectsSection({
     onDone()
   }
 
-  const availableProjects = projects.filter((p) => !linkedNames.includes(p.name))
+  const availableProjects = projects.filter(
+    (p) => !linkedNames.includes(p.name) && (p.collection_id || "general") === (channel.collection_id || "general")
+  )
 
   return (
     <div>

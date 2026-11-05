@@ -1648,6 +1648,49 @@ def queue_stats():
     ))
 
 
+collections_app = typer.Typer(help="Manage collections")
+app.add_typer(collections_app, name="collections")
+
+
+@collections_app.command("bootstrap")
+def collections_bootstrap():
+    """Seed initial collections (TrueSteps, Sugarwork, QuillMeetings, Personal)."""
+    from .server.db.models import Collection
+    from .server.db.repositories import get_collection_repo
+
+    repo = get_collection_repo()
+    existing_all = repo.list()
+
+    # If a different collection is already own, stop before creating truesteps
+    existing_own = next((c for c in existing_all if c.role == "own" and c.id != "truesteps"), None)
+
+    targets = [
+        ("truesteps", "TrueSteps", "own"),
+        ("sugarwork", "Sugarwork", "client"),
+        ("quillmeetings", "QuillMeetings", "client"),
+        ("personal", "Personal", "personal"),
+    ]
+
+    for cid, cname, crole in targets:
+        existing = repo.get(cid) or repo.get(cname)
+        if existing:
+            rprint(f"Collection [bold]{cid}[/bold] ({cname}) exists.")
+            continue
+
+        if crole == "own" and existing_own:
+            rprint(
+                f"[yellow]Another collection already has role 'own' ({existing_own.id}: {existing_own.name}). "
+                "Resolve it before creating TrueSteps.[/yellow]"
+            )
+            continue
+
+        try:
+            repo.create(Collection(id=cid, name=cname, role=crole))
+            rprint(f"[green]✓[/green] Created collection [bold]{cid}[/bold] ({cname}, role={crole})")
+        except Exception as e:
+            rprint(f"[red]✗[/red] Failed to create collection {cid}: {e}")
+
+
 wrapper_app = typer.Typer(help="Manage AI agent wrappers, model providers, and self-registration")
 app.add_typer(wrapper_app, name="wrapper")
 

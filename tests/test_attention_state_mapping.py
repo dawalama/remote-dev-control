@@ -58,10 +58,12 @@ def test_proposed_session_start_idempotency():
 
 
 def test_collection_roles():
-    """Verify collection roles: unsorted, own, client.
+    """Verify collection roles: unsorted, own, client, personal.
     - Default is unsorted
     - General stays unsorted
     - At most one collection can be own
+    - Personal does not demote own and is not singular
+    - Unknown role raises ValueError
     """
     repo = get_collection_repo()
     
@@ -70,8 +72,12 @@ def test_collection_roles():
     assert gen is not None
     assert gen.role == "unsorted"
 
-    # Attempt to change general to own or client is prevented
+    # Attempt to change general to own, client, or personal is prevented
     gen.role = "own"
+    updated_gen = repo.update(gen)
+    assert updated_gen.role == "unsorted"
+
+    gen.role = "personal"
     updated_gen = repo.update(gen)
     assert updated_gen.role == "unsorted"
 
@@ -83,17 +89,39 @@ def test_collection_roles():
     c2 = repo.create(Collection(name="My Company", role="own"))
     assert c2.role == "own"
 
-    # Create another own collection -> previous own reverts to unsorted
+    # Create personal collection -> does NOT demote own
+    cp1 = repo.create(Collection(name="Personal Notes", role="personal"))
+    assert cp1.role == "personal"
+    assert repo.get(c2.id).role == "own"
+
+    # Create second personal collection -> personal is not singular
+    cp2 = repo.create(Collection(name="Personal Code", role="personal"))
+    assert cp2.role == "personal"
+    assert repo.get(cp1.id).role == "personal"
+    assert repo.get(c2.id).role == "own"
+
+    # Create another own collection -> previous own reverts to unsorted, personal untouched
     c3 = repo.create(Collection(name="Holding Co", role="own"))
     assert c3.role == "own"
     
     fresh_c2 = repo.get(c2.id)
     assert fresh_c2.role == "unsorted"
+    assert repo.get(cp1.id).role == "personal"
+
+    # Unknown role raises ValueError on create and update
+    with pytest.raises(ValueError, match="Invalid collection role"):
+        repo.create(Collection(name="Bad Role", role="alien"))
+
+    c3.role = "invalid_role"
+    with pytest.raises(ValueError, match="Invalid collection role"):
+        repo.update(c3)
 
     # Cleanup test collections
     repo.delete(c1.id)
     repo.delete(c2.id)
     repo.delete(c3.id)
+    repo.delete(cp1.id)
+    repo.delete(cp2.id)
 
 
 def test_session_task_id_and_parent_chain():

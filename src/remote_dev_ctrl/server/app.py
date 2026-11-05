@@ -8045,7 +8045,7 @@ async def list_projects():
             "tags": p.tags,
             "config": p.config or {},
             "collection_id": p.collection_id or "general",
-            "collection": collections.get(p.collection_id, "General"),
+            "collection": collections.get(p.collection_id, "Unclassified"),
         }
         for p in db_projects
     ]
@@ -8682,7 +8682,7 @@ async def list_collections():
 class CreateCollectionRequest(BaseModel):
     name: str
     description: str | None = None
-    role: str = "unsorted"  # unsorted, own, client
+    role: str = "unsorted"  # unsorted, own, client, personal
     default_agent_id: str | None = None
 
 
@@ -8694,14 +8694,19 @@ async def create_collection(req: CreateCollectionRequest):
     collection_repo = get_collection_repo()
     if collection_repo.get(req.name):
         raise HTTPException(status_code=409, detail=f"Collection already exists: {req.name}")
-    role = req.role if req.role in ("unsorted", "own", "client") else "unsorted"
+    if req.role not in ("unsorted", "own", "client", "personal"):
+        raise HTTPException(status_code=422, detail=f"Invalid collection role: {req.role}")
+    role = req.role
     default_agent = req.default_agent_id.strip() if req.default_agent_id else None
     if default_agent:
         from .agent_registry import list_registered_wrappers
         registered = {w.id for w in list_registered_wrappers(include_disabled=True)}
         if default_agent not in registered:
             raise HTTPException(status_code=422, detail=f"Agent wrapper '{default_agent}' not found in registry")
-    coll = collection_repo.create(Collection(name=req.name, description=req.description, role=role, default_agent_id=default_agent))
+    try:
+        coll = collection_repo.create(Collection(name=req.name, description=req.description, role=role, default_agent_id=default_agent))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     return {
         "id": coll.id,
         "name": coll.name,
@@ -8716,7 +8721,7 @@ class UpdateCollectionRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     sort_order: int | None = None
-    role: str | None = None  # unsorted, own, client
+    role: str | None = None  # unsorted, own, client, personal
     default_agent_id: str | None = None
 
 
@@ -8735,9 +8740,11 @@ async def update_collection(collection_id: str, req: UpdateCollectionRequest):
     if req.sort_order is not None:
         coll.sort_order = req.sort_order
     if req.role is not None:
+        if req.role not in ("unsorted", "own", "client", "personal"):
+            raise HTTPException(status_code=422, detail=f"Invalid collection role: {req.role}")
         if collection_id == "general":
             coll.role = "unsorted"
-        elif req.role in ("unsorted", "own", "client"):
+        else:
             coll.role = req.role
     if req.default_agent_id is not None:
         agent_id = req.default_agent_id.strip()
@@ -8749,7 +8756,10 @@ async def update_collection(collection_id: str, req: UpdateCollectionRequest):
             if agent_id not in registered:
                 raise HTTPException(status_code=422, detail=f"Agent wrapper '{agent_id}' not found in registry")
             coll.default_agent_id = agent_id
-    coll = collection_repo.update(coll)
+    try:
+        coll = collection_repo.update(coll)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     return {
         "id": coll.id,
         "name": coll.name,
@@ -8760,16 +8770,72 @@ async def update_collection(collection_id: str, req: UpdateCollectionRequest):
     }
 
 
+def _repair_channel_collection(db, channel_id: str, channel_coll: str | None, remaining_projects: list[dict]) -> str:
+    """Repairs a channel's collection_id based on remaining projects."""
+    colls = [(p["collection_id"] or "general") for p in remaining_projects]
+    if len(set(colls)) == 1:
+        target_id = colls[0]
+        db.execute("UPDATE channels SET collection_id = ? WHERE id = ?", (target_id, channel_id))
+        return target_id
+
+    current_coll = channel_coll or "general"
+    if current_coll in colls:
+        target_id = current_coll
+        for p in remaining_projects:
+            if (p["collection_id"] or "general") != target_id:
+                db.execute("DELETE FROM channel_projects WHERE channel_id = ? AND project_id = ?", (channel_id, p["id"]))
+        db.execute("UPDATE channels SET collection_id = ? WHERE id = ?", (target_id, channel_id))
+        return target_id
+
+    from collections import Counter
+    counts = Counter(colls)
+    sorted_colls = sorted(counts.keys(), key=lambda c: (-counts[c], c))
+    target_id = sorted_colls[0]
+    for p in remaining_projects:
+        if (p["collection_id"] or "general") != target_id:
+            db.execute("DELETE FROM channel_projects WHERE channel_id = ? AND project_id = ?", (channel_id, p["id"]))
+    db.execute("UPDATE channels SET collection_id = ? WHERE id = ?", (target_id, channel_id))
+    return target_id
+
+
 @app.delete("/collections/{collection_id}")
 async def delete_collection(collection_id: str):
     """Delete a collection. Cannot delete 'general'. Moves orphan projects to 'general'."""
-    from .db.repositories import get_collection_repo
+    from .db.repositories import get_collection_repo, get_project_repo
+    from .db.connection import get_db_manager
     collection_repo = get_collection_repo()
     if collection_id == "general":
-        raise HTTPException(status_code=400, detail="Cannot delete the General collection")
+        raise HTTPException(status_code=400, detail="Cannot delete the Unclassified collection")
     if not collection_repo.get(collection_id):
         raise HTTPException(status_code=404, detail="Collection not found")
-    collection_repo.delete(collection_id)
+
+    project_repo = get_project_repo()
+    db = get_db_manager().get_connection("rdc")
+    proj_rows = db.execute("SELECT name FROM projects WHERE collection_id = ?", (collection_id,)).fetchall()
+    for p_row in proj_rows:
+        await move_project(p_row["name"], MoveProjectRequest(collection_id="general"))
+
+    with get_db_manager().transaction("rdc") as tx_db:
+        ch_rows = tx_db.execute(
+            "SELECT id, type, collection_id FROM channels WHERE collection_id = ?",
+            (collection_id,),
+        ).fetchall()
+        for ch in ch_rows:
+            ch_id = ch["id"]
+            linked_rows = tx_db.execute(
+                """SELECT p.id, p.collection_id FROM projects p
+                   JOIN channel_projects cp ON cp.project_id = p.id
+                   WHERE cp.channel_id = ?""",
+                (ch_id,),
+            ).fetchall()
+            if linked_rows:
+                linked = [{"id": r["id"], "collection_id": r["collection_id"]} for r in linked_rows]
+                _repair_channel_collection(tx_db, ch_id, ch["collection_id"], linked)
+            else:
+                tx_db.execute("UPDATE channels SET collection_id = 'general' WHERE id = ?", (ch_id,))
+
+        tx_db.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+
     return {"deleted": True}
 
 
@@ -8780,24 +8846,90 @@ class MoveProjectRequest(BaseModel):
 @app.post("/projects/{name}/move")
 async def move_project(name: str, req: MoveProjectRequest):
     """Move a project to a different collection."""
-    from .db.repositories import get_collection_repo
+    from .db.repositories import get_collection_repo, get_project_repo
+    from .db.connection import get_db_manager
+    project_repo = get_project_repo()
     db_proj = project_repo.get(name)
     if not db_proj:
         raise HTTPException(status_code=404, detail=f"Project not found: {name}")
     collection_repo = get_collection_repo()
-    if not collection_repo.get(req.collection_id):
+    dest = collection_repo.get(req.collection_id)
+    if not dest:
         raise HTTPException(status_code=404, detail=f"Collection not found: {req.collection_id}")
-    project_repo.move_to_collection(db_proj.id, req.collection_id)
-    # Sync channel collection to match project
-    try:
-        from .channel_manager import get_channel_manager
-        cm = get_channel_manager()
-        for ch in cm.list_channels_for_project(db_proj.id):
-            cm.db.execute("UPDATE channels SET collection_id = ? WHERE id = ?", (req.collection_id, ch.id))
-        cm.db.commit()
-    except Exception:
-        pass
-    return {"success": True, "project": name, "collection_id": req.collection_id}
+
+    dest_id = dest.id
+    channels_moved: list[str] = []
+    links_dropped: list[str] = []
+    repaired: list[str] = []
+    session_dest: dict[str, str] = {}
+
+    with get_db_manager().transaction("rdc") as db:
+        ch_rows = db.execute(
+            """SELECT c.id, c.type, c.collection_id FROM channels c
+               JOIN channel_projects cp ON c.id = cp.channel_id
+               WHERE cp.project_id = ?""",
+            (db_proj.id,),
+        ).fetchall()
+        for ch in ch_rows:
+            ch_id = ch["id"]
+            ch_type = ch["type"]
+            if ch_type == "system" or ch_id == "ch-system":
+                db.execute("DELETE FROM channel_projects WHERE channel_id = ? AND project_id = ?", (ch_id, db_proj.id))
+                continue
+
+            repaired.append(ch_id)
+            other_rows = db.execute(
+                """SELECT p.id, p.collection_id FROM projects p
+                   JOIN channel_projects cp ON cp.project_id = p.id
+                   WHERE cp.channel_id = ? AND p.id != ?""",
+                (ch_id, db_proj.id),
+            ).fetchall()
+            others = [{"id": r["id"], "collection_id": r["collection_id"]} for r in other_rows]
+            if not others:
+                db.execute("UPDATE channels SET collection_id = ? WHERE id = ?", (dest_id, ch_id))
+                channels_moved.append(ch_id)
+            else:
+                db.execute("DELETE FROM channel_projects WHERE channel_id = ? AND project_id = ?", (ch_id, db_proj.id))
+                links_dropped.append(ch_id)
+                _repair_channel_collection(db, ch_id, ch["collection_id"], others)
+
+        session_ch_rows = db.execute(
+            "SELECT DISTINCT channel_id FROM sessions WHERE project IN (?, ?) AND channel_id IS NOT NULL",
+            (db_proj.name, db_proj.id),
+        ).fetchall()
+        for s_row in session_ch_rows:
+            s_ch_id = s_row["channel_id"]
+            if not s_ch_id or s_ch_id == "ch-system" or s_ch_id in repaired:
+                continue
+            ch_info = db.execute("SELECT id, type, collection_id FROM channels WHERE id = ?", (s_ch_id,)).fetchone()
+            if not ch_info or ch_info["id"] == "ch-system" or ch_info["type"] == "system":
+                continue
+
+            linked_rows = db.execute(
+                """SELECT p.id, p.collection_id FROM projects p
+                   JOIN channel_projects cp ON cp.project_id = p.id
+                   WHERE cp.channel_id = ?""",
+                (s_ch_id,),
+            ).fetchall()
+            if not linked_rows:
+                continue
+            linked = [{"id": r["id"], "collection_id": r["collection_id"]} for r in linked_rows]
+            session_dest[s_ch_id] = _repair_channel_collection(db, s_ch_id, ch_info["collection_id"], linked)
+
+        if db_proj.collection_id != dest_id:
+            db.execute(
+                "UPDATE projects SET collection_id = ?, updated_at = ? WHERE id = ?",
+                (dest_id, datetime.now().isoformat(), db_proj.id),
+            )
+
+    return {
+        "success": True,
+        "project": db_proj.name,
+        "collection_id": dest_id,
+        "channels_moved": channels_moved,
+        "links_dropped": links_dropped,
+        "knowledge_warning": None,
+    }
 
 
 class UpdateProjectRequest(BaseModel):
@@ -9375,13 +9507,16 @@ async def create_channel(request: Request):
             project_ids.append(proj.id)
 
     cm = get_channel_manager()
-    ch = cm.create_channel(
-        name=name,
-        type=ChannelType(body.get("type", "ephemeral")),
-        project_ids=project_ids,
-        parent_channel_id=body.get("parent_channel_id"),
-        collection_id=body.get("collection_id", "general"),
-    )
+    try:
+        ch = cm.create_channel(
+            name=name,
+            type=ChannelType(body.get("type", "ephemeral")),
+            project_ids=project_ids,
+            parent_channel_id=body.get("parent_channel_id"),
+            collection_id=body.get("collection_id", "general"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
     # Resolve project names and collection IDs for the response
     project_names = []
@@ -9489,7 +9624,7 @@ def _session_response(session) -> dict:
     from .db.repositories import get_collection_repo
     coll = get_collection_repo().get(collection_id)
     collection_role = getattr(coll, "role", "unsorted") or "unsorted" if coll else "unsorted"
-    collection_name = coll.name if coll else "General"
+    collection_name = coll.name if coll else "Unclassified"
 
     status_val = session.status.value if isinstance(session.status, SessionStatus) else str(session.status)
 
@@ -11360,18 +11495,31 @@ async def update_channel(channel_id: str, request: Request):
         )
         cm.db.commit()
     if "collection_id" in body and body["collection_id"]:
-        cm.db.execute(
-            "UPDATE channels SET collection_id = ? WHERE id = ?",
-            (body["collection_id"], channel_id),
-        )
-        cm.db.commit()
+        target_coll = body["collection_id"]
+        if target_coll != ch.collection_id:
+            if ch.id == "ch-system" or ch.type.value == "system":
+                raise HTTPException(status_code=403, detail="Cannot change collection of system channel")
+            linked_rows = cm.db.execute("SELECT project_id FROM channel_projects WHERE channel_id = ?", (channel_id,)).fetchall()
+            if linked_rows:
+                raise HTTPException(status_code=422, detail="move_projects_instead")
+            cm.db.execute(
+                "UPDATE channels SET collection_id = ? WHERE id = ?",
+                (target_coll, channel_id),
+            )
+            cm.db.commit()
+            ch.collection_id = target_coll
     if "project_ids" in body and isinstance(body["project_ids"], list):
         from .db.repositories import ProjectRepository
+        from .channel_manager import assert_link_allowed
         repo = ProjectRepository()
         resolved_pids = []
         for name_or_id in body["project_ids"]:
             proj = repo.get(name_or_id)
             if proj:
+                try:
+                    assert_link_allowed(ch, proj)
+                except ValueError as e:
+                    raise HTTPException(status_code=422, detail=str(e)) from e
                 resolved_pids.append(proj.id)
         cm.db.execute("DELETE FROM channel_projects WHERE channel_id = ?", (channel_id,))
         for pid in resolved_pids:
@@ -11417,7 +11565,7 @@ async def delete_channel(channel_id: str):
 @app.post("/channels/{channel_id}/projects")
 async def add_project_to_channel(channel_id: str, request: Request):
     """Link a project to a channel."""
-    from .channel_manager import get_channel_manager
+    from .channel_manager import get_channel_manager, assert_link_allowed
     from .db.repositories import ProjectRepository
 
     body = await request.json()
@@ -11431,6 +11579,15 @@ async def add_project_to_channel(channel_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Project not found: {project_name}")
 
     cm = get_channel_manager()
+    ch = cm.get_channel(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    try:
+        assert_link_allowed(ch, proj)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
     cm.db.execute(
         "INSERT OR IGNORE INTO channel_projects (channel_id, project_id) VALUES (?, ?)",
         (channel_id, proj.id),

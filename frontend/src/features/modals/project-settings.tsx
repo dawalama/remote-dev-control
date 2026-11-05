@@ -5,6 +5,7 @@ import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
 import { CollectionPicker } from "@/components/collection-picker"
+import { CollectionsManagerModal } from "./collections-manager"
 import type { Collection, ProjectProfile } from "@/types"
 
 interface ProjectDetail {
@@ -209,21 +210,22 @@ function GeneralSection({
   const [path, setPath] = useState(project.path)
   const [collectionId, setCollectionId] = useState(project.collection_id || "general")
   const [saving, setSaving] = useState(false)
+  const [showCollectionsModal, setShowCollectionsModal] = useState(false)
 
   const save = async () => {
     if (!name.trim()) { toast("Name is required", "error"); return }
     if (!path.trim()) { toast("Path is required", "error"); return }
     setSaving(true)
     try {
+      // Move collection before rename if changed
+      if (collectionId !== (project.collection_id || "general")) {
+        await POST(`/projects/${encodeURIComponent(currentName)}/move`, { collection_id: collectionId })
+      }
       const result = await PATCH<ProjectDetail>(
         `/projects/${encodeURIComponent(currentName)}`,
         { name: name.trim(), description, path: path.trim() }
       )
-      // Move collection if changed
-      if (collectionId !== (project.collection_id || "general")) {
-        await POST(`/projects/${encodeURIComponent(result.name)}/move`, { collection_id: collectionId })
-        result.collection_id = collectionId
-      }
+      result.collection_id = collectionId
       onUpdate(result)
       toast("General settings saved", "success")
     } catch {
@@ -253,13 +255,25 @@ function GeneralSection({
         <input className="input-cls font-mono text-xs" value={path} onChange={(e) => setPath(e.target.value)} />
       </div>
       <div>
-        <Label>Collection</Label>
+        <div className="flex items-center justify-between mb-1">
+          <Label>Collection</Label>
+          <button
+            type="button"
+            onClick={() => setShowCollectionsModal(true)}
+            className="text-[11px] text-blue-400 hover:text-blue-300"
+          >
+            Collections
+          </button>
+        </div>
         <CollectionPicker
           value={collectionId}
           onChange={setCollectionId}
           collections={collections}
         />
       </div>
+      {showCollectionsModal && (
+        <CollectionsManagerModal onClose={() => setShowCollectionsModal(false)} />
+      )}
       <div className="flex justify-end">
         <button
           className="px-3 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50"

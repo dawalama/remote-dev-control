@@ -3395,16 +3395,24 @@ class ActionExecutor:
                     if not name:
                         return {"action": "create_workstream", "error": "Name is required", "success": False, "type": "server"}
                     from .channel_manager import get_channel_manager
+                    from .db.models import ChannelType
                     cm = get_channel_manager()
                     project_ids = []
+                    coll_id = getattr(ctx, "active_collection", None) or "general"
                     if project:
                         project = fuzzy_match(project, ctx.projects) or project
                         from .db.repositories import get_project_repo
                         pr = get_project_repo()
                         p = pr.get(project)
                         if p:
-                            project_ids = [p.name]
-                    ch = cm.create_channel(name=name, channel_type="project" if project_ids else "ephemeral", project_ids=project_ids)
+                            project_ids = [p.id]
+                            coll_id = p.collection_id or "general"
+                    ch = cm.create_channel(
+                        name=name,
+                        type=ChannelType.PROJECT if project_ids else ChannelType.EPHEMERAL,
+                        project_ids=project_ids,
+                        collection_id=coll_id,
+                    )
                     return {"action": "create_workstream", "name": ch.name, "channel_id": ch.id, "success": True, "type": "client"}
 
                 case "archive_workstream":

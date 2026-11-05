@@ -41,15 +41,15 @@ def _channel(channel_id: str, name: str = "test-ws", type: str = "project", coll
     return channel_id
 
 
-def _project_obj(prefix: str) -> Project:
+def _project_obj(prefix: str, collection_id: str = "general") -> Project:
     name = f"{prefix}-{uuid.uuid4().hex[:8]}"
     return get_project_repo().create(
-        Project(name=name, path=f"/tmp/{name}", description="test")
+        Project(name=name, path=f"/tmp/{name}", description="test", collection_id=collection_id)
     )
 
 
-def _project(prefix: str) -> str:
-    return _project_obj(prefix).name
+def _project(prefix: str, collection_id: str = "general") -> str:
+    return _project_obj(prefix, collection_id=collection_id).name
 
 
 def test_create_supervised_session_sets_metadata_and_goal():
@@ -245,7 +245,7 @@ def test_create_session_uses_collection_default_agent():
     db.commit()
 
     cid = _channel(f"ws-coll-{uuid.uuid4().hex[:6]}", collection_id=coll_id)
-    project = _project("coll-proj")
+    project = _project("coll-proj", collection_id=coll_id)
     session = create_supervised_session(
         channel_id=cid,
         project=project,
@@ -265,7 +265,7 @@ def test_create_session_null_default_stores_preferred_provider():
     db.commit()
 
     cid = _channel(f"ws-null-{uuid.uuid4().hex[:6]}", collection_id=coll_id)
-    project = _project("null-proj")
+    project = _project("null-proj", collection_id=coll_id)
     session = create_supervised_session(
         channel_id=cid,
         project=project,

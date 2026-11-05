@@ -115,11 +115,23 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
             className="flex-1 px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none min-w-0"
           >
             <option value="">All Collections / Clients</option>
-            {collections.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} {c.role === "client" ? "(Client)" : c.role === "own" ? "(Own)" : ""}
-              </option>
-            ))}
+            {collections.map((c) => {
+              const roleLabel =
+                c.id === "general" || c.role === "unsorted"
+                  ? "Unclassified"
+                  : c.role === "own"
+                  ? "Own"
+                  : c.role === "client"
+                  ? "Client"
+                  : c.role === "personal"
+                  ? "Personal"
+                  : "Unclassified"
+              return (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({roleLabel})
+                </option>
+              )
+            })}
           </select>
           <CollectionCreateButton />
         </div>
@@ -176,28 +188,52 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
             placeholder="workstream name"
             className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-blue-500"
           />
-          <select
-            value={newClientCollId || selectedDropdownValue || "general"}
-            onChange={(e) => setNewClientCollId(e.target.value)}
-            className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
-            title="Assign client to this workstream"
-          >
-            {collections.map((c) => (
-              <option key={c.id} value={c.id}>
-                Client: {c.name} {c.role === "client" ? "(Client)" : c.role === "own" ? "(Own)" : ""}
-              </option>
-            ))}
-          </select>
-          <select
-            value={newProjectId}
-            onChange={(e) => setNewProjectId(e.target.value)}
-            className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
-          >
-            <option value="">No project (ephemeral)</option>
-            {projects.map((p) => (
-              <option key={p.name} value={p.name}>{p.name}</option>
-            ))}
-          </select>
+          {(() => {
+            const effectiveCollectionId = newClientCollId || selectedDropdownValue || "general"
+            return (
+              <>
+                <select
+                  value={effectiveCollectionId}
+                  onChange={(e) => {
+                    setNewClientCollId(e.target.value)
+                    setNewProjectId("")
+                  }}
+                  className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
+                  title="Assign collection to this workstream"
+                >
+                  {collections.map((c) => {
+                    const roleLabel =
+                      c.id === "general" || c.role === "unsorted"
+                        ? "Unclassified"
+                        : c.role === "own"
+                        ? "Own"
+                        : c.role === "client"
+                        ? "Client"
+                        : c.role === "personal"
+                        ? "Personal"
+                        : "Unclassified"
+                    return (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({roleLabel})
+                      </option>
+                    )
+                  })}
+                </select>
+                <select
+                  value={newProjectId}
+                  onChange={(e) => setNewProjectId(e.target.value)}
+                  className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
+                >
+                  <option value="">No project (ephemeral)</option>
+                  {projects
+                    .filter((p) => (p.collection_id || "general") === effectiveCollectionId)
+                    .map((p) => (
+                      <option key={p.name} value={p.name}>{p.name}</option>
+                    ))}
+                </select>
+              </>
+            )
+          })()}
           <div className="flex gap-1">
             <button
               onClick={handleCreate}

@@ -96,19 +96,31 @@ export function WorkspaceSelectorSheet({
               >
                 All
               </button>
-              {collections.map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => selectCollection(c.id)}
-                  className={`px-3 py-1.5 text-xs rounded-full whitespace-nowrap border ${
-                    currentCollection === c.id
-                      ? "bg-blue-600 text-white border-blue-500"
-                      : "bg-gray-800 text-gray-300 border-gray-700"
-                  }`}
-                >
-                  {c.name}
-                </button>
-              ))}
+              {collections.map((c) => {
+                const roleLabel =
+                  c.id === "general" || c.role === "unsorted"
+                    ? "Unclassified"
+                    : c.role === "own"
+                    ? "Own"
+                    : c.role === "client"
+                    ? "Client"
+                    : c.role === "personal"
+                    ? "Personal"
+                    : "Unclassified"
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => selectCollection(c.id)}
+                    className={`px-3 py-1.5 text-xs rounded-full whitespace-nowrap border ${
+                      currentCollection === c.id
+                        ? "bg-blue-600 text-white border-blue-500"
+                        : "bg-gray-800 text-gray-300 border-gray-700"
+                    }`}
+                  >
+                    {c.name} ({roleLabel})
+                  </button>
+                )
+              })}
             </div>
           ) : (
             <select
@@ -117,9 +129,23 @@ export function WorkspaceSelectorSheet({
               className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-300 outline-none"
             >
               <option value="">All</option>
-              {collections.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
+              {collections.map((c) => {
+                const roleLabel =
+                  c.id === "general" || c.role === "unsorted"
+                    ? "Unclassified"
+                    : c.role === "own"
+                    ? "Own"
+                    : c.role === "client"
+                    ? "Client"
+                    : c.role === "personal"
+                    ? "Personal"
+                    : "Unclassified"
+                return (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({roleLabel})
+                  </option>
+                )
+              })}
             </select>
           )}
 

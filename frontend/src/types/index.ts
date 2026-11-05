@@ -23,7 +23,7 @@ export interface Collection {
   name: string
   description?: string
   sort_order?: number
-  role?: "unsorted" | "own" | "client"
+  role?: "unsorted" | "own" | "client" | "personal"
   default_agent_id?: string | null
   projects?: string[]
   project_count?: number

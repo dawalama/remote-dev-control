@@ -853,18 +853,22 @@ export function SessionsCard({
           {clientGroups.map((group) => {
             const roleLabel =
               group.collection.role === "own"
-                ? "Company"
+                ? "Own"
                 : group.collection.role === "client"
                   ? "Client"
-                  : group.collection.id === "general"
-                    ? "Unassigned"
-                    : "Unsorted"
+                  : group.collection.role === "personal"
+                    ? "Personal"
+                    : group.collection.id === "general"
+                      ? "Unclassified"
+                      : "Unsorted"
             const roleBadgeColor =
               group.collection.role === "own"
                 ? "bg-purple-500/20 text-purple-300 border-purple-500/30"
                 : group.collection.role === "client"
                   ? "bg-blue-500/20 text-blue-300 border-blue-500/30"
-                  : "bg-gray-800 text-gray-400 border-gray-700"
+                  : group.collection.role === "personal"
+                    ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                    : "bg-gray-800 text-gray-400 border-gray-700"
 
             return (
               <div key={group.collection.id} className="space-y-2.5">

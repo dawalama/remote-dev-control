@@ -76,7 +76,9 @@ export function CollectionPicker({
             onChange={(e) => onChange(e.target.value)}
             className="input-cls"
           >
-            <option value={DEFAULT_COLLECTION_ID}>General</option>
+            <option value={DEFAULT_COLLECTION_ID}>
+              {collections.find((c) => c.id === DEFAULT_COLLECTION_ID)?.name || "Unclassified"}
+            </option>
             {collections.filter((c) => c.id !== DEFAULT_COLLECTION_ID).map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}

@@ -25,6 +25,25 @@ from .db.models import (
 logger = logging.getLogger(__name__)
 
 
+def assert_link_allowed(channel: Channel | sqlite3.Row | dict, project) -> None:
+    """Validate that a project is permitted to link to a channel."""
+    if hasattr(channel, "type"):
+        ch_type = channel.type.value if hasattr(channel.type, "value") else str(channel.type)
+    elif isinstance(channel, (dict, sqlite3.Row)):
+        ch_type = str(channel["type"])
+    else:
+        ch_type = str(getattr(channel, "type", ""))
+
+    ch_id = channel.id if hasattr(channel, "id") else channel["id"]
+    if ch_type == "system" or ch_id == "ch-system":
+        raise ValueError("system_channel_has_no_projects")
+
+    ch_coll = (channel.collection_id if hasattr(channel, "collection_id") else channel["collection_id"]) or "general"
+    p_coll = (project.collection_id if hasattr(project, "collection_id") else project["collection_id"]) or "general"
+    if p_coll != ch_coll:
+        raise ValueError("project_collection_mismatch")
+
+
 class ChannelManager:
     """Manages channels, messages, and the event store."""
 
@@ -44,6 +63,24 @@ class ChannelManager:
         """Create a new channel."""
         channel_id = f"ch-{secrets.token_hex(6)}"
         now = datetime.now()
+
+        candidate = Channel(
+            id=channel_id,
+            name=name,
+            type=type,
+            parent_channel_id=parent_channel_id,
+            collection_id=collection_id,
+            project_ids=project_ids or [],
+            created_at=now,
+        )
+
+        if project_ids:
+            from .db.repositories import get_project_repo
+            repo = get_project_repo()
+            for pid in project_ids:
+                proj = repo.get_by_id(pid) or repo.get(pid)
+                if proj:
+                    assert_link_allowed(candidate, proj)
 
         self.db.execute(
             """INSERT INTO channels (id, name, type, parent_channel_id, collection_id, created_at)

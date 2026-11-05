@@ -17,7 +17,7 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState("")
   const [newDesc, setNewDesc] = useState("")
-  const [newRole, setNewRole] = useState<"unsorted" | "own" | "client">("unsorted")
+  const [newRole, setNewRole] = useState<"unsorted" | "own" | "client" | "personal">("unsorted")
   const [newAgent, setNewAgent] = useState<string>("")
   const [loading, setLoading] = useState(true)
 
@@ -62,7 +62,7 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
     }
   }
 
-  const handleRoleChange = async (c: Collection, role: "unsorted" | "own" | "client") => {
+  const handleRoleChange = async (c: Collection, role: "unsorted" | "own" | "client" | "personal") => {
     try {
       await PATCH(`/collections/${c.id}`, { role })
       await load()
@@ -100,7 +100,7 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
   }
 
   const handleDelete = async (c: Collection) => {
-    if (!confirm(`Delete collection "${c.name}"? Projects will be moved to General.`)) return
+    if (!confirm(`Delete collection "${c.name}"? Projects will be moved to Unclassified.`)) return
     try {
       await DEL(`/collections/${c.id}`)
       if (expanded === c.id) setExpanded(null)
@@ -163,12 +163,13 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
             />
             <select
               value={newRole}
-              onChange={(e) => setNewRole(e.target.value as "unsorted" | "own" | "client")}
+              onChange={(e) => setNewRole(e.target.value as "unsorted" | "own" | "client" | "personal")}
               className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200 outline-none"
             >
               <option value="unsorted">Unsorted</option>
               <option value="client">Client</option>
-              <option value="own">Company (own)</option>
+              <option value="own">Own</option>
+              <option value="personal">Personal</option>
             </select>
             <select
               value={newAgent}
@@ -224,17 +225,18 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
                         {/* Role selector */}
                         {isGeneral ? (
                           <span className="rounded bg-gray-700 px-1.5 py-0.5 text-[9px] text-gray-400 font-medium">
-                            Unassigned
+                            Unclassified
                           </span>
                         ) : (
                           <select
                             value={currentRole}
-                            onChange={(e) => handleRoleChange(c, e.target.value as "unsorted" | "own" | "client")}
+                            onChange={(e) => handleRoleChange(c, e.target.value as "unsorted" | "own" | "client" | "personal")}
                             className="rounded border border-gray-600 bg-gray-900 px-1.5 py-0.5 text-[10px] text-gray-300 outline-none"
                           >
                             <option value="unsorted">Unsorted</option>
                             <option value="client">Client</option>
-                            <option value="own">Company (own)</option>
+                            <option value="own">Own</option>
+                            <option value="personal">Personal</option>
                           </select>
                         )}
                         {/* Default agent selector */}
