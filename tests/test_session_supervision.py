@@ -649,6 +649,156 @@ def test_start_supervised_session_does_not_switch_to_ready_family_alias(monkeypa
     assert "codex CLI not found in PATH" in (fresh.output_summary or "")
 
 
+def test_instruct_running_session_does_not_write_the_terminal(monkeypatch):
+    manager = get_session_manager()
+    session = manager.create_session(
+        channel_id="instruct-running",
+        project="instruct-running-project",
+        description="Still working",
+        metadata={"supervised": True},
+    )
+    manager.update_status(session.id, SessionStatus.RUNNING)
+    writes = []
+    monkeypatch.setattr(
+        "remote_dev_ctrl.server.terminal.TerminalManager.write",
+        lambda self, session_id, data: writes.append((session_id, data)) or True,
+    )
+    token, _ = get_auth_manager().create_token("instruct-running", Role.ADMIN)
+    response = TestClient(app).post(
+        f"/sessions/{session.id}/instructions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"instruction": "Change course"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Take control to guide an agent that is still running"
+    assert writes == []
+    fresh = manager.get(session.id)
+    assert fresh.status == SessionStatus.RUNNING
+    assert "followup_instructions" not in (fresh.metadata or {})
+
+
+def test_instruct_completed_session_stores_the_followup(monkeypatch):
+    manager = get_session_manager()
+    session = manager.create_session(
+        channel_id="instruct-done",
+        project="instruct-done-project",
+        description="Ready for a follow-up",
+        agent_provider="diagnostic",
+        metadata={"supervised": True},
+    )
+    manager.update_status(session.id, SessionStatus.COMPLETED, output_summary="Ready for review")
+    started = {}
+
+    def ok(session_id, **kwargs):
+        started["session_id"] = session_id
+        started["continue_review"] = kwargs.get("continue_review")
+        return {"success": True, "session_id": session_id, "terminal_id": "term-follow", "provider": "diagnostic"}
+
+    monkeypatch.setattr("remote_dev_ctrl.server.supervised_sessions.start_supervised_session", ok)
+    token, _ = get_auth_manager().create_token("instruct-done", Role.ADMIN)
+    response = TestClient(app).post(
+        f"/sessions/{session.id}/instructions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"instruction": "Also fix the footer"},
+    )
+    assert response.status_code == 200
+    assert started == {"session_id": session.id, "continue_review": True}
+    fresh = manager.get(session.id)
+    followups = (fresh.metadata or {}).get("followup_instructions") or []
+    assert followups[-1]["instruction"] == "Also fix the footer"
+    assert followups[-1]["prior_result"] == "Ready for review"
+
+
+def test_cancel_running_session_stops_its_terminal(monkeypatch):
+    manager = get_session_manager()
+    session = manager.create_session(
+        channel_id="cancel-running",
+        project="cancel-running-project",
+        description="Stop this",
+        metadata={"supervised": True},
+    )
+    manager.update_status(session.id, SessionStatus.RUNNING)
+    manager._db().execute(
+        "INSERT INTO session_terminals (session_id, terminal_id, role) VALUES (?, ?, 'agent')",
+        (session.id, "term-cancel-me"),
+    )
+    manager._db().commit()
+    manager._sessions.pop(session.id, None)
+    destroyed = []
+    monkeypatch.setattr(
+        "remote_dev_ctrl.server.terminal.get_terminal_manager",
+        lambda: type("TM", (), {"destroy": staticmethod(lambda terminal_id: destroyed.append(terminal_id))})(),
+    )
+    token, _ = get_auth_manager().create_token("cancel-running", Role.ADMIN)
+    response = TestClient(app).post(
+        f"/sessions/{session.id}/cancel",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    assert destroyed == ["term-cancel-me"]
+
+
+def test_session_tools_return_row_fields_only():
+    import asyncio
+    import json
+    import uuid
+
+    from remote_dev_ctrl.server.intent import ActionExecutor, OrchestratorContext
+    from remote_dev_ctrl.server.session_controls import list_sessions, session_status
+
+    manager = get_session_manager()
+    project = f"row-fields-{uuid.uuid4().hex[:8]}"
+    running = manager.create_session(
+        channel_id="row-fields",
+        project=project,
+        description="Fix the login bug",
+        metadata={"supervised": True, "secret": "do-not-leak"},
+    )
+    manager.update_status(running.id, SessionStatus.RUNNING, output_summary="Working on the login form")
+    finished = manager.create_session(
+        channel_id="row-fields",
+        project=project,
+        description="Already finished",
+    )
+    manager.update_status(finished.id, SessionStatus.COMPLETED, output_summary="done")
+    manager.request_approval(running, "APPROVAL-TEXT-SHOULD-NOT-LEAK", "term-secret")
+
+    listed = list_sessions(project=project)
+    assert {row["id"] for row in listed} == {running.id}
+    assert set(listed[0]) == {"id", "project", "goal", "status", "blocker", "control_owner"}
+    assert "APPROVAL-TEXT-SHOULD-NOT-LEAK" not in json.dumps(listed)
+    assert "do-not-leak" not in json.dumps(listed)
+
+    status = session_status(running.id)
+    assert set(status) == {
+        "id", "project", "goal", "status", "blocker", "control_owner", "output_summary", "approval_pending",
+    }
+    assert status["approval_pending"] is True
+    assert status["output_summary"] == "Working on the login form"
+    assert "APPROVAL-TEXT-SHOULD-NOT-LEAK" not in json.dumps(status)
+
+    async def _via_tool():
+        executor = ActionExecutor()
+        ctx = OrchestratorContext(projects=[project])
+        listed_tool = await executor.execute("list_sessions", {"project": project}, ctx)
+        status_tool = await executor.execute("session_status", {"session_id": running.id}, ctx)
+        running_tool = await executor.execute(
+            "instruct_session",
+            {"session_id": running.id, "instruction": "keep going"},
+            ctx,
+        )
+        return listed_tool, status_tool, running_tool
+
+    listed_tool, status_tool, running_tool = asyncio.run(_via_tool())
+    assert listed_tool["success"] is True
+    assert set(listed_tool["sessions"][0]) == {"id", "project", "goal", "status", "blocker", "control_owner"}
+    assert status_tool["session"]["approval_pending"] is True
+    assert "APPROVAL-TEXT-SHOULD-NOT-LEAK" not in json.dumps(status_tool)
+    assert running_tool["success"] is False
+    assert running_tool["output"] == "Take control to guide an agent that is still running"
+
+
 
 
 

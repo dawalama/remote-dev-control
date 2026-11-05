@@ -4,6 +4,7 @@ import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { Sheet } from "@/features/mobile/sheet"
+import { ChannelSettings } from "./channel-settings"
 
 type FilterMode = "all" | "active"
 
@@ -31,6 +32,7 @@ export function WorkspaceSelectorSheet({
 
   const [search, setSearch] = useState("")
   const [filterMode, setFilterMode] = useState<FilterMode>("all")
+  const [settingsChannelId, setSettingsChannelId] = useState<string | null>(null)
 
   const activeProjectNames = useMemo(() => {
     const active = new Set<string>()
@@ -140,33 +142,47 @@ export function WorkspaceSelectorSheet({
             const isActive = ch.id === activeChannelId
             const hasActivity = ch.project_names?.some((n) => activeProjectNames.has(n))
 
+            const label = ch.name.replace(/^#/, "")
             return (
-              <button
+              <div
                 key={ch.id}
-                onClick={() => { onSelect(ch.id); onClose() }}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${
+                className={`w-full flex items-center gap-1 pr-1 rounded-lg ${
                   isActive
                     ? "bg-blue-600/20 border border-blue-500/30"
-                    : "bg-gray-800 hover:bg-gray-700"
+                    : "bg-gray-800"
                 }`}
               >
-                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                  hasActivity ? "bg-green-500" : "bg-gray-700"
-                }`} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-gray-200 truncate">
-                    {ch.name.replace(/^#/, "")}
-                  </div>
-                  {ch.project_names && ch.project_names.length > 0 && (
-                    <div className="text-[10px] text-gray-500 truncate">
-                      {ch.project_names.join(", ")}
+                <button
+                  onClick={() => { onSelect(ch.id); onClose() }}
+                  className="flex-1 flex items-center gap-3 px-3 py-2.5 text-left min-w-0"
+                >
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                    hasActivity ? "bg-green-500" : "bg-gray-700"
+                  }`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-gray-200 truncate">
+                      {label}
                     </div>
+                    {ch.project_names && ch.project_names.length > 0 && (
+                      <div className="text-[10px] text-gray-500 truncate">
+                        {ch.project_names.join(", ")}
+                      </div>
+                    )}
+                  </div>
+                  {ch.auto_mode && (
+                    <span className="text-[9px] text-yellow-500">Auto</span>
                   )}
-                </div>
-                {ch.auto_mode && (
-                  <span className="text-[9px] text-yellow-500">Auto</span>
-                )}
-              </button>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSettingsChannelId(ch.id)}
+                  className="px-2 py-2 text-base leading-none text-gray-400 hover:text-gray-200"
+                  title="Workstream settings"
+                  aria-label={`Settings for ${label}`}
+                >
+                  ⋯
+                </button>
+              </div>
             )
           })}
           {filteredChannels.length === 0 && (
@@ -176,6 +192,9 @@ export function WorkspaceSelectorSheet({
           )}
         </div>
       </div>
+      {settingsChannelId && (
+        <ChannelSettings channelId={settingsChannelId} onClose={() => setSettingsChannelId(null)} />
+      )}
     </Sheet>
   )
 }

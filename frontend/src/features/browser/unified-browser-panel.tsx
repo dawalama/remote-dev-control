@@ -1,14 +1,11 @@
 import { useState, useEffect, useCallback } from "react"
 import { useBrowserStore } from "@/stores/browser-store"
-import { usePinchTabStore } from "@/stores/pinchtab-store"
 import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { GET, POST, DELETE } from "@/lib/api"
 import { RecordingPlayer } from "./recording-player"
-
-type InspectView = "elements" | "text" | "find" | null
 
 interface RecordingMeta {
   id: string
@@ -20,8 +17,8 @@ interface RecordingMeta {
 }
 
 /**
- * Sidebar tab view for unified browser — replaces separate Browser + PinchTab tabs.
- * Shows launcher, active session mini preview, PinchTab status, recordings.
+ * Sidebar tab view for the browser.
+ * Shows the launcher, the active session preview, and recordings.
  */
 export function UnifiedBrowserPanel() {
   const activeSession = useBrowserStore((s) => s.activeSession)
@@ -31,11 +28,6 @@ export function UnifiedBrowserPanel() {
   const startSession = useBrowserStore((s) => s.startSession)
   const startFromProcess = useBrowserStore((s) => s.startFromProcess)
   const setActiveSession = useBrowserStore((s) => s.setActiveSession)
-
-  const ptAvailable = usePinchTabStore((s) => s.available)
-  const ptTabs = usePinchTabStore((s) => s.tabs)
-  const ptLoadStatus = usePinchTabStore((s) => s.loadStatus)
-  const ptCloseTab = usePinchTabStore((s) => s.closeTab)
 
   const processes = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
@@ -48,7 +40,6 @@ export function UnifiedBrowserPanel() {
     : (currentProject ? [currentProject] : [])
   const toast = useUIStore((s) => s.toast)
 
-  const [showPtTabs, setShowPtTabs] = useState(false)
   const [urlInput, setUrlInput] = useState("")
   const [fullscreen, setFullscreen] = useState(false)
   const [allRecordings, setAllRecordings] = useState<RecordingMeta[]>([])
@@ -56,10 +47,9 @@ export function UnifiedBrowserPanel() {
 
   useEffect(() => {
     loadSessions()
-    ptLoadStatus()
-    const interval = setInterval(() => { loadSessions(); ptLoadStatus() }, 30000)
+    const interval = setInterval(loadSessions, 30000)
     return () => clearInterval(interval)
-  }, [loadSessions, ptLoadStatus])
+  }, [loadSessions])
 
   useEffect(() => {
     const load = () =>
@@ -197,9 +187,6 @@ export function UnifiedBrowserPanel() {
               <span className="text-[10px] text-gray-400 flex-1 truncate min-w-0">
                 {activeSession.target_url}
               </span>
-              {ptAvailable && (
-                <span className="text-[10px] text-green-400 flex-shrink-0">Agent Ready</span>
-              )}
               <button
                 className="text-[10px] text-purple-400 hover:text-purple-300 flex-shrink-0"
                 onClick={() => setFullscreen(true)}
@@ -207,40 +194,6 @@ export function UnifiedBrowserPanel() {
                 Expand
               </button>
             </div>
-          </div>
-        )}
-
-        {/* PinchTab tabs */}
-        {ptAvailable && ptTabs.length > 0 && !activeSession && (
-          <div className="rounded bg-gray-700 overflow-hidden">
-            <button
-              className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-gray-600"
-              onClick={() => setShowPtTabs(!showPtTabs)}
-            >
-              <span className="w-2 h-2 rounded-full bg-green-400 flex-shrink-0" />
-              <span className="text-xs text-gray-300 flex-1 text-left">Agent browser: {ptTabs.length} tab{ptTabs.length !== 1 ? "s" : ""}</span>
-              <span className="text-[10px] text-gray-500">{showPtTabs ? "\u25B2" : "\u25BC"}</span>
-            </button>
-            {showPtTabs && (
-              <div className="border-t border-gray-600">
-                {ptTabs.map((tab) => (
-                  <div key={tab.id} className="flex items-center gap-1 px-2 py-1 hover:bg-gray-600 group">
-                    <span className="text-[10px] text-gray-400 flex-1 truncate" title={tab.url}>
-                      {tab.title || tab.url || "about:blank"}
-                    </span>
-                    {ptTabs.length > 1 && (
-                      <button
-                        className="text-[10px] text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 px-1"
-                        onClick={() => ptCloseTab(tab.id)}
-                        title="Close tab"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         )}
 
@@ -366,15 +319,6 @@ export function UnifiedBrowserFullscreen({
   const browserReload = useBrowserStore((s) => s.reload)
   const setActiveSession = useBrowserStore((s) => s.setActiveSession)
 
-  const ptAvailable = usePinchTabStore((s) => s.available)
-  const ptSnapshot = usePinchTabStore((s) => s.snapshot)
-  const ptPageText = usePinchTabStore((s) => s.pageText)
-  const ptTakeSnapshot = usePinchTabStore((s) => s.takeSnapshot)
-  const ptExtractText = usePinchTabStore((s) => s.extractText)
-  const ptFindResults = usePinchTabStore((s) => s.findResults)
-  const ptFindElements = usePinchTabStore((s) => s.findElements)
-  const ptPerformAction = usePinchTabStore((s) => s.performAction)
-
   const processes = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
   const activeChannel = useChannelStore((s) => {
@@ -389,10 +333,6 @@ export function UnifiedBrowserFullscreen({
 
   const [recording, setRecording] = useState(false)
   const [recordings, setRecordings] = useState<RecordingMeta[]>([])
-  const [inspectView, setInspectView] = useState<InspectView>(null)
-  const [findQuery, setFindQuery] = useState("")
-  const [fillRef, setFillRef] = useState<string | null>(null)
-  const [fillValue, setFillValue] = useState("")
 
   const runningSessions = sessions.filter((s) => s.status === "running")
 
@@ -452,18 +392,6 @@ export function UnifiedBrowserFullscreen({
       setRecording(false)
     }
     await stopSession(activeSession.id)
-  }
-
-  const handleFind = async () => {
-    if (!findQuery.trim()) return
-    await ptFindElements(findQuery)
-  }
-
-  const handleFillSubmit = (ref: string) => {
-    if (!fillValue.trim()) return
-    ptPerformAction("fill", ref, fillValue)
-    setFillRef(null)
-    setFillValue("")
   }
 
   if (!activeSession) return null
@@ -578,77 +506,8 @@ export function UnifiedBrowserFullscreen({
             )}
           </div>
 
-          {/* Inspect panel (collapsible right side) */}
-          {inspectView && (
-            <div className="w-72 border-l border-gray-700 bg-gray-800 flex flex-col flex-shrink-0">
-              <div className="flex items-center justify-between px-3 py-2 border-b border-gray-700">
-                <div className="flex gap-1">
-                  {(["elements", "text", "find"] as const).map((v) => (
-                    <button
-                      key={v}
-                      className={`px-2 py-0.5 text-[10px] rounded capitalize ${
-                        inspectView === v ? "bg-gray-600 text-white" : "bg-gray-700 text-gray-400 hover:text-gray-200"
-                      }`}
-                      onClick={() => {
-                        setInspectView(v)
-                        if (v === "elements") ptTakeSnapshot()
-                        else if (v === "text") ptExtractText()
-                      }}
-                    >
-                      {v}
-                    </button>
-                  ))}
-                </div>
-                <button className="text-[10px] text-gray-500 hover:text-gray-300" onClick={() => setInspectView(null)}>
-                  Close
-                </button>
-              </div>
-              <div className="flex-1 overflow-auto p-2">
-                {inspectView === "elements" && ptSnapshot && (
-                  <div className="space-y-0.5">
-                    {renderElements(ptSnapshot, ptPerformAction, fillRef, setFillRef, fillValue, setFillValue, handleFillSubmit)}
-                  </div>
-                )}
-                {inspectView === "text" && ptPageText && (
-                  <pre className="text-[10px] text-gray-300 whitespace-pre-wrap break-words font-mono">
-                    {ptPageText}
-                  </pre>
-                )}
-                {inspectView === "find" && (
-                  <div className="space-y-2">
-                    <div className="flex gap-1">
-                      <input
-                        type="text"
-                        value={findQuery}
-                        onChange={(e) => setFindQuery(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") handleFind() }}
-                        placeholder="Find: the search box..."
-                        className="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-[10px] text-gray-200 outline-none focus:border-blue-500 min-w-0"
-                      />
-                      <button className="px-2 py-1 text-[10px] rounded bg-blue-600 hover:bg-blue-700 text-white" onClick={handleFind}>
-                        Find
-                      </button>
-                    </div>
-                    {ptFindResults && (
-                      <div className="space-y-1">
-                        {ptFindResults.map((r, i) => (
-                          <div key={i} className="flex items-center gap-1 text-[10px] px-1 py-0.5 rounded bg-gray-700">
-                            <span className="text-blue-400 font-mono">[{r.ref}]</span>
-                            <span className="text-gray-500">{r.role}</span>
-                            <span className="text-gray-300 truncate flex-1">{r.name}</span>
-                            <span className="text-green-400">{Math.round(r.confidence * 100)}%</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* Recordings sidebar */}
-          {recordings.length > 0 && !inspectView && (
+          {recordings.length > 0 && (
             <div className="w-48 border-l border-gray-700 bg-gray-800 flex flex-col flex-shrink-0">
               <div className="px-3 py-2 border-b border-gray-700">
                 <h4 className="text-[10px] uppercase text-gray-500">Recordings</h4>
@@ -682,94 +541,7 @@ export function UnifiedBrowserFullscreen({
         >
           Agent
         </button>
-        <div className="flex-1" />
-        {ptAvailable && (
-          <button
-            className={`hidden sm:block px-2.5 py-1.5 text-xs rounded flex-shrink-0 ${
-              inspectView ? "bg-gray-600 text-white" : "bg-gray-700 text-gray-400 hover:text-gray-200"
-            }`}
-            onClick={() => {
-              if (inspectView) {
-                setInspectView(null)
-              } else {
-                setInspectView("elements")
-                ptTakeSnapshot()
-              }
-            }}
-          >
-            Inspect
-          </button>
-        )}
       </div>
     </div>
   )
-}
-
-
-// Recursive element tree renderer (shared with PinchTabPanel)
-function renderElements(
-  elements: { ref: string; role: string; name: string; children?: unknown[]; [key: string]: unknown }[],
-  performAction: (type: string, ref: string | number, value?: string) => Promise<void>,
-  fillRef: string | null,
-  setFillRef: (ref: string | null) => void,
-  fillValue: string,
-  setFillValue: (v: string) => void,
-  handleFillSubmit: (ref: string) => void,
-  depth: number = 0,
-): React.ReactNode[] {
-  return elements.map((el, i) => {
-    const isClickable = ["link", "button", "menuitem", "tab", "checkbox", "radio", "option"].includes(el.role)
-    const isTextInput = ["textbox", "searchbox", "input", "textarea", "combobox"].includes(el.role)
-    const children = el.children as typeof elements | undefined
-
-    return (
-      <div key={`${el.ref}-${i}`} style={{ paddingLeft: depth * 12 }}>
-        <div className="flex items-center gap-1 py-0.5 text-[10px] hover:bg-gray-700/50 rounded px-1 group">
-          <span className="text-blue-400 font-mono flex-shrink-0">[{el.ref}]</span>
-          <span className="text-gray-500 flex-shrink-0">{el.role}</span>
-          <span className="text-gray-300 truncate flex-1 min-w-0">{el.name || ""}</span>
-          <span className="hidden group-hover:flex gap-1 flex-shrink-0">
-            {isClickable && (
-              <button
-                className="px-1.5 py-0.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-[9px]"
-                onClick={() => performAction("click", el.ref)}
-              >
-                Click
-              </button>
-            )}
-            {isTextInput && (
-              <button
-                className="px-1.5 py-0.5 rounded bg-green-600 hover:bg-green-700 text-white text-[9px]"
-                onClick={() => { setFillRef(el.ref); setFillValue("") }}
-              >
-                Fill
-              </button>
-            )}
-          </span>
-        </div>
-        {fillRef === el.ref && (
-          <div className="flex gap-1 ml-4 my-0.5">
-            <input
-              type="text"
-              value={fillValue}
-              onChange={(e) => setFillValue(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleFillSubmit(el.ref) }}
-              placeholder="Enter text..."
-              className="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-0.5 text-[10px] text-gray-200 outline-none"
-              autoFocus
-            />
-            <button className="px-2 py-0.5 text-[9px] rounded bg-green-600 hover:bg-green-700 text-white" onClick={() => handleFillSubmit(el.ref)}>
-              Go
-            </button>
-            <button className="px-2 py-0.5 text-[9px] rounded bg-gray-600 hover:bg-gray-500 text-white" onClick={() => setFillRef(null)}>
-              X
-            </button>
-          </div>
-        )}
-        {children && children.length > 0 &&
-          renderElements(children, performAction, fillRef, setFillRef, fillValue, setFillValue, handleFillSubmit, depth + 1)
-        }
-      </div>
-    )
-  })
 }

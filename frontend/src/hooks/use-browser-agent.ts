@@ -1,8 +1,7 @@
 import { useState, useCallback } from "react"
-import { usePinchTabStore } from "@/stores/pinchtab-store"
 import { useBrowserStore } from "@/stores/browser-store"
 import { useUIStore } from "@/stores/ui-store"
-import { GET, POST } from "@/lib/api"
+import { POST } from "@/lib/api"
 import type { Spec } from "@json-render/core"
 
 interface AgentAction {
@@ -43,7 +42,6 @@ export function useBrowserAgent(_channel: "desktop" | "mobile" | "kiosk") {
   const [sendingToAgent, setSendingToAgent] = useState(false)
   const [conversationHistory, setConversationHistory] = useState<AgentHistoryEntry[]>([])
 
-  const { tabs, activeTabId, loadStatus } = usePinchTabStore()
   const activeSession = useBrowserStore((s) => s.activeSession)
   const toast = useUIStore((s) => s.toast)
 
@@ -110,104 +108,12 @@ export function useBrowserAgent(_channel: "desktop" | "mobile" | "kiosk") {
         return
       }
 
-      // Fallback: PinchTab flow
-      let tabId = activeTabId
-      let params = tabId ? `?tab_id=${encodeURIComponent(tabId)}` : ""
-      let snap = await GET<{ nodes?: { ref: string; role: string; name: string }[]; error?: string }>(`/pinchtab/snapshot${params}`)
-
-      // Stale tab ID — refresh tabs and retry without tab_id
-      if (snap?.error) {
-        await loadStatus()
-        tabId = null
-        params = ""
-        snap = await GET<{ nodes?: { ref: string; role: string; name: string }[]; error?: string }>(`/pinchtab/snapshot`)
-      }
-
-      if (snap?.error) {
-        addMessage({ role: "assistant", content: `Browser not responding: ${snap.error}` })
-        toast("Browser instance may be dead — try restarting PinchTab", "error")
-        setSendingToAgent(false)
-        return
-      }
-
-      const elements = snap?.nodes || []
-      const elementList = elements
-        .filter((el) =>
-          ["link", "button", "combobox", "textbox", "searchbox", "input", "textarea", "menuitem", "tab", "checkbox", "radio"].includes(el.role),
-        )
-        .map((el) => `  ${el.ref} [${el.role}] "${el.name || ""}"`)
-        .join("\n")
-
-      const activeTab = tabs.find((t) => t.id === activeTabId)
-      const pageInfo = activeTab
-        ? `Page: ${activeTab.title || activeTab.url || "unknown"} (${activeTab.url || ""})`
-        : "Page loaded"
-
-      // Use lightweight dedicated browser agent endpoint (not full orchestrator)
-      const result = await POST<{ response?: string; actions?: AgentAction[] }>("/pinchtab/agent", {
-        instruction: instruction.trim(),
-        elements: elementList,
-        page_info: pageInfo,
-        tab_id: tabId || undefined,
-      })
-
-      const actions = (result?.actions || []) as AgentAction[]
-      const responseText = result?.response || "Done"
-
-      const allResults: string[] = []
-
-      for (const action of actions) {
-        const name = action.name || ""
-        const p = action.params || {}
-        try {
-          if (name === "browser_fill") {
-            await GET(`/pinchtab/snapshot${params}`)
-            const click = await POST<{ error?: string }>("/pinchtab/action", { type: "click", ref: String(p.ref), tab_id: tabId || undefined })
-            if (click?.error) { allResults.push(`Failed click ${p.ref}: ${click.error}`); continue }
-            const type = await POST<{ error?: string }>("/pinchtab/action", { type: "type", ref: String(p.ref), value: p.value, tab_id: tabId || undefined })
-            if (type?.error) { allResults.push(`Failed type into ${p.ref}: ${type.error}`); continue }
-            if (p.submit !== false) {
-              await new Promise((r) => setTimeout(r, 300))
-              await POST("/pinchtab/action", {
-                type: "press",
-                ref: String(p.ref),
-                value: "Enter",
-                tab_id: tabId || undefined,
-              })
-            }
-            allResults.push(`Typed "${p.value}" into ${p.ref}`)
-          } else if (name === "browser_click") {
-            await GET(`/pinchtab/snapshot${params}`)
-            const click = await POST<{ error?: string }>("/pinchtab/action", { type: "click", ref: String(p.ref), tab_id: tabId || undefined })
-            if (click?.error) { allResults.push(`Failed click ${p.ref}: ${click.error}`); continue }
-            allResults.push(`Clicked ${p.ref}`)
-          } else if (name === "browser_navigate") {
-            const nav = await POST<{ error?: string }>("/pinchtab/navigate", { url: p.url, tab_id: tabId || undefined })
-            if (nav?.error) { allResults.push(`Failed navigate: ${nav.error}`); continue }
-            allResults.push(`Navigated to ${p.url}`)
-          }
-        } catch (e) {
-          allResults.push(`Failed: ${name}(${p.ref || p.url || ""}): ${e}`)
-        }
-      }
-
-      // Build spec from action results
-      const spec = buildActionResultSpec(
-        actions.map((a) => ({ name: a.name, params: a.params })),
-        allResults,
-      )
-
       addMessage({
         role: "assistant",
-        content: responseText,
-        spec,
-        actions: actions.map((a) => ({ action: a.name || "", ...a.params })),
+        content: "Start a browser session first, then ask again.",
       })
-
-      toast(responseText.slice(0, 120) || allResults[0] || "Done", "success")
+      toast("No browser session running", "error")
       setAgentInput("")
-
-      // Agent loop now verifies via observe — no need for delayed screenshot
     } catch (err) {
       console.error("[BrowserAgent] error:", err)
       addMessage({ role: "assistant", content: `Error: ${err}` })

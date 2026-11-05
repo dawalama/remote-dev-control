@@ -48,19 +48,35 @@ interface PairedSession {
   last_used_at: string | null
 }
 
-interface PinchTabConfig {
-  enabled: boolean
-  port: number
-  binary: string
-  headless: boolean
-}
+type Section = "voice" | "terminal" | "nanobot" | "recipes" | "phone" | "email" | "caddy" | "keys" | "sessions" | "info"
 
-interface PinchTabStatus {
-  available: boolean
-  tabs: { id: string; title: string; url: string }[]
-}
-
-type Section = "voice" | "terminal" | "nanobot" | "pinchtab" | "phone" | "email" | "caddy" | "keys" | "sessions" | "info"
+const SECTION_GROUPS: { label: string; sections: { id: Section; label: string }[] }[] = [
+  {
+    label: "Assistant",
+    sections: [
+      { id: "voice", label: "Voice" },
+      { id: "nanobot", label: "Orchestrator" },
+      { id: "keys", label: "API Keys" },
+      { id: "recipes", label: "Task recipes" },
+    ],
+  },
+  {
+    label: "This machine",
+    sections: [
+      { id: "terminal", label: "Terminal" },
+      { id: "caddy", label: "Previews" },
+      { id: "info", label: "Server" },
+    ],
+  },
+  {
+    label: "Reach me",
+    sections: [
+      { id: "phone", label: "Phone" },
+      { id: "sessions", label: "Paired devices" },
+      { id: "email", label: "Email" },
+    ],
+  },
+]
 
 const LAYOUTS = [
   { id: "desktop", label: "Desktop" },
@@ -161,19 +177,6 @@ export function SystemSettingsModal({ onClose }: { onClose: () => void }) {
     }
   }
 
-  const sections: { id: Section; label: string }[] = [
-    { id: "voice", label: "Voice & TTS" },
-    { id: "terminal", label: "Terminal" },
-    { id: "nanobot", label: "Orchestrator LLM" },
-    { id: "pinchtab", label: "PinchTab" },
-    { id: "phone", label: "Phone" },
-    { id: "email", label: "Email" },
-    { id: "caddy", label: "Caddy Proxy" },
-    { id: "keys", label: "API Keys" },
-    { id: "sessions", label: "Paired Devices" },
-    { id: "info", label: "Server Info" },
-  ]
-
   return (
     <div className="fixed inset-0 h-app bg-gray-900 z-50 flex flex-col text-gray-100">
       {/* Header */}
@@ -207,20 +210,25 @@ export function SystemSettingsModal({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
-      {/* Section tabs */}
+      {/* Section tabs, grouped */}
       <div className="flex border-b border-gray-700 flex-shrink-0 px-2 overflow-x-auto">
-        {sections.map((s) => (
-          <button
-            key={s.id}
-            className={`px-3 py-2 text-xs whitespace-nowrap transition-colors ${
-              section === s.id
-                ? "text-white border-b-2 border-blue-500"
-                : "text-gray-400 hover:text-gray-200"
-            }`}
-            onClick={() => setSection(s.id)}
-          >
-            {s.label}
-          </button>
+        {SECTION_GROUPS.map((group) => (
+          <div key={group.label} className="flex items-end gap-0.5 pr-3 mr-1 border-r border-gray-800 last:border-r-0">
+            <span className="px-1 pb-2 text-[10px] uppercase tracking-wide text-gray-600 whitespace-nowrap">{group.label}</span>
+            {group.sections.map((s) => (
+              <button
+                key={s.id}
+                className={`px-2.5 py-2 text-xs whitespace-nowrap transition-colors ${
+                  section === s.id
+                    ? "text-white border-b-2 border-blue-500"
+                    : "text-gray-400 hover:text-gray-200"
+                }`}
+                onClick={() => setSection(s.id)}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
         ))}
       </div>
 
@@ -249,8 +257,8 @@ export function SystemSettingsModal({ onClose }: { onClose: () => void }) {
                 onReload={loadAll}
               />
             )}
-            {section === "pinchtab" && (
-              <PinchTabSection toast={toast} />
+            {section === "recipes" && (
+              <RecipesSection toast={toast} />
             )}
             {section === "phone" && adminSettings && (
               <PhoneSection settings={adminSettings} toast={toast} />
@@ -758,121 +766,6 @@ function NanobotSection({
           disabled={missingFields}
         >
           Save Agent Config
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ─── PinchTab ─────────────────────────────────────────────────────────
-
-function PinchTabSection({
-  toast,
-}: {
-  toast: (msg: string, type?: "info" | "success" | "error" | "warning") => void
-}) {
-  const [config, setConfig] = useState<PinchTabConfig>({
-    enabled: true, port: 9867, binary: "", headless: true,
-  })
-  const [status, setStatus] = useState<PinchTabStatus>({ available: false, tabs: [] })
-  const [loaded, setLoaded] = useState(false)
-
-  const load = useCallback(async () => {
-    try {
-      const data = await GET<{ config: PinchTabConfig; status: PinchTabStatus }>("/config/pinchtab")
-      if (data) {
-        setConfig(data.config)
-        setStatus(data.status)
-      }
-    } catch { /* */ }
-    setLoaded(true)
-  }, [])
-
-  useEffect(() => { load() }, [load])
-
-  const save = async () => {
-    try {
-      await PATCH("/config/pinchtab", config)
-      toast("PinchTab settings saved", "success")
-      load()
-    } catch {
-      toast("Failed to save", "error")
-    }
-  }
-
-  if (!loaded) return <p className="text-xs text-gray-500 animate-pulse">Loading...</p>
-
-  return (
-    <div className="space-y-4">
-      <p className="text-[11px] text-gray-400">
-        PinchTab provides browser automation via REST API. Enable it to use voice commands
-        like "go to localhost:3000", "click the login button", "what's on the screen?".
-      </p>
-
-      <label className="flex items-center gap-2 text-xs cursor-pointer">
-        <input
-          type="checkbox"
-          checked={config.enabled}
-          onChange={(e) => setConfig((p) => ({ ...p, enabled: e.target.checked }))}
-        />
-        <span>Enabled</span>
-        <span className={`text-[10px] ml-auto flex items-center gap-1.5 ${status.available ? "text-green-400" : "text-gray-500"}`}>
-          <span className={`inline-block w-1.5 h-1.5 rounded-full ${status.available ? "bg-green-400" : "bg-gray-600"}`} />
-          {status.available ? "Running" : "Not running"}
-        </span>
-      </label>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <Label>Port</Label>
-          <input
-            type="number" className="input-cls" min={1024} max={65535}
-            value={config.port}
-            onChange={(e) => setConfig((p) => ({ ...p, port: parseInt(e.target.value) || 9867 }))}
-          />
-        </div>
-        <div>
-          <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer mt-5">
-            <input
-              type="checkbox"
-              checked={config.headless}
-              onChange={(e) => setConfig((p) => ({ ...p, headless: e.target.checked }))}
-            />
-            Headless mode
-          </label>
-        </div>
-      </div>
-
-      <div>
-        <Label>Binary Path <span className="text-gray-500">(optional)</span></Label>
-        <input
-          className="input-cls"
-          value={config.binary}
-          onChange={(e) => setConfig((p) => ({ ...p, binary: e.target.value }))}
-          placeholder="Auto-detect (pinchtab in PATH)"
-        />
-        <p className="text-[10px] text-gray-500 mt-1">Leave empty to auto-detect from PATH or /opt/homebrew/bin</p>
-      </div>
-
-      {status.available && status.tabs.length > 0 && (
-        <div>
-          <Label>Open Tabs</Label>
-          <div className="space-y-1">
-            {status.tabs.map((tab) => (
-              <div key={tab.id} className="text-[11px] text-gray-300 bg-gray-700/50 rounded px-2 py-1 truncate">
-                {tab.title || "Untitled"} <span className="text-gray-500">— {tab.url}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="flex justify-end">
-        <button
-          className="px-3 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white"
-          onClick={save}
-        >
-          Save PinchTab Settings
         </button>
       </div>
     </div>
@@ -1436,6 +1329,9 @@ function CaddySection({ toast }: { toast: (msg: string, type?: "info" | "success
 
   return (
     <div className="space-y-4">
+      <p className="text-[11px] text-gray-400">
+        Preview hostnames for running actions. Caddy serves them on your base domain.
+      </p>
       {/* Enable toggle */}
       <label className="flex items-center gap-2 text-xs cursor-pointer">
         <input

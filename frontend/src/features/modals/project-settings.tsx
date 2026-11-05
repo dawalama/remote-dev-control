@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react"
 import { GET, POST, PATCH, PUT } from "@/lib/api"
 import { useProjectStore } from "@/stores/project-store"
+import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
 import { CollectionPicker } from "@/components/collection-picker"
@@ -739,9 +740,30 @@ function DangerSection({
   toast: (msg: string, type?: "info" | "success" | "error" | "warning") => void
   onClose: () => void
 }) {
+  const channels = useChannelStore((s) => s.channels)
+  const deleteChannel = useChannelStore((s) => s.deleteChannel)
+
   const handleDisconnect = async () => {
     if (!confirm(`Disconnect project "${currentName}"? This removes it from RDC but does not delete files.`)) return
+    const soleWorkstreams = channels.filter(
+      (ch) => ch.type !== "system" && ch.project_names?.length === 1 && ch.project_names[0] === currentName,
+    )
+    let removeWorkstreams = false
+    if (soleWorkstreams.length === 1) {
+      removeWorkstreams = confirm(
+        `Also delete workstream ${soleWorkstreams[0].name} and its messages?`,
+      )
+    } else if (soleWorkstreams.length > 1) {
+      removeWorkstreams = confirm(
+        `Also delete ${soleWorkstreams.length} workstreams that only belong to this project, and their messages?`,
+      )
+    }
     try {
+      if (removeWorkstreams) {
+        for (const ch of soleWorkstreams) {
+          await deleteChannel(ch.id)
+        }
+      }
       await deleteProject(currentName)
       toast("Project disconnected", "success")
       onClose()
@@ -758,6 +780,7 @@ function DangerSection({
           <p className="text-xs text-gray-300">Disconnect Project</p>
           <p className="text-[10px] text-gray-500">
             Remove this project from the dashboard. Your files will NOT be deleted.
+            A workstream that only belongs to this project can be removed too.
           </p>
         </div>
         <button

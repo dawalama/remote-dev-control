@@ -8480,7 +8480,20 @@ async def delete_project(name: str):
         raise HTTPException(status_code=404, detail=f"Project not found: {name}")
 
     repo.delete(db_proj.id)
-        
+
+    # Drop links from workstreams. The workstream itself stays unless the
+    # client deletes a workstream that only belonged to this project.
+    try:
+        from .channel_manager import get_channel_manager
+        cm = get_channel_manager()
+        cm.db.execute(
+            "DELETE FROM channel_projects WHERE project_id = ?",
+            (db_proj.id,),
+        )
+        cm.db.commit()
+    except Exception:
+        pass
+
     # Stop processes and clear terminals
     try:
         from .processes import get_process_manager
@@ -11228,24 +11241,13 @@ async def complete_session(session_id: str, body: CompleteSessionRequest | None 
 @app.post("/sessions/{session_id}/cancel")
 async def cancel_session(session_id: str):
     """Permanently stop active execution while retaining its audit record."""
-    from .session_manager import get_session_manager, SessionStatus
-    from .terminal import get_terminal_manager
-    manager = get_session_manager()
-    session = manager.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if session.status in {SessionStatus.COMPLETED, SessionStatus.DONE, SessionStatus.FAILED, SessionStatus.CANCELLED}:
-        raise HTTPException(status_code=409, detail="Session is already terminal")
-    if session.status == SessionStatus.VERIFYING:
-        raise HTTPException(status_code=409, detail="Execution has finished. Complete or discard the review outcome instead.")
-    manager.stop_monitor(session_id)
-    manager.update_status(session_id, SessionStatus.CANCELLED)
-    for terminal_id in session.terminal_ids:
-        try:
-            get_terminal_manager().destroy(terminal_id)
-        except Exception:
-            logger.warning("Failed to stop terminal %s while cancelling %s", terminal_id, session_id)
-    return _session_response(manager.get(session_id))
+    from .session_controls import SessionControlError, cancel_session as cancel
+
+    try:
+        session = cancel(session_id)
+    except SessionControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return _session_response(session)
 
 
 @app.post("/sessions/{session_id}/restore-review")
@@ -11329,65 +11331,12 @@ class SessionInstructionRequest(BaseModel):
 @app.post("/sessions/{session_id}/instructions")
 async def instruct_session(session_id: str, body: SessionInstructionRequest):
     """Append a durable follow-up and resume work in the same RDC Session."""
-    from .session_manager import SessionStatus, get_session_manager
-
-    instruction = body.instruction.strip()
-    if not instruction:
-        raise HTTPException(status_code=422, detail="Tell the agent what to do next")
-    sm = get_session_manager()
-    session = sm.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if session.status.value not in {"verifying", "completed", "done", "failed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Take control to guide an agent that is still running")
-
-    followups = list((session.metadata or {}).get("followup_instructions") or [])
-    base_head = None
-    try:
-        project_path = _session_project_path(session.project)
-        if (project_path / ".git").exists():
-            rev = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=project_path,
-                text=True,
-                capture_output=True,
-                timeout=5,
-                check=False,
-            )
-            base_head = _valid_git_sha(rev.stdout.strip())
-    except (HTTPException, OSError):
-        base_head = None
-    followup = {
-        "instruction": instruction,
-        "prior_result": session.output_summary or "No prior outcome was recorded.",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    if base_head:
-        followup["base_head"] = base_head
-    followups.append(followup)
-    prior_metadata = dict(session.metadata or {})
-    session.metadata = {**(session.metadata or {}), "followup_instructions": followups, "review_mode": "implementation"}
-    sm._persist(session)
-    sm.log_event(session, "session.instruction_added", {"instruction": instruction, "context_mode": "reconstructed"})
-    from .supervised_sessions import start_supervised_session
+    from .session_controls import SessionControlError, instruct_session as instruct
 
     try:
-        result = start_supervised_session(
-            session_id,
-            provider=session.agent_provider,
-            continue_review=True,
-        )
-    except Exception as e:
-        session.metadata = prior_metadata
-        sm._persist(session)
-        if isinstance(e, LookupError):
-            raise HTTPException(status_code=404, detail=str(e)) from e
-        if isinstance(e, ValueError):
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        if isinstance(e, RuntimeError):
-            raise HTTPException(status_code=409, detail=str(e)) from e
-        raise HTTPException(status_code=500, detail="Could not continue the session") from e
-    return {**result, "context_mode": "reconstructed", "instruction": instruction}
+        return instruct(session_id, body.instruction)
+    except SessionControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @app.patch("/channels/{channel_id}")

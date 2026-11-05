@@ -2,7 +2,7 @@ import { useState, useRef } from "react"
 import { useChannelStore } from "@/stores/channel-store"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
 import { useChannelSend } from "@/hooks/use-channel-send"
-import { ChannelSettings } from "./channel-settings"
+import { ChannelSettings, SettingsGear } from "./channel-settings"
 import { MessageRenderer } from "./message-renderer"
 
 /**
@@ -90,9 +90,11 @@ export function ChannelPanel({
         <div className="flex-1" />
         <button
           onClick={() => setShowSettings(true)}
-          className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded hover:bg-gray-700"
+          className="text-gray-400 hover:text-gray-200 p-1 rounded hover:bg-gray-700"
+          title="Workstream settings"
+          aria-label="Workstream settings"
         >
-          Settings
+          <SettingsGear />
         </button>
         <button
           onClick={onClose}

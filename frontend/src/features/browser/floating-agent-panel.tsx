@@ -2,7 +2,6 @@ import { useState, useRef, useCallback, useEffect } from "react"
 import { useUIStore } from "@/stores/ui-store"
 import { useBrowserAgent } from "@/hooks/use-browser-agent"
 import { useBrowserStore } from "@/stores/browser-store"
-import { usePinchTabStore } from "@/stores/pinchtab-store"
 import { ChatRenderer } from "@/features/chat/chat-renderer"
 import type { ChatMessage } from "@/features/chat/chat-renderer"
 import type { Spec } from "@json-render/core"
@@ -33,7 +32,6 @@ export function FloatingAgentPanel({ channel }: { channel: "desktop" | "mobile" 
   const setOpen = useUIStore((s) => s.setAgentPanelOpen)
 
   const activeSession = useBrowserStore((s) => s.activeSession)
-  const ptAvailable = usePinchTabStore((s) => s.available)
 
   const {
     agentInput,
@@ -96,12 +94,10 @@ export function FloatingAgentPanel({ channel }: { channel: "desktop" | "mobile" 
 
   if (!open) return null
 
-  const hasSession = (activeSession && activeSession.status === "running") || ptAvailable
+  const hasSession = Boolean(activeSession && activeSession.status === "running")
   const statusText = activeSession?.target_url
     ? new URL(activeSession.target_url).hostname
-    : ptAvailable
-      ? "PinchTab"
-      : "No browser"
+    : "No browser"
 
   // Convert conversation history to ChatMessage format
   const messages: ChatMessage[] = conversationHistory.map((h) => ({

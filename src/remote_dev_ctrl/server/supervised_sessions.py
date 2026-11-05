@@ -138,12 +138,10 @@ def create_supervised_session(
     sm = get_session_manager()
     db = sm._db()
 
-    # Channel constraints: channel must exist and not be system
-    ch_row = db.execute("SELECT id, type, collection_id FROM channels WHERE id = ?", (channel_id,)).fetchone()
+    # #system is the scratch workstream and may own sessions.
+    ch_row = db.execute("SELECT id, collection_id FROM channels WHERE id = ?", (channel_id,)).fetchone()
     if not ch_row:
         raise LookupError(f"Channel not found: {channel_id}")
-    if ch_row["id"] == "ch-system" or ch_row["type"] == "system":
-        raise ValueError(f"Cannot create goals on system channel: {channel_id}")
 
     # Channel-project constraints: if channel has linked projects, project must be one of them
     cp_rows = db.execute(
@@ -239,6 +237,50 @@ def _fail_claimed_start(sm, session: Session, previous: str, *, summary: str, er
     sm._persist(session)
     sm.update_status(session.id, SessionStatus.FAILED, output_summary=summary)
     raise RuntimeError(error)
+
+
+def _status_label(session: Session) -> str:
+    return session.status.value if isinstance(session.status, SessionStatus) else str(session.status)
+
+
+def _same_checkout(path: str | None, root: Path) -> bool:
+    if not path:
+        return False
+    try:
+        return Path(path).resolve() == root.resolve()
+    except OSError:
+        return False
+
+
+def _checkout_blocker(project: str, project_root: Path, exclude_session_id: str) -> Session | None:
+    """Another active session already writing this project directory."""
+    for other in get_session_manager().list_active():
+        if other.id == exclude_session_id or other.project != project:
+            continue
+        if (other.worktree_mode or "") == "direct" or _same_checkout(other.worktree_path, project_root):
+            return other
+    return None
+
+
+def _refuse_if_checkout_busy(sm, session: Session, project_root: Path, previous: str) -> None:
+    blocker = _checkout_blocker(session.project, project_root, session.id)
+    if blocker is None:
+        return
+    message = (
+        f"Checkout is in use by session {blocker.id} ({_status_label(blocker)}). "
+        "Wait for it to finish or cancel it before starting another writer on this path."
+    )
+    _fail_claimed_start(sm, session, previous, summary=message, error=message)
+
+
+def _use_project_checkout(sm, session: Session, project_path: Path, wm, previous: str) -> Path:
+    """Point a session at the project directory when that checkout is free."""
+    _refuse_if_checkout_busy(sm, session, project_path, previous)
+    session.worktree_mode = "direct"
+    session.worktree_path = str(project_path)
+    if wm.is_git_repo(project_path):
+        session.worktree_branch = wm.get_current_branch(project_path)
+    return project_path
 
 
 def start_supervised_session(
@@ -357,6 +399,7 @@ def start_supervised_session(
             if s.worktree_path and Path(s.worktree_path).is_dir():
                 target_cwd = Path(s.worktree_path)
             else:
+                _refuse_if_checkout_busy(sm, s, project_path, previous)
                 try:
                     wt_path, wt_branch = wm.create_worktree(
                         project_path,
@@ -368,28 +411,20 @@ def start_supervised_session(
                         s.worktree_branch = wt_branch
                         target_cwd = wt_path
                 except Exception as e:
-                    logger.warning("Could not create worktree for session %s: %s", s.id, e)
-                    s.worktree_mode = "direct"
-                    target_cwd = project_path
-                    s.worktree_path = str(project_path)
-                    s.worktree_branch = wm.get_current_branch(project_path)
+                    logger.warning("Could not create worktree for session %s: %s", s.id, type(e).__name__)
+                    target_cwd = _use_project_checkout(sm, s, project_path, wm, previous)
         elif mode == "reuse":
             if s.worktree_path and Path(s.worktree_path).is_dir():
                 target_cwd = Path(s.worktree_path)
             else:
-                s.worktree_mode = "direct"
-                target_cwd = project_path
-                s.worktree_path = str(project_path)
-                s.worktree_branch = wm.get_current_branch(project_path)
+                target_cwd = _use_project_checkout(sm, s, project_path, wm, previous)
         else:  # direct
-            target_cwd = project_path
-            s.worktree_path = str(project_path)
-            s.worktree_branch = wm.get_current_branch(project_path)
+            target_cwd = _use_project_checkout(sm, s, project_path, wm, previous)
+    elif project_path:
+        target_cwd = _use_project_checkout(sm, s, project_path, wm, previous)
     else:
         s.worktree_mode = "direct"
-        target_cwd = project_path
-        if project_path:
-            s.worktree_path = str(project_path)
+        target_cwd = None
 
     if target_cwd:
         s.metadata["git_baseline"] = session_git_snapshot(s.project, override_path=target_cwd)

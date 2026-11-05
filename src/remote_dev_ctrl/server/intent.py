@@ -421,7 +421,7 @@ ORCHESTRATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "spawn_agent",
-            "description": "Launch a supervised work session with a CLI coding agent on an EXISTING project: implement a feature, refactor code, fix a multi-file bug, write tests. Creates the same durable Sessions Hub session as the UI. Prefer when work would take >5 tool calls or touches >2-3 files. Do NOT use for simply recording a task (use create_task) or for creating a new project (use create_project).",
+            "description": "Start a supervised coding session on an EXISTING project. Use for any change to project files. Creates the same durable Sessions Hub session as the UI. If another active session holds that checkout, the start fails and names that session — tell the user, and do not start a second writer on the same path. An isolated worktree is its own checkout. Do NOT use for simply recording a task (use create_task) or for creating a new project (use create_project).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -808,33 +808,56 @@ ORCHESTRATOR_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "write_file",
-            "description": "Write content to a file in the project directory. Creates the file if it doesn't exist, overwrites if it does. Use for creating new files or completely replacing file content.",
+            "name": "list_sessions",
+            "description": "List active supervised sessions (pending, running, waiting, verifying). Optional project filter. Returns id, project, goal, status, blocker, and control_owner from the session row. Does not include terminal output.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to project root"},
-                    "content": {"type": "string", "description": "Full file content to write"},
-                    "project": {"type": "string", "description": "Project name (optional — uses active project)"},
+                    "project": {"type": "string", "description": "Optional project name. Omit to list every active session."},
                 },
-                "required": ["path", "content"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "edit_file",
-            "description": "Make a targeted edit to a file — replace a specific string with new content. More precise than write_file. Use for fixing bugs, updating functions, changing config values.",
+            "name": "session_status",
+            "description": "Status of one supervised session by id. Returns the row fields plus output_summary and approval_pending. When approval_pending is true, an approval is waiting for the person in the session. Do not invent a decision. Does not include terminal output or approval text.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to project root"},
-                    "old_text": {"type": "string", "description": "Exact text to find and replace (must match exactly)"},
-                    "new_text": {"type": "string", "description": "Replacement text"},
-                    "project": {"type": "string", "description": "Project name (optional — uses active project)"},
+                    "session_id": {"type": "string", "description": "Session id"},
                 },
-                "required": ["path", "old_text", "new_text"],
+                "required": ["session_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "instruct_session",
+            "description": "Send a follow-up to a finished supervised session (verifying, completed, done, failed, or cancelled) and resume that same session. Refuses while the session is running or waiting, and does not type into a live terminal.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string", "description": "Session id"},
+                    "instruction": {"type": "string", "description": "What the agent should do next"},
+                },
+                "required": ["session_id", "instruction"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_session",
+            "description": "Stop a running supervised session and keep its record. Refuses while the session is verifying or already finished.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string", "description": "Session id"},
+                },
+                "required": ["session_id"],
             },
         },
     },
@@ -911,7 +934,8 @@ _LOCAL_TOOL_NAMES = {
     "spawn_agent", "brief_homebase", "present_options", "present_ui", "select_collection",
     "set_layout", "set_theme", "restart_server", "restart_action",
     "kill_terminal", "restart_terminal", "toggle_sidebar", "toggle_chat",
-    "run_command", "read_file", "fetch_url", "write_file", "edit_file",
+    "run_command", "read_file", "fetch_url",
+    "list_sessions", "session_status", "instruct_session", "cancel_session",
     "list_workstreams", "switch_workstream", "create_workstream",
     "archive_workstream", "delete_workstream",
 }
@@ -919,10 +943,10 @@ ORCHESTRATOR_TOOLS_LOCAL = [t for t in ORCHESTRATOR_TOOLS if t["function"]["name
 
 # Tools whose results should be fed back to the LLM (triggers follow-up call)
 TOOLS_WITH_OUTPUT = {
-    "run_command", "read_file", "write_file", "edit_file", "fetch_url",
+    "run_command", "read_file", "fetch_url",
     "list_workstreams", "browser_snapshot", "browser_text",
     "browser_tabs", "browser_find", "server_status", "brief_homebase",
-    "spawn_agent",
+    "spawn_agent", "list_sessions", "session_status", "instruct_session", "cancel_session",
 }
 
 # ---------------------------------------------------------------------------
@@ -1730,21 +1754,24 @@ def build_system_prompt(
         "You have memory of recent conversations and project knowledge — use it to answer questions.",
         "",
         "FOCUS on tasks that require intelligence:",
-        "- Use run_command to inspect code, run tests, check git status, etc. and SUMMARIZE the results.",
         "- Use read_file to examine code and explain it.",
-        "- Use edit_file / write_file for focused changes to 1-2 files (fix a bug, update config, add a route).",
+        "- Use run_command to inspect code, run tests, and check git status, and SUMMARIZE the results.",
+        "- run_command is for inspection. Project file changes go through spawn_agent.",
         "- Answer questions about the project, architecture, or code from context.",
+        "- Use create_task to record work without starting an agent.",
         "",
         "WHEN TO USE spawn_agent (creates a session with a CLI agent in a terminal):",
-        "- Task requires creating or modifying MORE than 2-3 files",
-        "- Task involves architecture changes, refactoring, or new features spanning multiple modules",
-        "- Task requires complex debugging with back-and-forth investigation",
-        "- User explicitly asks to 'build', 'implement', 'create a feature', 'refactor', or 'write tests for all'",
-        "- The work would take you more than 5 tool calls to complete",
-        "When in doubt between tool loop and spawn_agent, prefer spawn_agent for anything non-trivial.",
+        "- Any change to project files, including a one-line fix",
+        "- The user asks to build, implement, fix, refactor, or write tests",
         "spawn_agent starts a supervised session with the HomeBase preferred provider, or the provider argument.",
-        "After spawn_agent returns, tell the user whether the session started. Include the session id on success.",
+        "A chat with no workstream selected starts the session on #system.",
+        "An isolated worktree is its own checkout, so a second session on the same project can start when the first is not using the project directory.",
+        "After spawn_agent returns, tell the user whether the session started. Include the session id and status on success.",
         "If spawn_agent fails, say that it failed and include the error. Do not say it started.",
+        "Use list_sessions and session_status to report a session. Repeat the session id and status from the tool result.",
+        "If approval_pending is true, tell the person an approval is waiting in the session. Do not invent a decision.",
+        "Use instruct_session for a follow-up after the session has finished. A running or waiting session keeps control.",
+        "Use cancel_session when the person asks to stop a session.",
         "",
         "DO NOT use UI navigation tools (show_tab, open_terminal, navigate, focus_terminal) unless the user is "
         "on a phone call or explicitly asks to navigate. The user has buttons for those — they want you to "
@@ -1823,7 +1850,7 @@ def build_system_prompt(
             "Instead, READ the context data below and TELL the user the answer verbally.",
             "You have full visibility into: projects, actions, tasks, terminals, agents, and captured browser contexts.",
             "When asked about any of these, count them, list them, describe their status — answer from the data.",
-            "Only use tool calls for server-side actions (start_action, stop_action, create_task, spawn_agent, end_phone_call, pair_with_client).",
+            "Only use tool calls for server-side actions (start_action, stop_action, create_task, spawn_agent, list_sessions, session_status, instruct_session, cancel_session, end_phone_call, pair_with_client).",
             "Keep responses concise (2-3 sentences max) since this is a phone conversation.",
             "If the user wants UI actions (open terminal, show tabs, etc.) suggest pairing with a dashboard client first.",
             pairing_hint,
@@ -2427,10 +2454,11 @@ def _auto_confirm(actions: list[ToolCall]) -> str:
                 parts.append(f"Reading {a.params.get('path', '...')}")
             case "fetch_url":
                 parts.append(f"Fetching {a.params.get('url', '...')[:60]}")
-            case "write_file":
-                parts.append(f"Writing {a.params.get('path', '...')}")
-            case "edit_file":
-                parts.append(f"Editing {a.params.get('path', '...')}")
+            case "write_file" | "edit_file":
+                parts.append("Start a session for code changes")
+            case "list_sessions" | "session_status" | "instruct_session" | "cancel_session":
+                output = (a.result or {}).get("output")
+                parts.append(str(output) if output else "Checked the session")
             case "list_workstreams":
                 parts.append("Here are your workstreams")
             case "switch_workstream":
@@ -2722,9 +2750,7 @@ class ActionExecutor:
                     if not task_desc:
                         return {"action": "spawn_agent", "error": "No task/goal specified", "success": False, "type": "server"}
 
-                    channel_id = ctx.active_workstream_id
-                    if not channel_id:
-                        return {"action": "spawn_agent", "error": "No active workstream", "success": False, "type": "server"}
+                    channel_id = ctx.active_workstream_id or SYSTEM_CHANNEL_ID
 
                     from .supervised_sessions import create_and_start_supervised_session
 
@@ -2761,6 +2787,97 @@ class ActionExecutor:
                             f"Started session {started['session_id']} on {project} "
                             f"with {started.get('provider') or 'the selected provider'}."
                         ),
+                    }
+
+                case "list_sessions":
+                    from .session_controls import list_sessions
+
+                    project = params.get("project") or ""
+                    if project:
+                        project = fuzzy_match(project, ctx.projects) or project
+                    rows = list_sessions(project or None)
+                    if rows:
+                        output = "; ".join(
+                            f"{row['id']} {row['project']} {row['status']}" for row in rows
+                        )
+                    else:
+                        output = "No active sessions."
+                    return {
+                        "action": "list_sessions",
+                        "sessions": rows,
+                        "success": True,
+                        "type": "server",
+                        "output": output,
+                    }
+
+                case "session_status":
+                    from .session_controls import SessionControlError, session_status
+
+                    session_id = params.get("session_id", "")
+                    try:
+                        row = session_status(session_id)
+                    except SessionControlError as exc:
+                        return {
+                            "action": "session_status",
+                            "error": exc.detail,
+                            "success": False,
+                            "type": "server",
+                            "output": exc.detail,
+                        }
+                    waiting = " An approval is waiting." if row.get("approval_pending") else ""
+                    return {
+                        "action": "session_status",
+                        "session": row,
+                        "success": True,
+                        "type": "server",
+                        "output": f"Session {row['id']} is {row['status']}.{waiting}",
+                    }
+
+                case "instruct_session":
+                    from .session_controls import SessionControlError, instruct_session
+
+                    session_id = params.get("session_id", "")
+                    instruction = params.get("instruction", "")
+                    try:
+                        instruct_session(session_id, instruction)
+                    except SessionControlError as exc:
+                        return {
+                            "action": "instruct_session",
+                            "error": exc.detail,
+                            "success": False,
+                            "type": "server",
+                            "output": exc.detail,
+                        }
+                    return {
+                        "action": "instruct_session",
+                        "session_id": session_id,
+                        "success": True,
+                        "type": "server",
+                        "output": f"Sent a follow-up to session {session_id}. It is running.",
+                    }
+
+                case "cancel_session":
+                    from .session_controls import SessionControlError, cancel_session
+
+                    session_id = params.get("session_id", "")
+                    try:
+                        session = cancel_session(session_id)
+                    except SessionControlError as exc:
+                        return {
+                            "action": "cancel_session",
+                            "error": exc.detail,
+                            "success": False,
+                            "type": "server",
+                            "output": exc.detail,
+                        }
+                    status = session.status.value if hasattr(session.status, "value") else session.status
+                    return {
+                        "action": "cancel_session",
+                        "session_id": session.id,
+                        "status": status,
+                        "success": True,
+                        "type": "server",
+                        "output": f"Cancelled session {session.id}.",
                     }
 
                 case "end_phone_call":
@@ -3234,52 +3351,13 @@ class ActionExecutor:
                     except Exception as e:
                         return {"action": "fetch_url", "error": str(e), "success": False, "type": "server"}
 
-                case "write_file":
-                    path = params.get("path", "")
-                    content = params.get("content", "")
-                    if not path:
-                        return {"action": "write_file", "error": "No path provided", "success": False, "type": "server"}
-                    proj = params.get("project") or ctx.project
-                    project_path = _resolve_project_path(proj) if proj else None
-                    if not project_path:
-                        return {"action": "write_file", "error": "No project selected", "success": False, "type": "server"}
-                    from pathlib import Path as _WP
-                    file_path = (_WP(project_path) / path).resolve()
-                    if not str(file_path).startswith(str(_WP(project_path).resolve())):
-                        return {"action": "write_file", "error": "Path escapes project directory", "success": False, "type": "server"}
-                    try:
-                        file_path.parent.mkdir(parents=True, exist_ok=True)
-                        file_path.write_text(content)
-                        return {"action": "write_file", "path": path, "bytes": len(content), "success": True, "type": "server"}
-                    except Exception as e:
-                        return {"action": "write_file", "error": str(e), "success": False, "type": "server"}
-
-                case "edit_file":
-                    path = params.get("path", "")
-                    old_text = params.get("old_text", "")
-                    new_text = params.get("new_text", "")
-                    if not path or not old_text:
-                        return {"action": "edit_file", "error": "path and old_text are required", "success": False, "type": "server"}
-                    proj = params.get("project") or ctx.project
-                    project_path = _resolve_project_path(proj) if proj else None
-                    if not project_path:
-                        return {"action": "edit_file", "error": "No project selected", "success": False, "type": "server"}
-                    from pathlib import Path as _EP
-                    file_path = (_EP(project_path) / path).resolve()
-                    if not str(file_path).startswith(str(_EP(project_path).resolve())):
-                        return {"action": "edit_file", "error": "Path escapes project directory", "success": False, "type": "server"}
-                    if not file_path.exists():
-                        return {"action": "edit_file", "error": f"File not found: {path}", "success": False, "type": "server"}
-                    try:
-                        original = file_path.read_text()
-                        count = original.count(old_text)
-                        if count == 0:
-                            return {"action": "edit_file", "error": "old_text not found in file", "success": False, "type": "server"}
-                        updated = original.replace(old_text, new_text, 1)
-                        file_path.write_text(updated)
-                        return {"action": "edit_file", "path": path, "replacements": 1, "success": True, "type": "server"}
-                    except Exception as e:
-                        return {"action": "edit_file", "error": str(e), "success": False, "type": "server"}
+                case "write_file" | "edit_file":
+                    return {
+                        "action": action_name,
+                        "error": "Start a session for code changes.",
+                        "success": False,
+                        "type": "server",
+                    }
 
                 # --- Workstream (channel) actions ---
                 case "list_workstreams":

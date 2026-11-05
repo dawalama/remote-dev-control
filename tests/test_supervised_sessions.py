@@ -1,5 +1,6 @@
 """Shared supervised session create path."""
 
+import asyncio
 import uuid
 from types import SimpleNamespace
 
@@ -11,10 +12,15 @@ from remote_dev_ctrl.server.auth import Role, get_auth_manager
 from remote_dev_ctrl.server.db.models import Project
 from remote_dev_ctrl.server.db.repositories import get_project_repo
 from remote_dev_ctrl.server.intent import (
+    ORCHESTRATOR_TOOLS,
     TOOLS_WITH_OUTPUT,
+    ActionExecutor,
+    OrchestratorContext,
     ToolCall,
+    _LOCAL_TOOL_NAMES,
     _auto_confirm,
     _prefer_spawn_result,
+    build_system_prompt,
 )
 from remote_dev_ctrl.server.session_manager import SessionManager, SessionStatus, get_session_manager
 from remote_dev_ctrl.server.supervised_sessions import (
@@ -168,24 +174,26 @@ def test_continue_review_restores_status_when_provider_is_not_ready(monkeypatch)
     assert fresh.output_summary == "Ready for review"
 
 
-def test_create_session_rejects_system_channel():
-    _channel("ch-system", type="system")
-    project = _project("sys-reject")
-    with pytest.raises(ValueError, match="system channel"):
-        create_supervised_session(
-            channel_id="ch-system",
-            project=project,
-            goal="Disallowed on system",
-        )
+def test_create_session_allows_system_channel():
+    channel_id = _channel(f"ch-system-{uuid.uuid4().hex[:6]}", type="system", collection_id="general")
+    project = _project("sys-allow")
+    session = create_supervised_session(
+        channel_id=channel_id,
+        project=project,
+        goal="Scratch work on the system workstream",
+        provider="diagnostic",
+    )
+    assert session.channel_id == channel_id
 
     token, _ = get_auth_manager().create_token("sys-test", Role.ADMIN)
     client = TestClient(app)
     resp = client.post(
         "/sessions",
         headers={"Authorization": f"Bearer {token}"},
-        json={"channel_id": "ch-system", "project": project, "goal": "Disallowed on system"},
+        json={"channel_id": channel_id, "project": project, "goal": "Scratch work from the hub", "provider": "diagnostic"},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 200
+    assert resp.json()["channel_id"] == channel_id
 
 
 def test_create_session_rejects_unlinked_project():
@@ -309,3 +317,66 @@ def test_spawn_reply_reports_failure_instead_of_done():
         "Started session sess-1 on demo with codex.",
         [started],
     ) == "Started session sess-1 on demo with codex."
+
+
+def test_orchestrator_cannot_write_project_files():
+    names = {tool["function"]["name"] for tool in ORCHESTRATOR_TOOLS}
+    assert "write_file" not in names
+    assert "edit_file" not in names
+    assert "write_file" not in _LOCAL_TOOL_NAMES
+    assert "edit_file" not in _LOCAL_TOOL_NAMES
+    assert "write_file" not in TOOLS_WITH_OUTPUT
+    assert "edit_file" not in TOOLS_WITH_OUTPUT
+    prompt = build_system_prompt(OrchestratorContext())
+    assert "edit_file" not in prompt
+    assert "write_file" not in prompt
+    assert "spawn_agent" in prompt
+
+    async def _call():
+        executor = ActionExecutor()
+        ctx = OrchestratorContext(project="demo")
+        write = await executor.execute("write_file", {"path": "a.py", "content": "x"}, ctx)
+        edit = await executor.execute("edit_file", {"path": "a.py", "old_text": "a", "new_text": "b"}, ctx)
+        return write, edit
+
+    write, edit = asyncio.run(_call())
+    assert write["success"] is False
+    assert write["error"] == "Start a session for code changes."
+    assert edit["success"] is False
+    assert edit["error"] == "Start a session for code changes."
+
+
+def test_spawn_agent_uses_system_workstream_when_none_is_active(monkeypatch):
+    captured = {}
+
+    def fake(**kwargs):
+        captured.update(kwargs)
+        return {
+            "session_id": "sess-scratch",
+            "terminal_id": "term-1",
+            "provider": "diagnostic",
+            "success": True,
+        }
+
+    monkeypatch.setattr(
+        "remote_dev_ctrl.server.supervised_sessions.create_and_start_supervised_session",
+        fake,
+    )
+
+    async def _call(workstream_id):
+        return await ActionExecutor().execute(
+            "spawn_agent",
+            {"project": "scratch-proj", "task": "fix the login bug"},
+            OrchestratorContext(
+                project="scratch-proj",
+                projects=["scratch-proj"],
+                active_workstream_id=workstream_id,
+            ),
+        )
+
+    missing = asyncio.run(_call(None))
+    assert missing["success"] is True
+    assert captured["channel_id"] == "ch-system"
+    explicit = asyncio.run(_call("ch-real"))
+    assert explicit["success"] is True
+    assert captured["channel_id"] == "ch-real"
