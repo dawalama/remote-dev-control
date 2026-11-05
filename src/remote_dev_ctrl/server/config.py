@@ -183,6 +183,13 @@ class CaddyConfig(BaseModel):
     listen_port: int = 8888
 
 
+class KnowledgeConfig(BaseModel):
+    """Configuration for collection knowledge corpora."""
+    enabled: bool = False
+    root: Path | None = None
+    qmd_bin: str = "qmd"
+
+
 class Config(BaseModel):
     """Main RDC configuration."""
     server: ServerSettings = Field(default_factory=ServerSettings)
@@ -194,6 +201,7 @@ class Config(BaseModel):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     projects: dict[str, ProjectOverride] = Field(default_factory=dict)
     caddy: CaddyConfig = Field(default_factory=CaddyConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":

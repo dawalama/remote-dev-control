@@ -468,6 +468,7 @@ class SessionManager:
         session = self.get(session_id)
         if not session:
             return
+        previous = session.status
         session.status = SessionStatus(status) if isinstance(status, str) else status
         session.updated_at = datetime.now()
         if session.status in (SessionStatus.DONE, SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED):
@@ -478,7 +479,11 @@ class SessionManager:
         self._persist(session)
         if session.status != SessionStatus.WAITING:
             self.resolve_terminal_approvals(session.id)
-        self.log_event(session, f"session.{session.status.value}", {"summary": output_summary[:200] if output_summary else None})
+        self.log_event(
+            session,
+            f"session.{session.status.value}",
+            {"summary_chars": len(output_summary) if output_summary else 0},
+        )
         # Central lifecycle notify (channel + Telegram). Dedupe inside notifier.
         # Callers pass notify_reason when the user-facing line is not the summary.
         try:
@@ -488,6 +493,14 @@ class SessionManager:
             notify_status_transition(session, session.status, reason=reason)
         except Exception:
             logger.debug("session notify failed", exc_info=True)
+
+        if session.status == SessionStatus.COMPLETED and previous != SessionStatus.COMPLETED:
+            try:
+                from .knowledge_bridge import capture_completed, schedule_index_update
+                capture_completed(session)          # no qmd
+                schedule_index_update(session)      # bridge; returns immediately when disabled
+            except Exception as exc:
+                logger.warning("knowledge capture failed: %s", type(exc).__name__)
 
     # ── Terminal Management ──
 

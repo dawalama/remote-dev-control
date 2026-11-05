@@ -212,6 +212,69 @@ function GeneralSection({
   const [saving, setSaving] = useState(false)
   const [showCollectionsModal, setShowCollectionsModal] = useState(false)
 
+  const [uploadTitle, setUploadTitle] = useState("")
+  const [uploadText, setUploadText] = useState("")
+  const [uploading, setUploading] = useState(false)
+
+  const [ruleSlug, setRuleSlug] = useState("")
+  const [ruleTitle, setRuleTitle] = useState("")
+  const [ruleBody, setRuleBody] = useState("")
+  const [proposing, setProposing] = useState(false)
+  const [proposedRelpath, setProposedRelpath] = useState("")
+
+  const handleUpload = async () => {
+    if (!uploadTitle.trim() || !uploadText.trim()) return
+    setUploading(true)
+    try {
+      await POST(`/collections/${collectionId}/knowledge/notes`, {
+        title: uploadTitle.trim(),
+        text: uploadText.trim(),
+        project: currentName,
+      })
+      toast("Knowledge note uploaded", "success")
+      setUploadTitle("")
+      setUploadText("")
+    } catch {
+      toast("Failed to upload note", "error")
+    }
+    setUploading(false)
+  }
+
+  const handleProposeRule = async () => {
+    if (!ruleSlug.trim() || !ruleTitle.trim() || !ruleBody.trim()) return
+    setProposing(true)
+    try {
+      const res = await POST<{ relpath: string }>(`/collections/${collectionId}/knowledge/rules`, {
+        slug: ruleSlug.trim(),
+        title: ruleTitle.trim(),
+        body: ruleBody.trim(),
+        project: currentName,
+      })
+      toast("Rule proposed", "success")
+      setProposedRelpath(res.relpath)
+    } catch {
+      toast("Failed to propose rule", "error")
+    }
+    setProposing(false)
+  }
+
+  const handleConfirmRule = async () => {
+    if (!proposedRelpath) return
+    try {
+      await POST(`/collections/${collectionId}/knowledge/rules/confirm`, {
+        relpath: proposedRelpath,
+        confirmed_by: "operator",
+      })
+      toast("Rule confirmed", "success")
+      setProposedRelpath("")
+      setRuleSlug("")
+      setRuleTitle("")
+      setRuleBody("")
+    } catch {
+      toast("Failed to confirm rule", "error")
+    }
+  }
+
   const save = async () => {
     if (!name.trim()) { toast("Name is required", "error"); return }
     if (!path.trim()) { toast("Path is required", "error"); return }
@@ -274,6 +337,88 @@ function GeneralSection({
       {showCollectionsModal && (
         <CollectionsManagerModal onClose={() => setShowCollectionsModal(false)} />
       )}
+      {/* Knowledge & Rules Block */}
+      <div className="pt-3 border-t border-gray-700/60 space-y-3">
+        <h4 className="text-xs font-semibold text-gray-300">Collection Knowledge</h4>
+
+        {/* Upload note / doc */}
+        <div className="p-2.5 rounded bg-gray-800/60 border border-gray-700/50 space-y-2">
+          <span className="text-[11px] font-medium text-gray-300">Upload Knowledge Note</span>
+          <div className="grid grid-cols-1 gap-2">
+            <input
+              className="input-cls text-xs"
+              placeholder="Title (e.g. Billing spec)"
+              value={uploadTitle}
+              onChange={(e) => setUploadTitle(e.target.value)}
+            />
+            <textarea
+              className="input-cls resize-none text-xs"
+              rows={2}
+              placeholder="Paste markdown content or text..."
+              value={uploadText}
+              onChange={(e) => setUploadText(e.target.value)}
+            />
+          </div>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              className="px-2.5 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 text-gray-200 disabled:opacity-50"
+              disabled={uploading || !uploadTitle.trim() || !uploadText.trim()}
+              onClick={handleUpload}
+            >
+              {uploading ? "Uploading..." : "Upload Note"}
+            </button>
+          </div>
+        </div>
+
+        {/* Add Proposed Rule */}
+        <div className="p-2.5 rounded bg-gray-800/60 border border-gray-700/50 space-y-2">
+          <span className="text-[11px] font-medium text-gray-300">Propose Rule</span>
+          <div className="grid grid-cols-2 gap-2">
+            <input
+              className="input-cls text-xs"
+              placeholder="Slug (e.g. 00-friday-rule)"
+              value={ruleSlug}
+              onChange={(e) => setRuleSlug(e.target.value)}
+            />
+            <input
+              className="input-cls text-xs"
+              placeholder="Rule title"
+              value={ruleTitle}
+              onChange={(e) => setRuleTitle(e.target.value)}
+            />
+          </div>
+          <textarea
+            className="input-cls resize-none text-xs"
+            rows={2}
+            placeholder="Rule instruction body..."
+            value={ruleBody}
+            onChange={(e) => setRuleBody(e.target.value)}
+          />
+          <div className="flex items-center justify-between">
+            {proposedRelpath ? (
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-yellow-400">Proposed: {proposedRelpath}</span>
+                <button
+                  type="button"
+                  className="px-2 py-0.5 text-[11px] rounded bg-green-700 hover:bg-green-600 text-white"
+                  onClick={handleConfirmRule}
+                >
+                  Confirm Rule
+                </button>
+              </div>
+            ) : <div />}
+            <button
+              type="button"
+              className="px-2.5 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 text-gray-200 disabled:opacity-50"
+              disabled={proposing || !ruleSlug.trim() || !ruleTitle.trim() || !ruleBody.trim()}
+              onClick={handleProposeRule}
+            >
+              {proposing ? "Proposing..." : "Propose Rule"}
+            </button>
+          </div>
+        </div>
+      </div>
       <div className="flex justify-end">
         <button
           className="px-3 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50"

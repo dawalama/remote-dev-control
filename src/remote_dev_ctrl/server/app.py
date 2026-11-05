@@ -8836,7 +8836,131 @@ async def delete_collection(collection_id: str):
 
         tx_db.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
 
+    from .config import Config
+    cfg = Config.load()
+    if cfg.knowledge.enabled:
+        from .knowledge_bridge import quarantine_corpus
+        quarantine_corpus(collection_id)
+
     return {"deleted": True}
+
+
+class IngestKnowledgeNoteRequest(BaseModel):
+    title: str
+    text: str
+    project: str | None = None
+
+
+@app.post("/collections/{collection_id}/knowledge/notes")
+async def ingest_knowledge_note(collection_id: str, req: IngestKnowledgeNoteRequest):
+    """Ingest a markdown/text note into the collection corpus."""
+    from .db.repositories import get_collection_repo, get_project_repo
+    coll = get_collection_repo().get(collection_id)
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    try:
+        req.text.encode("utf-8").decode("utf-8")
+    except UnicodeError:
+        raise HTTPException(status_code=400, detail="Invalid UTF-8 text")
+
+    proj_uuid = ""
+    if req.project:
+        p_rec = get_project_repo().get(req.project)
+        if p_rec:
+            proj_uuid = p_rec.id
+
+    from .knowledge_bridge import _get_corpus_handle, vault_extra_secrets
+    import corpusnote
+    try:
+        corpus = _get_corpus_handle(collection_id)
+        secrets = vault_extra_secrets()
+        page = corpusnote.ingest_text(
+            corpus,
+            title=req.title,
+            text=req.text,
+            project=req.project,
+            project_id=proj_uuid,
+            extra_secrets=secrets,
+        )
+        return {"success": True, "relpath": page.relpath, "title": page.frontmatter.get("title")}
+    except corpusnote.RejectedWrite as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {type(exc).__name__}")
+
+
+class ProposeKnowledgeRuleRequest(BaseModel):
+    slug: str
+    title: str
+    body: str
+    project: str | None = None
+
+
+@app.post("/collections/{collection_id}/knowledge/rules")
+async def propose_knowledge_rule(collection_id: str, req: ProposeKnowledgeRuleRequest):
+    """Propose a rule into the collection corpus (kind: rule, confirmed: false)."""
+    from .db.repositories import get_collection_repo, get_project_repo
+    coll = get_collection_repo().get(collection_id)
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    proj_uuid = ""
+    if req.project:
+        p_rec = get_project_repo().get(req.project)
+        if p_rec:
+            proj_uuid = p_rec.id
+
+    from .knowledge_bridge import _get_corpus_handle, vault_extra_secrets
+    import corpusnote
+    try:
+        corpus = _get_corpus_handle(collection_id)
+        secrets = vault_extra_secrets()
+        page = corpusnote.propose_rule(
+            corpus,
+            slug=req.slug,
+            title=req.title,
+            body=req.body,
+            project=req.project,
+            project_id=proj_uuid,
+            extra_secrets=secrets,
+        )
+        return {"relpath": page.relpath, "confirmed": False}
+    except corpusnote.RejectedWrite as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Propose rule failed: {type(exc).__name__}")
+
+
+class ConfirmKnowledgeRuleRequest(BaseModel):
+    relpath: str
+    confirmed_by: str
+
+
+@app.post("/collections/{collection_id}/knowledge/rules/confirm")
+async def confirm_knowledge_rule(collection_id: str, req: ConfirmKnowledgeRuleRequest):
+    """Confirm a proposed rule in the collection corpus."""
+    from .db.repositories import get_collection_repo
+    coll = get_collection_repo().get(collection_id)
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    from .knowledge_bridge import _get_corpus_handle
+    import corpusnote
+    try:
+        corpus = _get_corpus_handle(collection_id)
+        page = corpusnote.confirm_rule(
+            corpus,
+            req.relpath,
+            confirmed_by=req.confirmed_by,
+        )
+        return {"relpath": page.relpath, "confirmed": True}
+    except corpusnote.RejectedWrite as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except corpusnote.MissingPage:
+        raise HTTPException(status_code=404, detail="Rule page not found")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Confirm rule failed: {type(exc).__name__}")
 
 
 class MoveProjectRequest(BaseModel):
@@ -8922,13 +9046,66 @@ async def move_project(name: str, req: MoveProjectRequest):
                 (dest_id, datetime.now().isoformat(), db_proj.id),
             )
 
+    knowledge_warning = None
+    from .config import Config
+    cfg = Config.load()
+    if cfg.knowledge.enabled:
+        from .knowledge_bridge import (
+            move_pages,
+            reconcile_workstream_page,
+            pending_workstream_ids,
+            remember_pending_workstream,
+            forget_pending_workstream,
+        )
+        try:
+            move_pages(db_proj.id, dest_id)
+        except Exception:
+            knowledge_warning = "pages_not_moved"
+
+        # repaired and pending reconcile to the post-commit row
+        pending = pending_workstream_ids(db_proj.id)
+        reconcile_targets = list(repaired)
+        for pid in pending:
+            if pid not in reconcile_targets:
+                reconcile_targets.append(pid)
+
+        from .channel_manager import get_channel_manager
+        ch_mgr = get_channel_manager()
+        for ch_id in reconcile_targets:
+            ch_obj = ch_mgr.get_channel(ch_id)
+            if not ch_obj or ch_obj.id == "ch-system" or ch_obj.type == "system":
+                forget_pending_workstream(db_proj.id, ch_id)
+                continue
+            current_coll = ch_obj.collection_id or "general"
+            try:
+                if reconcile_workstream_page(ch_id, current_coll):
+                    forget_pending_workstream(db_proj.id, ch_id)
+                else:
+                    remember_pending_workstream(db_proj.id, ch_id)
+                    knowledge_warning = "pages_not_moved"
+            except Exception:
+                remember_pending_workstream(db_proj.id, ch_id)
+                knowledge_warning = "pages_not_moved"
+
+        # session-only: the page follows the id repair stored, which is the committed row
+        for ch_id, stored in session_dest.items():
+            try:
+                if reconcile_workstream_page(ch_id, stored):
+                    forget_pending_workstream(db_proj.id, ch_id)
+                else:
+                    remember_pending_workstream(db_proj.id, ch_id)
+                    knowledge_warning = "pages_not_moved"
+            except Exception:
+                remember_pending_workstream(db_proj.id, ch_id)
+                knowledge_warning = "pages_not_moved"
+
     return {
         "success": True,
         "project": db_proj.name,
         "collection_id": dest_id,
         "channels_moved": channels_moved,
         "links_dropped": links_dropped,
-        "knowledge_warning": None,
+        "knowledge_warning": knowledge_warning,
     }
 
 

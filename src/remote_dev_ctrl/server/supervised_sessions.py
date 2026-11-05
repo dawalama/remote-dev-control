@@ -367,25 +367,12 @@ def start_supervised_session(
         f"If this goal benefits from a rich custom visual report, benchmark table, or architecture diagram, "
         f"you may optionally write a standalone dark-mode HTML file to .rdc/sessions/{s.id}.html.]"
     )
-    full_prompt = session_execution_prompt(s) + rdc_note
     followups = (s.metadata or {}).get("followup_instructions") or []
     latest_instruction = (
         str(followups[-1].get("instruction") or "").strip()
         if continue_review and isinstance(followups, list) and followups and isinstance(followups[-1], dict)
         else ""
     )
-    if latest_instruction:
-        try:
-            command = build_agent_command(
-                effective,
-                latest_instruction,
-                resume=True,
-                fallback_description=full_prompt,
-            )
-        except TypeError:
-            command = build_agent_command(effective, full_prompt)
-    else:
-        command = build_agent_command(effective, full_prompt)
     s.metadata = {
         **(s.metadata or {}),
         "requested_provider": requested_provider,
@@ -438,6 +425,35 @@ def start_supervised_session(
     if target_cwd:
         s.metadata["git_baseline"] = session_git_snapshot(s.project, override_path=target_cwd)
     sm._persist(s)
+
+    from .knowledge_bridge import (
+        fit_goal_first,
+        live_state_block,
+        pack_for_session,
+        pack_pointer_line,
+        safe_pointer_or_empty,
+        scrub_goal,
+        vault_extra_secrets,
+        write_pack_file,
+    )
+
+    secrets = vault_extra_secrets()
+    pack = pack_for_session(s, extra_secrets=secrets)
+    live = live_state_block(s)
+    path = write_pack_file(s.id, pack.text, live)
+    goal = scrub_goal(session_execution_prompt(s), secrets)
+    instruction = scrub_goal(latest_instruction, secrets) if latest_instruction else ""
+    note = rdc_note
+    pointer = pack_pointer_line(path) if path else ""
+    if effective == "shell":
+        base = instruction if instruction else (goal + note)
+        command = build_agent_command(effective, base + safe_pointer_or_empty(path))
+    elif instruction:
+        sent = fit_goal_first(instruction, pointer, limit=4000)
+        fallback = fit_goal_first(goal, note, pointer, limit=4000)
+        command = build_agent_command(effective, sent, resume=True, fallback_description=fallback)
+    else:
+        command = build_agent_command(effective, fit_goal_first(goal, note, pointer, limit=4000))
 
     try:
         term = tm.create(project=s.project, command=command, cwd=str(target_cwd) if target_cwd else None)

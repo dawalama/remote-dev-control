@@ -1744,6 +1744,7 @@ def build_system_prompt(
     git_commits: list[str] | None = None,
     thread_summary: str | None = None,
     current_context: str | None = None,
+    knowledge_pack: str | None = None,
 ) -> str:
     """Build a system prompt with static instructions + compressed dynamic context."""
 
@@ -1881,6 +1882,11 @@ def build_system_prompt(
             action_str = f" -> [{', '.join(action_names)}]" if action_names else ""
             context_parts.append(f"  [{ts}] ({proj}) User: {msg}")
             context_parts.append(f"    Nanobot: {resp}{action_str}")
+        context_parts.append("")
+
+    # Collection knowledge pack (above project memory)
+    if knowledge_pack:
+        context_parts.append(knowledge_pack)
         context_parts.append("")
 
     # Project knowledge
@@ -2143,6 +2149,23 @@ class IntentEngine:
                 synthesized = synthesizer.synthesize(ctx.project, thread_id, ctx.client_id)
                 current_context_str = synthesizer.format_for_prompt(synthesized)
 
+        pack_text = None
+        try:
+            from .knowledge_bridge import pack_for_orchestrator
+            kpack = pack_for_orchestrator(
+                ctx.project,
+                ctx.active_workstream_id,
+                user_message,
+                is_local=getattr(self, "is_local", False) or bool(effective_model and "ollama" in effective_model.lower()),
+            )
+            if kpack and kpack.text and kpack.text.strip():
+                pack_text = kpack.text.strip()
+        except Exception as exc:
+            logger.warning("pack_for_orchestrator failed: %s", type(exc).__name__)
+
+        if pack_text:
+            proj_memory = None
+
         system_prompt = build_system_prompt(
             ctx,
             recent_history=recent_history,
@@ -2150,6 +2173,7 @@ class IntentEngine:
             git_commits=git_commits or None,
             thread_summary=thread.get("summary") if thread else None,
             current_context=current_context_str or None,
+            knowledge_pack=pack_text,
         )
 
         # Build messages: system + thread turns (server-side) + current user message

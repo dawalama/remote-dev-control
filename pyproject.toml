@@ -47,6 +47,9 @@ Repository = "https://github.com/dawalama/remote-dev-control"
 Issues = "https://github.com/dawalama/remote-dev-control/issues"
 
 [project.optional-dependencies]
+knowledge = [
+    "corpusnote",
+]
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.3.0",
