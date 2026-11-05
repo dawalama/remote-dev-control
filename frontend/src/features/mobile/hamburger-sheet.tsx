@@ -22,6 +22,7 @@ export function HamburgerSheet({
   onActivity,
   onProjectSettings,
   onSystemSettings,
+  onCollections,
   onPairedDevices,
 }: {
   onClose: () => void
@@ -30,6 +31,7 @@ export function HamburgerSheet({
   onActivity: () => void
   onProjectSettings: () => void
   onSystemSettings: () => void
+  onCollections?: () => void
   onPairedDevices: () => void
 }) {
   const currentProject = useProjectStore((s) => s.currentProject)
@@ -58,6 +60,9 @@ export function HamburgerSheet({
         <hr className="border-gray-700 my-2" />
         {currentProject && (
           <MenuItem onClick={onProjectSettings}>Project Settings</MenuItem>
+        )}
+        {onCollections && (
+          <MenuItem onClick={onCollections}>Collections & Clients</MenuItem>
         )}
         <MenuItem onClick={onSystemSettings}>System Settings</MenuItem>
         <MenuItem onClick={handleRestart} danger>Restart Server</MenuItem>

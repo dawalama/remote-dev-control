@@ -6,6 +6,7 @@ import { useUIStore } from "@/stores/ui-store"
 import { POST } from "@/lib/api"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 import { ChannelSettings } from "./channel-settings"
+import { CollectionsManagerModal } from "@/features/modals/collections-manager"
 
 type GroupMode = "flat" | "project"
 type FilterMode = "all" | "active"
@@ -33,6 +34,7 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
   const [newProjectId, setNewProjectId] = useState<string>("")
   const [newClientCollId, setNewClientCollId] = useState<string>("")
   const [settingsChannelId, setSettingsChannelId] = useState<string | null>(null)
+  const [showCollectionsModal, setShowCollectionsModal] = useState(false)
 
   useMountEffect(() => {
     loadChannels()
@@ -105,7 +107,7 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
       {/* Header with filters */}
       <div className="flex-shrink-0 border-b border-gray-800">
         {/* Collection / Client selector + create */}
-        <div className="px-2 pt-2 pb-1 flex gap-1">
+        <div className="px-2 pt-2 pb-1 flex gap-1 items-center">
           <select
             value={selectedDropdownValue}
             onChange={(e) => {
@@ -134,7 +136,18 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
             })}
           </select>
           <CollectionCreateButton />
+          <button
+            type="button"
+            onClick={() => setShowCollectionsModal(true)}
+            className="px-1.5 py-1 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-gray-400 hover:text-white"
+            title="Manage Collections & Clients"
+          >
+            ⚙️
+          </button>
         </div>
+        {showCollectionsModal && (
+          <CollectionsManagerModal onClose={() => setShowCollectionsModal(false)} />
+        )}
 
         {/* Filter + group toggles */}
         <div className="flex items-center justify-between px-2 pb-1.5">

@@ -88,6 +88,13 @@ export function ProjectBar() {
           <span className="text-xs text-gray-500 italic">No active projects</span>
         )}
         <button
+          className="px-2.5 py-1 rounded text-sm bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white flex items-center gap-1"
+          onClick={() => setShowCollections(true)}
+          title="Manage Collections & Clients"
+        >
+          <span className="text-xs">🗂️ Collections</span>
+        </button>
+        <button
           className="px-3 py-1 rounded text-sm bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-gray-200"
           onClick={() => setAddProjectOpen(true)}
           title="Add Project"

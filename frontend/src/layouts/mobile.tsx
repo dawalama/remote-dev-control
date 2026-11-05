@@ -24,6 +24,7 @@ import { ProcessLogOverlay } from "@/features/mobile/process-log-overlay"
 import { PairedDevicesSheet } from "@/features/mobile/paired-devices-sheet"
 import { ProjectSettingsModal } from "@/features/modals/project-settings"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
+import { CollectionsManagerModal } from "@/features/modals/collections-manager"
 import { RecordingPlayer } from "@/features/browser/recording-player"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
 import { useChannelStore } from "@/stores/channel-store"
@@ -72,6 +73,7 @@ export function MobileLayout() {
   const [addProjectOpen, setAddProjectOpen] = useState(false)
   const [projectSettingsOpen, setProjectSettingsOpen] = useState(false)
   const [systemSettingsOpen, setSystemSettingsOpen] = useState(false)
+  const [collectionsOpen, setCollectionsOpen] = useState(false)
   const [processLog, setProcessLog] = useState<{ id: string; name: string } | null>(null)
   const [pairedDevicesOpen, setPairedDevicesOpen] = useState(false)
   const [browserUrlOpen, setBrowserUrlOpen] = useState(false)
@@ -453,6 +455,7 @@ export function MobileLayout() {
           onCreateTask={() => { setHamburgerOpen(false); setCreateTaskOpen(true) }}
           onActivity={() => { setHamburgerOpen(false); setActivityOpen(true) }}
           onProjectSettings={() => { setHamburgerOpen(false); setProjectSettingsOpen(true) }}
+          onCollections={() => { setHamburgerOpen(false); setCollectionsOpen(true) }}
           onSystemSettings={() => { setHamburgerOpen(false); setSystemSettingsOpen(true) }}
           onPairedDevices={() => { setHamburgerOpen(false); setPairedDevicesOpen(true) }}
         />
@@ -511,6 +514,9 @@ export function MobileLayout() {
       )}
       {systemSettingsOpen && (
         <SystemSettingsModal onClose={() => setSystemSettingsOpen(false)} />
+      )}
+      {collectionsOpen && (
+        <CollectionsManagerModal onClose={() => setCollectionsOpen(false)} />
       )}
 
       {/* Process log overlay */}
