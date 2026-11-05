@@ -1,7 +1,10 @@
 import { useState } from "react"
 import { useChannelStore, type Channel } from "@/stores/channel-store"
 import { useProjectStore } from "@/stores/project-store"
+import { useUIStore } from "@/stores/ui-store"
+import { CollectionPicker } from "@/components/collection-picker"
 import { PATCH, POST, DELETE as DEL } from "@/lib/api"
+import type { Collection } from "@/types"
 
 export function SettingsGear() {
   return (
@@ -102,52 +105,81 @@ function RenameSection({ channel, onDone }: { channel: Channel; onDone: () => vo
 
 // ── Client / Collection ──
 
+function collectionLabel(collectionId: string | undefined, collections: Collection[]): string {
+  const id = collectionId || "general"
+  const match = collections.find((c) => c.id === id)
+  if (match) return match.name
+  return id === "general" ? "Unclassified" : id
+}
+
 function ClientSection({ channel, onDone }: { channel: Channel; onDone: () => void }) {
   const collections = useProjectStore((s) => s.collections)
+  const loadProjects = useProjectStore((s) => s.loadProjects)
+  const toast = useUIStore((s) => s.toast)
   const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [selectedColl, setSelectedColl] = useState(channel.collection_id || "general")
 
   const currentColl = collections.find((c) => c.id === channel.collection_id)
   const clientName = currentColl ? currentColl.name : "Unclassified"
+  const linkedNames = channel.project_names || []
 
   const save = async () => {
-    if (selectedColl !== channel.collection_id) {
-      await PATCH(`/channels/${channel.id}`, { collection_id: selectedColl })
-      onDone()
+    const current = channel.collection_id || "general"
+    if (selectedColl === current) {
+      setEditing(false)
+      return
     }
-    setEditing(false)
+    setSaving(true)
+    try {
+      if (linkedNames.length === 0) {
+        await PATCH(`/channels/${channel.id}`, { collection_id: selectedColl })
+      } else {
+        // PATCH collection is rejected while projects are linked. Moving them
+        // unlinks every project but the last, so link the earlier ones again.
+        for (const name of linkedNames) {
+          await POST(`/projects/${encodeURIComponent(name)}/move`, { collection_id: selectedColl })
+        }
+        if (linkedNames.length > 1) {
+          for (const name of linkedNames) {
+            await POST(`/channels/${channel.id}/projects`, { project_name: name })
+          }
+        }
+      }
+      await onDone()
+      await loadProjects()
+      toast(`Moved to ${collectionLabel(selectedColl, useProjectStore.getState().collections)}`, "success")
+      setEditing(false)
+    } catch {
+      toast("Could not change the collection", "error")
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
     <div>
       <label className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Client / Collection</label>
       {editing ? (
-        <div className="flex gap-1 mt-1">
-          <select
+        <div className="mt-1 space-y-1.5">
+          <CollectionPicker
             value={selectedColl}
-            onChange={(e) => setSelectedColl(e.target.value)}
-            className="flex-1 px-2 py-1 text-xs bg-gray-700 border border-gray-600 rounded text-gray-200 outline-none"
-          >
-            {collections.map((c) => {
-              const roleLabel =
-                c.id === "general" || c.role === "unsorted"
-                  ? "Unclassified"
-                  : c.role === "own"
-                  ? "Own"
-                  : c.role === "client"
-                  ? "Client"
-                  : c.role === "personal"
-                  ? "Personal"
-                  : "Unclassified"
-              return (
-                <option key={c.id} value={c.id}>
-                  {c.name} ({roleLabel})
-                </option>
-              )
-            })}
-          </select>
-          <button onClick={save} className="px-2 py-1 text-xs bg-blue-600 rounded text-white">Save</button>
-          <button onClick={() => setEditing(false)} className="px-2 py-1 text-xs bg-gray-700 rounded text-gray-300">Cancel</button>
+            onChange={setSelectedColl}
+            collections={collections}
+          />
+          {linkedNames.length > 0 && (
+            <p className="text-[10px] text-gray-500">
+              {linkedNames.length === 1
+                ? "The linked project moves with this workstream."
+                : "The linked projects move with this workstream."}
+            </p>
+          )}
+          <div className="flex gap-1">
+            <button onClick={save} disabled={saving} className="px-2 py-1 text-xs bg-blue-600 disabled:opacity-50 rounded text-white">
+              {saving ? "Saving..." : "Save"}
+            </button>
+            <button onClick={() => setEditing(false)} disabled={saving} className="px-2 py-1 text-xs bg-gray-700 rounded text-gray-300">Cancel</button>
+          </div>
         </div>
       ) : (
         <div className="flex items-center justify-between mt-1">
@@ -175,16 +207,12 @@ function ClientSection({ channel, onDone }: { channel: Channel; onDone: () => vo
             )}
           </span>
           {channel.type !== "system" && (
-            (channel.project_names || []).length > 0 ? (
-              <span className="text-[10px] text-gray-500">Move the project instead</span>
-            ) : (
-              <button
-                onClick={() => { setEditing(true); setSelectedColl(channel.collection_id || "general") }}
-                className="text-[10px] text-blue-400 hover:text-blue-300"
-              >
-                Change
-              </button>
-            )
+            <button
+              onClick={() => { setEditing(true); setSelectedColl(channel.collection_id || "general") }}
+              className="text-[10px] text-blue-400 hover:text-blue-300"
+            >
+              Change
+            </button>
           )}
         </div>
       )}
@@ -203,6 +231,7 @@ function ProjectsSection({
   projects: { name: string; collection_id?: string }[]
   onDone: () => void
 }) {
+  const collections = useProjectStore((s) => s.collections)
   const [adding, setAdding] = useState(false)
   const [selectedProject, setSelectedProject] = useState("")
 
@@ -238,7 +267,7 @@ function ProjectsSection({
             <span className="text-xs text-gray-300">{name}</span>
             <div className="flex items-center gap-2">
               <span className="text-[10px] text-gray-600">
-                {projects.find((p) => p.name === name)?.collection_id || ""}
+                {collectionLabel(projects.find((p) => p.name === name)?.collection_id, collections)}
               </span>
               <button
                 onClick={() => removeProject(name)}

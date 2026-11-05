@@ -188,6 +188,61 @@ def test_move_mixed_channel_drops_link_and_repairs_to_remaining_projects():
     assert p2.id in linked_pids
 
 
+def test_workstream_settings_move_keeps_every_linked_project():
+    """Workstream Settings moves each linked project, then links them again.
+
+    A direct channel collection change is rejected while projects are linked.
+    Moving the projects one at a time drops every link but the last. Linking
+    them again leaves this workstream intact at the destination. Another
+    workstream that still has a project in the old collection drops the one
+    that moved.
+    """
+    client = _auth_client()
+    c_repo = get_collection_repo()
+    p_repo = get_project_repo()
+    cm = get_channel_manager()
+
+    dest = _create_collection(c_repo, _unique("dest-together"), role="client")
+    p1 = _create_project(p_repo, _unique("p1-together"), collection_id="general")
+    p2 = _create_project(p_repo, _unique("p2-together"), collection_id="general")
+    stay = _create_project(p_repo, _unique("p-stay"), collection_id="general")
+
+    ch = cm.create_channel(name=_unique("#together"), collection_id="general", project_ids=[p1.id, p2.id])
+    other = cm.create_channel(name=_unique("#other"), collection_id="general", project_ids=[p1.id, stay.id])
+
+    for name in (p1.name, p2.name):
+        resp = client.post(f"/projects/{name}/move", json={"collection_id": dest.id})
+        assert resp.status_code == 200, resp.text
+
+    for name in (p1.name, p2.name):
+        resp = client.post(f"/channels/{ch.id}/projects", json={"project_name": name})
+        assert resp.status_code == 200, resp.text
+
+    assert p_repo.get(p1.name).collection_id == dest.id
+    assert p_repo.get(p2.name).collection_id == dest.id
+    assert p_repo.get(stay.name).collection_id == "general"
+    assert cm.get_channel(ch.id).collection_id == dest.id
+    assert cm.get_channel(other.id).collection_id == "general"
+
+    linked = {
+        r["project_id"]
+        for r in cm.db.execute(
+            "SELECT project_id FROM channel_projects WHERE channel_id = ?",
+            (ch.id,),
+        ).fetchall()
+    }
+    assert linked == {p1.id, p2.id}
+
+    other_linked = {
+        r["project_id"]
+        for r in cm.db.execute(
+            "SELECT project_id FROM channel_projects WHERE channel_id = ?",
+            (other.id,),
+        ).fetchall()
+    }
+    assert other_linked == {stay.id}
+
+
 def test_move_retry_no_early_return():
     client = _auth_client()
     c_repo = get_collection_repo()
