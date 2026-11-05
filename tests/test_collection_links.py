@@ -379,6 +379,41 @@ def test_delete_collection_moves_projects_and_retargets_channels():
     assert fresh_ch.collection_id == "general"
 
 
+def test_archive_collection_hides_without_moving_projects():
+    client = _auth_client()
+    c_repo = get_collection_repo()
+    p_repo = get_project_repo()
+    cm = get_channel_manager()
+
+    refused = client.post("/collections/general/archive")
+    assert refused.status_code == 400
+    assert refused.json()["detail"] == "Cannot archive the Unclassified collection"
+
+    coll = _create_collection(c_repo, _unique("to-archive"), role="client")
+    proj = _create_project(p_repo, _unique("p-arch"), collection_id=coll.id)
+    ch = cm.create_channel(name=_unique("#ch-arch"), collection_id=coll.id, project_ids=[proj.id])
+
+    archived = client.post(f"/collections/{coll.id}/archive")
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"]
+
+    assert p_repo.get(proj.name).collection_id == coll.id
+    assert cm.get_channel(ch.id).collection_id == coll.id
+    assert c_repo.get(coll.id) is not None
+
+    visible_ids = {row["id"] for row in client.get("/collections").json()}
+    assert coll.id not in visible_ids
+    assert "general" in visible_ids
+
+    hidden = next(row for row in client.get("/collections?include_archived=true").json() if row["id"] == coll.id)
+    assert hidden["archived_at"]
+
+    restored = client.post(f"/collections/{coll.id}/unarchive")
+    assert restored.status_code == 200
+    assert restored.json()["archived_at"] is None
+    assert coll.id in {row["id"] for row in client.get("/collections").json()}
+
+
 def test_cli_collections_bootstrap():
     runner = CliRunner()
     result = runner.invoke(cli_app, ["collections", "bootstrap"])

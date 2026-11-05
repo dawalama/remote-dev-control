@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 import tempfile
 import pytest
@@ -55,6 +56,9 @@ def clean_repos(tmp_path: Path, monkeypatch):
     p_repo = get_project_repo()
     ch_mgr = get_channel_manager()
     s_mgr = get_session_manager()
+
+    from remote_dev_ctrl.server.conversation import init_conversation_schema
+    init_conversation_schema()
 
     return k_root, c_repo, p_repo, ch_mgr, s_mgr
 
@@ -331,5 +335,279 @@ def test_move_project_with_knowledge_pages_and_workstream_repair(clean_repos):
     pers_ws_note = pers_corpus_dir / "workstreams" / f"{ch_sole.id}.md"
     assert pers_ws_note.is_file()
     assert not ws_note.exists()
+
+
+def test_orchestrator_pack_enabled_and_local_model_hits(clean_repos, monkeypatch):
+    k_root, c_repo, p_repo, ch_mgr, s_mgr = clean_repos
+
+    c_sugar = c_repo.create(Collection(id="coll-sugar", name="Sugarwork", role="client"))
+    p_repo.create(Project(id="p-sugar", name="sugar-api", path="/tmp/sugar", collection_id=c_sugar.id))
+
+    # Plant a confirmed rule
+    sug_corpus = k_root / "corpora" / c_sugar.id
+    rule_file = sug_corpus / "rules" / "sugar-rule.md"
+    rule_file.parent.mkdir(parents=True, exist_ok=True)
+    rule_file.write_text(
+        f"---\nid: {c_sugar.id}/rules/sugar-rule\nkind: rule\nsource: human\nconfirmed: true\nstatus: active\n---\nSugar rule active instructions.",
+        encoding="utf-8",
+    )
+
+    # Plant a note with billing information
+    note_file = sug_corpus / "notes" / "billing.md"
+    note_file.parent.mkdir(parents=True, exist_ok=True)
+    note_file.write_text(
+        f"---\nid: {c_sugar.id}/notes/billing\nkind: note\nsource: human\nconfirmed: false\nstatus: active\n---\nBilling invoicing procedure detail.",
+        encoding="utf-8",
+    )
+
+    from remote_dev_ctrl.server.intent import IntentEngine, OrchestratorContext
+
+    engine = IntentEngine()
+    ctx = OrchestratorContext(project="sugar-api", active_workstream_id=None)
+
+    mock_client = MagicMock()
+    mock_completion = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.tool_calls = None
+    mock_choice.message.content = "OK"
+    mock_completion.choices = [mock_choice]
+    mock_client.chat.completions.create.return_value = mock_completion
+    monkeypatch.setattr(engine, "_get_client", lambda: mock_client)
+
+    # 1. Cloud provider (is_local=False): Pack text is in prompt, and keyword hits are included
+    monkeypatch.setattr(
+        "remote_dev_ctrl.server.intent.load_nanobot_config",
+        lambda: {"llm_provider": "cloud", "model": "gpt-4o"},
+    )
+    asyncio.run(engine.process("billing inquiry", ctx))
+    call_args = mock_client.chat.completions.create.call_args[1]
+    prompt = call_args["messages"][0]["content"]
+    assert "Sugar rule active instructions" in prompt
+    assert "Billing invoicing procedure detail" in prompt
+
+    # 2. Local provider (is_local=True): Pack text is in prompt (rules), but NO keyword hits
+    mock_client.reset_mock()
+    monkeypatch.setattr(
+        "remote_dev_ctrl.server.intent.load_nanobot_config",
+        lambda: {"llm_provider": "ollama", "model": "qwen2.5:7b"},
+    )
+    asyncio.run(engine.process("billing inquiry", ctx))
+    call_args_local = mock_client.chat.completions.create.call_args[1]
+    prompt_local = call_args_local["messages"][0]["content"]
+    assert "Sugar rule active instructions" in prompt_local
+    assert "Billing invoicing procedure detail" not in prompt_local
+
+
+def test_orchestrator_pack_disabled_quiet(clean_repos, monkeypatch, caplog):
+    k_root, c_repo, p_repo, ch_mgr, s_mgr = clean_repos
+
+    # Disable knowledge
+    monkeypatch.setattr(
+        Config,
+        "load",
+        classmethod(lambda cls, path=None: Config(knowledge=KnowledgeConfig(enabled=False, root=k_root))),
+    )
+
+    c_sugar = c_repo.create(Collection(id="coll-sugar", name="Sugarwork", role="client"))
+    p_repo.create(Project(id="p-sugar", name="sugar-api", path="/tmp/sugar", collection_id=c_sugar.id))
+
+    from remote_dev_ctrl.server.intent import IntentEngine, OrchestratorContext
+
+    engine = IntentEngine()
+    ctx = OrchestratorContext(project="sugar-api", active_workstream_id=None)
+
+    mock_client = MagicMock()
+    mock_completion = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.tool_calls = None
+    mock_choice.message.content = "OK"
+    mock_completion.choices = [mock_choice]
+    mock_client.chat.completions.create.return_value = mock_completion
+    monkeypatch.setattr(engine, "_get_client", lambda: mock_client)
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(engine.process("billing inquiry", ctx))
+
+    # Must stay quiet: no warning on every chat turn
+    assert not any("pack_for_orchestrator failed" in rec.message for rec in caplog.records)
+    call_args = mock_client.chat.completions.create.call_args[1]
+    prompt = call_args["messages"][0]["content"]
+    assert "Collection Knowledge" not in prompt
+
+
+def test_upload_and_confirm_disabled_do_nothing_to_disk(clean_repos, monkeypatch):
+    k_root, c_repo, p_repo, ch_mgr, s_mgr = clean_repos
+
+    # Disable knowledge
+    monkeypatch.setattr(
+        Config,
+        "load",
+        classmethod(lambda cls, path=None: Config(knowledge=KnowledgeConfig(enabled=False, root=k_root))),
+    )
+
+    c_sugar = c_repo.create(Collection(id="coll-sugar", name="Sugarwork", role="client"))
+
+    from fastapi.testclient import TestClient
+    from remote_dev_ctrl.server.app import app
+    from remote_dev_ctrl.server.auth import Role, get_auth_manager
+
+    token, _ = get_auth_manager().create_token("test-admin", Role.ADMIN)
+    client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
+
+    # Ingest note fails with knowledge_disabled
+    res = client.post(
+        f"/collections/{c_sugar.id}/knowledge/notes",
+        json={"title": "Test Note", "text": "Some text"},
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "knowledge_disabled"
+
+    # Propose rule fails with knowledge_disabled
+    res = client.post(
+        f"/collections/{c_sugar.id}/knowledge/rules",
+        json={"slug": "test-rule", "title": "Test Rule", "body": "Rule text"},
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "knowledge_disabled"
+
+    # Confirm rule fails with knowledge_disabled
+    res = client.post(
+        f"/collections/{c_sugar.id}/knowledge/rules/confirm",
+        json={"relpath": "rules/test-rule.md", "confirmed_by": "operator"},
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "knowledge_disabled"
+
+    # Disk was untouched: corpora/coll-sugar does not exist
+    assert not (k_root / "corpora" / c_sugar.id).exists()
+
+
+def test_move_second_post_moves_pages_already_left_behind(clean_repos):
+    k_root, c_repo, p_repo, ch_mgr, s_mgr = clean_repos
+
+    from fastapi.testclient import TestClient
+    from remote_dev_ctrl.server.app import app
+    from remote_dev_ctrl.server.auth import Role, get_auth_manager
+
+    token, _ = get_auth_manager().create_token("test-admin-move-2", Role.ADMIN)
+    client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
+
+    c_sugar = c_repo.create(Collection(id="coll-sugar-2", name="Sugarwork", role="client"))
+    c_pers = c_repo.create(Collection(id="coll-pers-2", name="Personal", role="personal"))
+
+    p1 = p_repo.create(Project(id="p-sug-2", name="sugar-svc", path="/tmp/sug2", collection_id=c_sugar.id))
+    ch1 = ch_mgr.create_channel(name="ch-pending", type=ChannelType.PROJECT, collection_id=c_sugar.id, project_ids=[p1.id])
+
+    # Plant workstream page in sugar corpus
+    sug_ws = k_root / "corpora" / c_sugar.id / "workstreams" / f"{ch1.id}.md"
+    sug_ws.parent.mkdir(parents=True, exist_ok=True)
+    sug_ws.write_text(f"---\nid: {c_sugar.id}/workstreams/{ch1.id}\n---\nPending ws body", encoding="utf-8")
+
+    # Leave it behind in pending
+    remember_pending_workstream(p1.id, ch1.id)
+    assert ch1.id in pending_workstream_ids(p1.id)
+
+    # Now POST move project to personal
+    res = client.post(f"/projects/{p1.name}/move", json={"collection_id": c_pers.id})
+    assert res.status_code == 200
+    assert res.json()["success"] is True
+
+    # The second POST picked up pending and reconciled it
+    assert ch1.id not in pending_workstream_ids(p1.id)
+    pers_ws = k_root / "corpora" / c_pers.id / "workstreams" / f"{ch1.id}.md"
+    assert pers_ws.is_file()
+    assert not sug_ws.exists()
+
+
+def test_move_mixed_workstream_follows_staying_projects(clean_repos):
+    k_root, c_repo, p_repo, ch_mgr, s_mgr = clean_repos
+
+    from fastapi.testclient import TestClient
+    from remote_dev_ctrl.server.app import app
+    from remote_dev_ctrl.server.auth import Role, get_auth_manager
+
+    token, _ = get_auth_manager().create_token("test-admin-mixed", Role.ADMIN)
+    client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
+
+    c_sugar = c_repo.create(Collection(id="coll-sugar-mix", name="Sugarwork", role="client"))
+    c_pers = c_repo.create(Collection(id="coll-pers-mix", name="Personal", role="personal"))
+
+    p1 = p_repo.create(Project(id="p-mix-1", name="mix-proj-1", path="/tmp/m1", collection_id=c_sugar.id))
+    p2 = p_repo.create(Project(id="p-mix-2", name="mix-proj-2", path="/tmp/m2", collection_id=c_sugar.id))
+
+    # Channel linked to BOTH projects
+    ch_mix = ch_mgr.create_channel(name="ch-multi", type=ChannelType.PROJECT, collection_id=c_sugar.id, project_ids=[p1.id, p2.id])
+
+    # Plant pages
+    sug_dir = k_root / "corpora" / c_sugar.id
+    p1_note = sug_dir / "projects" / "mix-proj-1" / "note.md"
+    p1_note.parent.mkdir(parents=True, exist_ok=True)
+    p1_note.write_text(f"---\nid: {c_sugar.id}/projects/mix-proj-1/note\nproject_id: {p1.id}\n---\nP1 Note", encoding="utf-8")
+
+    ws_note = sug_dir / "workstreams" / f"{ch_mix.id}.md"
+    ws_note.parent.mkdir(parents=True, exist_ok=True)
+    ws_note.write_text(f"---\nid: {c_sugar.id}/workstreams/{ch_mix.id}\n---\nMixed ws body", encoding="utf-8")
+
+    # Move p1 to personal. p2 stays in sugar.
+    res = client.post(f"/projects/{p1.name}/move", json={"collection_id": c_pers.id})
+    assert res.status_code == 200
+    data = res.json()
+    assert ch_mix.id in data["links_dropped"]
+    assert ch_mix.id not in data["channels_moved"]
+
+    # p1's project note moved to personal
+    pers_dir = k_root / "corpora" / c_pers.id
+    assert (pers_dir / "projects" / "mix-proj-1" / "note.md").is_file()
+    assert not p1_note.exists()
+
+    # The mixed workstream page follows the staying project (stays in c_sugar!)
+    assert ws_note.is_file()
+    assert not (pers_dir / "workstreams" / f"{ch_mix.id}.md").exists()
+
+
+def test_move_session_only_channel_with_no_remaining_project_does_not_move_page(clean_repos):
+    k_root, c_repo, p_repo, ch_mgr, s_mgr = clean_repos
+
+    from fastapi.testclient import TestClient
+    from remote_dev_ctrl.server.app import app
+    from remote_dev_ctrl.server.auth import Role, get_auth_manager
+
+    token, _ = get_auth_manager().create_token("test-admin-sessonly", Role.ADMIN)
+    client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
+
+    c_sugar = c_repo.create(Collection(id="coll-sugar-so", name="Sugarwork", role="client"))
+    c_pers = c_repo.create(Collection(id="coll-pers-so", name="Personal", role="personal"))
+
+    p1 = p_repo.create(Project(id="p-so-1", name="so-proj-1", path="/tmp/so1", collection_id=c_sugar.id))
+
+    # Channel with NO linked projects in channel_projects
+    ch_sess_only = ch_mgr.create_channel(name="ch-sess-only", type=ChannelType.MISSION, collection_id=c_sugar.id, project_ids=[])
+
+    # Session in sessions table referencing p1 and ch_sess_only
+    with get_db_manager().transaction("rdc") as db:
+        db.execute(
+            """INSERT INTO sessions (id, project, channel_id, goal, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            ("sess-so-10", p1.name, ch_sess_only.id, "Session goal", "completed"),
+        )
+
+    # Plant workstream page
+    sug_dir = k_root / "corpora" / c_sugar.id
+    ws_note = sug_dir / "workstreams" / f"{ch_sess_only.id}.md"
+    ws_note.parent.mkdir(parents=True, exist_ok=True)
+    ws_note.write_text(f"---\nid: {c_sugar.id}/workstreams/{ch_sess_only.id}\n---\nSession only ws body", encoding="utf-8")
+
+    # Move p1 to personal
+    res = client.post(f"/projects/{p1.name}/move", json={"collection_id": c_pers.id})
+    assert res.status_code == 200
+    data = res.json()
+    assert ch_sess_only.id not in data["channels_moved"]
+
+    # Since there are no remaining projects linked to this channel, the channel does NOT move
+    pers_dir = k_root / "corpora" / c_pers.id
+    assert ws_note.is_file()
+    assert not (pers_dir / "workstreams" / f"{ch_sess_only.id}.md").exists()
+
 
 

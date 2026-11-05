@@ -8035,7 +8035,7 @@ async def list_projects():
 
     # Build collection name lookup
     collection_repo = get_collection_repo()
-    collections = {c.id: c.name for c in collection_repo.list()}
+    collections = {c.id: c.name for c in collection_repo.list(include_archived=True)}
 
     return [
         {
@@ -8658,25 +8658,31 @@ async def update_terminal_presets(presets: list[dict] = Body(...)):
 # Collections
 # =============================================================================
 
+def _collection_out(c, project_count: int | None = None) -> dict:
+    """JSON shape for a collection. archived_at is null while it is in the working set."""
+    archived = getattr(c, "archived_at", None)
+    payload = {
+        "id": c.id,
+        "name": c.name,
+        "description": c.description,
+        "sort_order": c.sort_order,
+        "role": getattr(c, "role", "unsorted") or "unsorted",
+        "default_agent_id": getattr(c, "default_agent_id", None),
+        "archived_at": archived.isoformat() if archived else None,
+    }
+    if project_count is not None:
+        payload["project_count"] = project_count
+    return payload
+
+
 @app.get("/collections")
-async def list_collections():
-    """List all collections with project counts."""
+async def list_collections(include_archived: bool = False):
+    """List collections with project counts. Archived collections are omitted unless asked for."""
     from .db.repositories import get_collection_repo
     collection_repo = get_collection_repo()
-    collections = collection_repo.list()
+    collections = collection_repo.list(include_archived=include_archived)
     counts = collection_repo.project_counts()
-    return [
-        {
-            "id": c.id,
-            "name": c.name,
-            "description": c.description,
-            "sort_order": c.sort_order,
-            "role": getattr(c, "role", "unsorted") or "unsorted",
-            "default_agent_id": getattr(c, "default_agent_id", None),
-            "project_count": counts.get(c.id, 0),
-        }
-        for c in collections
-    ]
+    return [_collection_out(c, counts.get(c.id, 0)) for c in collections]
 
 
 class CreateCollectionRequest(BaseModel):
@@ -8707,14 +8713,7 @@ async def create_collection(req: CreateCollectionRequest):
         coll = collection_repo.create(Collection(name=req.name, description=req.description, role=role, default_agent_id=default_agent))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
-    return {
-        "id": coll.id,
-        "name": coll.name,
-        "description": coll.description,
-        "sort_order": coll.sort_order,
-        "role": coll.role,
-        "default_agent_id": coll.default_agent_id,
-    }
+    return _collection_out(coll)
 
 
 class UpdateCollectionRequest(BaseModel):
@@ -8760,14 +8759,34 @@ async def update_collection(collection_id: str, req: UpdateCollectionRequest):
         coll = collection_repo.update(coll)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
-    return {
-        "id": coll.id,
-        "name": coll.name,
-        "description": coll.description,
-        "sort_order": coll.sort_order,
-        "role": coll.role,
-        "default_agent_id": coll.default_agent_id,
-    }
+    return _collection_out(coll)
+
+
+@app.post("/collections/{collection_id}/archive")
+async def archive_collection(collection_id: str):
+    """Hide a collection. Projects, workstreams, and the corpus stay where they are."""
+    from .db.repositories import get_collection_repo
+    collection_repo = get_collection_repo()
+    if collection_id == "general":
+        raise HTTPException(status_code=400, detail="Cannot archive the Unclassified collection")
+    try:
+        coll = collection_repo.archive(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return _collection_out(coll)
+
+
+@app.post("/collections/{collection_id}/unarchive")
+async def unarchive_collection(collection_id: str):
+    """Put an archived collection back in the working set."""
+    from .db.repositories import get_collection_repo
+    collection_repo = get_collection_repo()
+    coll = collection_repo.unarchive(collection_id)
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return _collection_out(coll)
 
 
 def _repair_channel_collection(db, channel_id: str, channel_coll: str | None, remaining_projects: list[dict]) -> str:
@@ -8870,21 +8889,22 @@ async def ingest_knowledge_note(collection_id: str, req: IngestKnowledgeNoteRequ
         if p_rec:
             proj_uuid = p_rec.id
 
-    from .knowledge_bridge import _get_corpus_handle, vault_extra_secrets
-    import corpusnote
+    from .knowledge_bridge import (
+        ingest_knowledge_note as bridge_ingest,
+        KnowledgeDisabledError,
+        RejectedWrite,
+    )
     try:
-        corpus = _get_corpus_handle(collection_id)
-        secrets = vault_extra_secrets()
-        page = corpusnote.ingest_text(
-            corpus,
+        return bridge_ingest(
+            collection_id,
             title=req.title,
             text=req.text,
             project=req.project,
             project_id=proj_uuid,
-            extra_secrets=secrets,
         )
-        return {"success": True, "relpath": page.relpath, "title": page.frontmatter.get("title")}
-    except corpusnote.RejectedWrite as exc:
+    except KnowledgeDisabledError:
+        raise HTTPException(status_code=400, detail="knowledge_disabled")
+    except RejectedWrite as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {type(exc).__name__}")
@@ -8911,22 +8931,23 @@ async def propose_knowledge_rule(collection_id: str, req: ProposeKnowledgeRuleRe
         if p_rec:
             proj_uuid = p_rec.id
 
-    from .knowledge_bridge import _get_corpus_handle, vault_extra_secrets
-    import corpusnote
+    from .knowledge_bridge import (
+        propose_knowledge_rule as bridge_propose,
+        KnowledgeDisabledError,
+        RejectedWrite,
+    )
     try:
-        corpus = _get_corpus_handle(collection_id)
-        secrets = vault_extra_secrets()
-        page = corpusnote.propose_rule(
-            corpus,
+        return bridge_propose(
+            collection_id,
             slug=req.slug,
             title=req.title,
             body=req.body,
             project=req.project,
             project_id=proj_uuid,
-            extra_secrets=secrets,
         )
-        return {"relpath": page.relpath, "confirmed": False}
-    except corpusnote.RejectedWrite as exc:
+    except KnowledgeDisabledError:
+        raise HTTPException(status_code=400, detail="knowledge_disabled")
+    except RejectedWrite as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Propose rule failed: {type(exc).__name__}")
@@ -8945,19 +8966,23 @@ async def confirm_knowledge_rule(collection_id: str, req: ConfirmKnowledgeRuleRe
     if not coll:
         raise HTTPException(status_code=404, detail="Collection not found")
 
-    from .knowledge_bridge import _get_corpus_handle
-    import corpusnote
+    from .knowledge_bridge import (
+        confirm_knowledge_rule as bridge_confirm,
+        KnowledgeDisabledError,
+        RejectedWrite,
+        MissingPage,
+    )
     try:
-        corpus = _get_corpus_handle(collection_id)
-        page = corpusnote.confirm_rule(
-            corpus,
+        return bridge_confirm(
+            collection_id,
             req.relpath,
             confirmed_by=req.confirmed_by,
         )
-        return {"relpath": page.relpath, "confirmed": True}
-    except corpusnote.RejectedWrite as exc:
+    except KnowledgeDisabledError:
+        raise HTTPException(status_code=400, detail="knowledge_disabled")
+    except RejectedWrite as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    except corpusnote.MissingPage:
+    except MissingPage:
         raise HTTPException(status_code=404, detail="Rule page not found")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Confirm rule failed: {type(exc).__name__}")

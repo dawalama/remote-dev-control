@@ -5,6 +5,7 @@ import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { Sheet } from "@/features/mobile/sheet"
 import { ChannelSettings } from "./channel-settings"
+import { isCollectionVisible } from "@/components/collection-picker"
 
 type FilterMode = "all" | "active"
 
@@ -46,7 +47,9 @@ export function WorkspaceSelectorSheet({
   }, [terminals, actions])
 
   const filteredChannels = useMemo(() => {
-    let result = channels.filter((c) => c.type !== "system")
+    let result = channels.filter(
+      (c) => c.type !== "system" && isCollectionVisible(c.collection_id, collections),
+    )
 
     // Active filter — shows all active workstreams across collections
     if (filterMode === "active") {
@@ -68,7 +71,7 @@ export function WorkspaceSelectorSheet({
     }
 
     return result
-  }, [channels, currentCollection, filterMode, search, activeProjectNames])
+  }, [channels, collections, currentCollection, filterMode, search, activeProjectNames])
 
   return (
     <Sheet title="Workstreams" onClose={onClose} position={position}>

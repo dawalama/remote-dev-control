@@ -48,7 +48,7 @@ Issues = "https://github.com/dawalama/remote-dev-control/issues"
 
 [project.optional-dependencies]
 knowledge = [
-    "corpusnote",
+    "corpusnote @ file:///Users/dawa/TrueSteps/corpusnote",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -93,6 +93,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/remote_dev_ctrl", "src/gwd"]
+
+[tool.uv.sources]
+corpusnote = { path = "/Users/dawa/TrueSteps/corpusnote", editable = true }
 
 [tool.ruff]
 line-length = 100

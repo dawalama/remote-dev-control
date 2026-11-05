@@ -7,6 +7,7 @@ import { useProjectStore } from "@/stores/project-store"
 import { useStateStore } from "@/stores/state-store"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 import type { Action } from "@/types"
+import { isCollectionVisible } from "@/components/collection-picker"
 
 export const SESSION_STATUS = {
   PROPOSED: "proposed",
@@ -442,7 +443,7 @@ export function SessionsCard({
   const filteredGoalCards = isSystemWorkstream
     ? (currentCollection
         ? allGoalCards.filter((card) => (card.collection_id || "general") === currentCollection)
-        : allGoalCards)
+        : allGoalCards.filter((card) => isCollectionVisible(card.collection_id, collections)))
     : (activeChannel
         ? allGoalCards.filter((card) => card.channel_id === activeChannel.id)
         : [])

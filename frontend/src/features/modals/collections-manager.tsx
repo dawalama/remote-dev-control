@@ -25,7 +25,7 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
     setLoading(true)
     try {
       const [colls, projs, agentData] = await Promise.all([
-        GET<Collection[]>("/collections"),
+        GET<Collection[]>("/collections?include_archived=true"),
         GET<Project[]>("/projects"),
         GET<{ providers: Array<{ id: string; label: string; ready: boolean }> }>("/settings/agent-providers").catch(() => null),
       ])
@@ -109,6 +109,29 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
       toast("Collection deleted", "success")
     } catch {
       toast("Failed to delete", "error")
+    }
+  }
+
+  const handleArchive = async (c: Collection) => {
+    if (!confirm(`Archive "${c.name}"? It will be hidden, along with its projects and workstreams. Nothing is moved or deleted. You can restore it here.`)) return
+    try {
+      await POST(`/collections/${c.id}/archive`, {})
+      await load()
+      void loadCollections()
+      toast(`Archived "${c.name}"`, "success")
+    } catch {
+      toast("Failed to archive", "error")
+    }
+  }
+
+  const handleRestore = async (c: Collection) => {
+    try {
+      await POST(`/collections/${c.id}/unarchive`, {})
+      await load()
+      void loadCollections()
+      toast(`Restored "${c.name}"`, "success")
+    } catch {
+      toast("Failed to restore", "error")
     }
   }
 
@@ -201,7 +224,7 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
             <p className="text-xs text-gray-500 text-center py-4">No collections yet.</p>
           ) : (
             <div className="space-y-1">
-              {collections.map((c) => {
+              {collections.filter((c) => !c.archived_at).map((c) => {
                 const isExpanded = expanded === c.id
                 const collProjects = allProjects.filter((p) => p.collection_id === c.id)
                 const isGeneral = c.id === "general"
@@ -262,6 +285,12 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
                               Edit
                             </button>
                             <button
+                              className="px-1.5 py-0.5 text-[10px] rounded bg-gray-600 hover:bg-gray-500 text-gray-200"
+                              onClick={() => handleArchive(c)}
+                            >
+                              Archive
+                            </button>
+                            <button
                               className="px-1.5 py-0.5 text-[10px] rounded bg-red-600 hover:bg-red-700 text-white"
                               onClick={() => handleDelete(c)}
                             >
@@ -288,7 +317,7 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
                                   onChange={(e) => handleMove(p.name, e.target.value)}
                                 >
                                   <option value="">Move to...</option>
-                                  {collections.filter((cc) => cc.id !== c.id).map((cc) => (
+                                  {collections.filter((cc) => cc.id !== c.id && !cc.archived_at).map((cc) => (
                                     <option key={cc.id} value={cc.id}>{cc.name}</option>
                                   ))}
                                 </select>
@@ -301,6 +330,38 @@ export function CollectionsManagerModal({ onClose }: { onClose: () => void }) {
                   </div>
                 )
               })}
+              {collections.some((c) => c.archived_at) && (
+                <div className="pt-2">
+                  <p className="px-2 pb-1 text-[10px] uppercase tracking-wide text-gray-500">Archived</p>
+                  {collections.filter((c) => c.archived_at).map((c) => {
+                    const collProjects = allProjects.filter((p) => p.collection_id === c.id)
+                    return (
+                      <div key={c.id} className="flex items-center justify-between p-2 rounded opacity-70">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-xs font-medium truncate">{c.name}</span>
+                          <span className="text-[10px] text-gray-500">
+                            {c.project_count || collProjects.length} project{(c.project_count || collProjects.length) !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                        <div className="flex gap-1">
+                          <button
+                            className="px-1.5 py-0.5 text-[10px] rounded bg-gray-600 hover:bg-gray-500 text-gray-200"
+                            onClick={() => handleRestore(c)}
+                          >
+                            Restore
+                          </button>
+                          <button
+                            className="px-1.5 py-0.5 text-[10px] rounded bg-red-600 hover:bg-red-700 text-white"
+                            onClick={() => handleDelete(c)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>

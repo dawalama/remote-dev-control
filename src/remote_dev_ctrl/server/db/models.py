@@ -54,6 +54,7 @@ class Collection(BaseModel):
     sort_order: int = 0
     role: str = "unsorted"  # 'unsorted' | 'own' | 'client' | 'personal'; id 'general' is always stored as unsorted
     default_agent_id: Optional[str] = None
+    archived_at: Optional[datetime] = None  # NULL = active
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 

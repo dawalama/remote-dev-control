@@ -2151,15 +2151,16 @@ class IntentEngine:
 
         pack_text = None
         try:
-            from .knowledge_bridge import pack_for_orchestrator
-            kpack = pack_for_orchestrator(
-                ctx.project,
-                ctx.active_workstream_id,
-                user_message,
-                is_local=getattr(self, "is_local", False) or bool(effective_model and "ollama" in effective_model.lower()),
-            )
-            if kpack and kpack.text and kpack.text.strip():
-                pack_text = kpack.text.strip()
+            from .knowledge_bridge import is_knowledge_enabled, pack_for_orchestrator
+            if is_knowledge_enabled():
+                kpack = pack_for_orchestrator(
+                    ctx.project,
+                    ctx.active_workstream_id,
+                    message,
+                    is_local=is_local,
+                )
+                if kpack and kpack.text and kpack.text.strip():
+                    pack_text = kpack.text.strip()
         except Exception as exc:
             logger.warning("pack_for_orchestrator failed: %s", type(exc).__name__)
 

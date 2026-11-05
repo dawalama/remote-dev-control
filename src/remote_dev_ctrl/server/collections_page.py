@@ -66,7 +66,7 @@ let projects = [];
 let expandedCollection = null;
 
 async function loadData() {
-    const [colls, projs] = await Promise.all([api('/collections'), api('/projects')]);
+    const [colls, projs] = await Promise.all([api('/collections?include_archived=true'), api('/projects')]);
     if (Array.isArray(colls)) collections = colls;
     if (Array.isArray(projs)) projects = projs;
     renderAll();
@@ -83,9 +83,10 @@ function renderAll() {
         const isExpanded = expandedCollection === c.id;
         const collProjects = projects.filter(p => p.collection_id === c.id);
         const isGeneral = c.id === 'general';
+        const archived = !!c.archived_at;
 
         return `
-            <div class="bg-gray-800 rounded-lg overflow-hidden collection-card">
+            <div class="bg-gray-800 rounded-lg overflow-hidden collection-card${archived ? ' opacity-60' : ''}">
                 <div class="p-4 flex items-center justify-between cursor-pointer" onclick="toggleCollection('${esc(c.id)}')">
                     <div class="flex items-center gap-3">
                         <span class="text-lg">${isExpanded ? '&#9660;' : '&#9654;'}</span>
@@ -98,6 +99,9 @@ function renderAll() {
                     <div class="flex items-center gap-2">
                         ${!isGeneral ? `
                             <button onclick="event.stopPropagation(); editCollection('${esc(c.id)}')" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">Edit</button>
+                            ${archived
+                                ? `<button onclick="event.stopPropagation(); restoreCollection('${esc(c.id)}')" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">Restore</button>`
+                                : `<button onclick="event.stopPropagation(); archiveCollection('${esc(c.id)}', '${esc(c.name)}')" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">Archive</button>`}
                             <button onclick="event.stopPropagation(); deleteCollection('${esc(c.id)}', '${esc(c.name)}')" class="px-3 py-1 bg-red-600 hover:bg-red-700 rounded text-xs text-white">Delete</button>
                         ` : ''}
                     </div>
@@ -111,7 +115,7 @@ function renderAll() {
                                         <span>${esc(p.name)}</span>
                                         <select onchange="moveProject('${esc(p.name)}', this.value)" class="bg-transparent text-xs text-gray-400 outline-none cursor-pointer ml-1" style="max-width:120px;">
                                             <option value="">Move to...</option>
-                                            ${collections.filter(cc => cc.id !== c.id).map(cc => `<option value="${esc(cc.id)}">${esc(cc.name)}</option>`).join('')}
+                                            ${collections.filter(cc => cc.id !== c.id && !cc.archived_at).map(cc => `<option value="${esc(cc.id)}">${esc(cc.name)}</option>`).join('')}
                                         </select>
                                     </div>
                                 `).join('')}
@@ -151,6 +155,17 @@ async function editCollection(id) {
     const description = prompt('Description:', c.description || '');
     if (description === null) return;
     await api(`/collections/${id}`, { method: 'PATCH', body: JSON.stringify({ name: name.trim() || c.name, description: description.trim() || null }) });
+    await loadData();
+}
+
+async function archiveCollection(id, name) {
+    if (!confirm(`Archive "${name}"? It will be hidden, along with its projects and workstreams. Nothing is moved or deleted. You can restore it here.`)) return;
+    await api(`/collections/${id}/archive`, { method: 'POST', body: '{}' });
+    await loadData();
+}
+
+async function restoreCollection(id) {
+    await api(`/collections/${id}/unarchive`, { method: 'POST', body: '{}' });
     await loadData();
 }
 

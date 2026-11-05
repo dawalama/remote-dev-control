@@ -7,6 +7,7 @@ import { POST } from "@/lib/api"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 import { ChannelSettings } from "./channel-settings"
 import { CollectionsManagerModal } from "@/features/modals/collections-manager"
+import { isCollectionVisible } from "@/components/collection-picker"
 
 type GroupMode = "flat" | "project"
 type FilterMode = "all" | "active"
@@ -76,6 +77,11 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
       })
     }
 
+    result = result.filter((ch) => {
+      if (ch.type === "system") return true
+      return isCollectionVisible(ch.collection_id, collections)
+    })
+
     // Collection filter:
     if (currentCollection) {
       result = result.filter((ch) => {
@@ -85,7 +91,7 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
     }
 
     return result
-  }, [channels, filterMode, currentCollection, activeProjectNames])
+  }, [channels, collections, filterMode, currentCollection, activeProjectNames])
 
   const handleCreate = useCallback(async () => {
     if (!newName.trim()) return

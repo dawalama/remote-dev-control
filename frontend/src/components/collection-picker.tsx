@@ -6,6 +6,15 @@ import type { Collection } from "@/types"
 
 export const DEFAULT_COLLECTION_ID = "general"
 
+/** Active collections are the working set. An empty list means they have not loaded yet. */
+export function isCollectionVisible(
+  collectionId: string | null | undefined,
+  collections: { id: string }[],
+): boolean {
+  if (collections.length === 0) return true
+  return collections.some((c) => c.id === (collectionId || DEFAULT_COLLECTION_ID))
+}
+
 export function CollectionPicker({
   value,
   onChange,
@@ -79,9 +88,12 @@ export function CollectionPicker({
             <option value={DEFAULT_COLLECTION_ID}>
               {collections.find((c) => c.id === DEFAULT_COLLECTION_ID)?.name || "Unclassified"}
             </option>
-            {collections.filter((c) => c.id !== DEFAULT_COLLECTION_ID).map((c) => (
+            {collections.filter((c) => c.id !== DEFAULT_COLLECTION_ID && !c.archived_at).map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
+            {!collections.some((c) => c.id === value) && value && value !== DEFAULT_COLLECTION_ID && (
+              <option value={value}>Archived collection</option>
+            )}
           </select>
           <button
             type="button"

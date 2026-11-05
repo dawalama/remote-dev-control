@@ -73,7 +73,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   loadCollections: async () => {
     try {
       const data = await GET<Collection[]>("/collections")
-      set({ collections: data })
+      const { currentCollection } = get()
+      if (currentCollection && !data.some((c) => c.id === currentCollection)) {
+        localStorage.removeItem("rdc_current_collection")
+        set({ collections: data, currentCollection: null })
+      } else {
+        set({ collections: data })
+      }
     } catch {
       // Collections may not be available
     }

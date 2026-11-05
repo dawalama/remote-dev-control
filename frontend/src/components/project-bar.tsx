@@ -4,7 +4,7 @@ import { useStateStore } from "@/stores/state-store"
 import { useUIStore } from "@/stores/ui-store"
 import { GET } from "@/lib/api"
 import { CollectionsManagerModal } from "@/features/modals/collections-manager"
-import { CollectionPicker, DEFAULT_COLLECTION_ID } from "@/components/collection-picker"
+import { CollectionPicker, DEFAULT_COLLECTION_ID, isCollectionVisible } from "@/components/collection-picker"
 
 export function ProjectBar() {
   const { projects, collections, currentProject, currentCollection, selectProject, selectCollection, scaffoldProject, loadProjects, activeOnly, toggleActiveFilter } =
@@ -25,12 +25,13 @@ export function ProjectBar() {
     return new Set(getActiveProjectNames())
   }, [terminals, processes, tasks, agents])
 
+  const visibleProjects = projects.filter((p) => isCollectionVisible(p.collection_id, collections))
   // When activeOnly, show all active projects across collections; otherwise filter by collection
   const filteredProjects = activeOnly
-    ? projects.filter((p) => activeSet.has(p.name))
+    ? visibleProjects.filter((p) => activeSet.has(p.name))
     : !currentCollection
-      ? projects
-      : projects.filter((p) => p.collection_id === currentCollection)
+      ? visibleProjects
+      : visibleProjects.filter((p) => p.collection_id === currentCollection)
 
   // `null` represents the "All" option — no project selected.
   const entries: { label: string; value: string | null }[] = [
@@ -51,7 +52,7 @@ export function ProjectBar() {
               onChange={(e) => selectCollection(e.target.value || null)}
               className="bg-gray-700 rounded px-2 py-1 text-sm text-gray-200 outline-none cursor-pointer"
             >
-              <option value="">All ({projects.length})</option>
+              <option value="">All ({visibleProjects.length})</option>
               {collections.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name} ({c.project_count || c.projects?.length || 0})
@@ -164,9 +165,10 @@ export function CommandPalette() {
     ? collections.filter((c) => c.name.toLowerCase().includes(q))
     : collections
   // `value: null` represents the "All Projects" entry.
+  const visibleProjects = projects.filter((p) => isCollectionVisible(p.collection_id, collections))
   const allEntries: { label: string; value: string | null }[] = [
     { label: "All Projects", value: null },
-    ...projects.map((p) => ({ label: p.name, value: p.name })),
+    ...visibleProjects.map((p) => ({ label: p.name, value: p.name })),
   ]
   const filtered = q
     ? allEntries.filter((e) => e.label.toLowerCase().includes(q))

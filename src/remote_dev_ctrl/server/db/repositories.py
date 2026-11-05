@@ -246,12 +246,43 @@ class CollectionRepository:
         row = cursor.fetchone()
         return self._row_to_collection(row) if row else None
 
-    def list(self) -> list[Collection]:
-        """List all collections ordered by sort_order, then name."""
-        cursor = self.db.execute(
-            "SELECT * FROM collections ORDER BY sort_order, name"
-        )
+    def list(self, include_archived: bool = False) -> list[Collection]:
+        """List collections ordered by sort_order, then name.
+
+        Archived collections stay in the table. The default list is the working set.
+        """
+        if include_archived:
+            query = "SELECT * FROM collections ORDER BY sort_order, name"
+        else:
+            query = "SELECT * FROM collections WHERE archived_at IS NULL ORDER BY sort_order, name"
+        cursor = self.db.execute(query)
         return [self._row_to_collection(row) for row in cursor.fetchall()]
+
+    def archive(self, collection_id: str) -> Optional[Collection]:
+        """Hide a collection. Projects, workstreams, and the corpus stay put."""
+        if collection_id == "general":
+            raise ValueError("Cannot archive the Unclassified collection")
+        if not self.get(collection_id):
+            return None
+        now = datetime.now().isoformat()
+        self.db.execute(
+            "UPDATE collections SET archived_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, collection_id),
+        )
+        self.db.commit()
+        return self.get(collection_id)
+
+    def unarchive(self, collection_id: str) -> Optional[Collection]:
+        """Return an archived collection to the working set."""
+        if not self.get(collection_id):
+            return None
+        now = datetime.now().isoformat()
+        self.db.execute(
+            "UPDATE collections SET archived_at = NULL, updated_at = ? WHERE id = ?",
+            (now, collection_id),
+        )
+        self.db.commit()
+        return self.get(collection_id)
 
     def update(self, collection: Collection) -> Collection:
         """Update a collection."""
@@ -313,6 +344,7 @@ class CollectionRepository:
             sort_order=d.get("sort_order", 0),
             role=d.get("role") or "unsorted",
             default_agent_id=d.get("default_agent_id"),
+            archived_at=datetime.fromisoformat(d["archived_at"]) if d.get("archived_at") else None,
             created_at=datetime.fromisoformat(d["created_at"]) if d.get("created_at") else datetime.now(),
             updated_at=datetime.fromisoformat(d["updated_at"]) if d.get("updated_at") else datetime.now(),
         )

@@ -2,6 +2,7 @@ import { useState, useMemo } from "react"
 import { useProjectStore, getActiveProjectNames } from "@/stores/project-store"
 import { useStateStore } from "@/stores/state-store"
 import { StackBadge } from "./project-card"
+import { isCollectionVisible } from "@/components/collection-picker"
 import { Sheet } from "./sheet"
 import type { ProjectProfile } from "@/types"
 
@@ -21,10 +22,11 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
     return new Set(getActiveProjectNames())
   }, [terminals, processes, tasks, agents])
 
+  const visibleProjects = projects.filter((p) => isCollectionVisible(p.collection_id, collections))
   // When activeFilter, show all active projects across collections; otherwise filter by collection
   const filtered = activeFilter
-    ? projects.filter((p) => activeSet.has(p.name))
-    : projects.filter((p) => !currentCollection || p.collection_id === currentCollection)
+    ? visibleProjects.filter((p) => activeSet.has(p.name))
+    : visibleProjects.filter((p) => !currentCollection || p.collection_id === currentCollection)
 
   return (
     <Sheet onClose={onClose} title="Select Project">

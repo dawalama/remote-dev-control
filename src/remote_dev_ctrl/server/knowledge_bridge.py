@@ -23,6 +23,18 @@ logger = logging.getLogger(__name__)
 _SAFE_PATH_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_.-")
 
 
+class KnowledgeDisabledError(Exception):
+    """Raised when an operation is requested while knowledge.enabled is false."""
+
+
+class RejectedWrite(Exception):
+    """Re-exported or wrapped RejectedWrite error from corpusnote."""
+
+
+class MissingPage(Exception):
+    """Re-exported or wrapped MissingPage error from corpusnote."""
+
+
 def _get_knowledge_root() -> Path:
     cfg = Config.load()
     if cfg.knowledge.root:
@@ -118,8 +130,9 @@ def pack_for_session(session: Any, *, extra_secrets: tuple[str, ...] | None = No
 
     try:
         corpus = _get_corpus_handle(corpus_id)
+        scrubbed_goal, _ = corpusnote.scrub_text(goal, secrets)
         req = corpusnote.PackRequest(
-            goal=goal,
+            goal=scrubbed_goal,
             project=session.project,
             workstream_id=session.channel_id,
             parent_session_id=parent_id,
@@ -171,8 +184,9 @@ def pack_for_orchestrator(
 
     try:
         corpus = _get_corpus_handle(corpus_id)
+        scrubbed_goal, _ = corpusnote.scrub_text(goal, secrets)
         req = corpusnote.PackRequest(
-            goal=goal,
+            goal=scrubbed_goal,
             project=project,
             workstream_id=workstream_id,
             parent_session_id=None,
@@ -492,3 +506,86 @@ def quarantine_corpus(collection_id: str) -> None:
             shutil.rmtree(qmd_dir, ignore_errors=True)
         except Exception:
             pass
+
+
+def ingest_knowledge_note(
+    collection_id: str,
+    title: str,
+    text: str,
+    project: str | None = None,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Ingest a note into collection corpus. Returns dict with relpath and title."""
+    if not is_knowledge_enabled():
+        raise KnowledgeDisabledError("knowledge_disabled")
+
+    import corpusnote
+    corpus = _get_corpus_handle(collection_id)
+    secrets = vault_extra_secrets()
+    try:
+        page = corpusnote.ingest_text(
+            corpus,
+            title=title,
+            text=text,
+            project=project,
+            project_id=project_id,
+            extra_secrets=secrets,
+        )
+        return {"success": True, "relpath": page.relpath, "title": page.frontmatter.get("title")}
+    except corpusnote.RejectedWrite as exc:
+        raise RejectedWrite(str(exc)) from exc
+
+
+def propose_knowledge_rule(
+    collection_id: str,
+    slug: str,
+    title: str,
+    body: str,
+    project: str | None = None,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Propose a rule into collection corpus. Returns dict with relpath and confirmed: False."""
+    if not is_knowledge_enabled():
+        raise KnowledgeDisabledError("knowledge_disabled")
+
+    import corpusnote
+    corpus = _get_corpus_handle(collection_id)
+    secrets = vault_extra_secrets()
+    try:
+        page = corpusnote.propose_rule(
+            corpus,
+            slug=slug,
+            title=title,
+            body=body,
+            project=project,
+            project_id=project_id,
+            extra_secrets=secrets,
+        )
+        return {"relpath": page.relpath, "confirmed": False}
+    except corpusnote.RejectedWrite as exc:
+        raise RejectedWrite(str(exc)) from exc
+
+
+def confirm_knowledge_rule(
+    collection_id: str,
+    relpath: str,
+    confirmed_by: str,
+) -> dict[str, Any]:
+    """Confirm a proposed rule in collection corpus. Returns dict with relpath and confirmed: True."""
+    if not is_knowledge_enabled():
+        raise KnowledgeDisabledError("knowledge_disabled")
+
+    import corpusnote
+    corpus = _get_corpus_handle(collection_id)
+    try:
+        page = corpusnote.confirm_rule(
+            corpus,
+            relpath,
+            confirmed_by=confirmed_by,
+        )
+        return {"relpath": page.relpath, "confirmed": True}
+    except corpusnote.RejectedWrite as exc:
+        raise RejectedWrite(str(exc)) from exc
+    except corpusnote.MissingPage as exc:
+        raise MissingPage(str(exc)) from exc
+
