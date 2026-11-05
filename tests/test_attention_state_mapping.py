@@ -61,7 +61,7 @@ def test_collection_roles():
     """Verify collection roles: unsorted, own, client, personal.
     - Default is unsorted
     - General stays unsorted
-    - At most one collection can be own
+    - Own collections can coexist without singularity auto-demotion
     - Personal does not demote own and is not singular
     - Unknown role raises ValueError
     """
@@ -100,12 +100,12 @@ def test_collection_roles():
     assert repo.get(cp1.id).role == "personal"
     assert repo.get(c2.id).role == "own"
 
-    # Create another own collection -> previous own reverts to unsorted, personal untouched
+    # Create another own collection -> both stay own (no singularity constraint)
     c3 = repo.create(Collection(name="Holding Co", role="own"))
     assert c3.role == "own"
     
     fresh_c2 = repo.get(c2.id)
-    assert fresh_c2.role == "unsorted"
+    assert fresh_c2.role == "own"
     assert repo.get(cp1.id).role == "personal"
 
     # Unknown role raises ValueError on create and update

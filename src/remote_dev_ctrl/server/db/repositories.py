@@ -219,8 +219,6 @@ class CollectionRepository:
             if role not in self.VALID_ROLES:
                 raise ValueError(f"Invalid collection role: {role}")
         collection.role = role
-        if role == "own":
-            self.db.execute("UPDATE collections SET role = 'unsorted' WHERE role = 'own'")
         self.db.execute("""
             INSERT INTO collections (id, name, description, sort_order, role, default_agent_id, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -294,8 +292,6 @@ class CollectionRepository:
             if role not in self.VALID_ROLES:
                 raise ValueError(f"Invalid collection role: {role}")
         collection.role = role
-        if role == "own":
-            self.db.execute("UPDATE collections SET role = 'unsorted' WHERE role = 'own' AND id != ?", (collection.id,))
         self.db.execute("""
             UPDATE collections SET name = ?, description = ?, sort_order = ?, role = ?, default_agent_id = ?, updated_at = ?
             WHERE id = ?

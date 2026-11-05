@@ -1659,10 +1659,6 @@ def collections_bootstrap():
     from .server.db.repositories import get_collection_repo
 
     repo = get_collection_repo()
-    existing_all = repo.list()
-
-    # If a different collection is already own, stop before creating truesteps
-    existing_own = next((c for c in existing_all if c.role == "own" and c.id != "truesteps"), None)
 
     targets = [
         ("truesteps", "TrueSteps", "own"),
@@ -1675,13 +1671,6 @@ def collections_bootstrap():
         existing = repo.get(cid) or repo.get(cname)
         if existing:
             rprint(f"Collection [bold]{cid}[/bold] ({cname}) exists.")
-            continue
-
-        if crole == "own" and existing_own:
-            rprint(
-                f"[yellow]Another collection already has role 'own' ({existing_own.id}: {existing_own.name}). "
-                "Resolve it before creating TrueSteps.[/yellow]"
-            )
             continue
 
         try:
