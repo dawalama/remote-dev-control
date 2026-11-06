@@ -125,6 +125,7 @@ def test_supervised_session_with_worktree_integration(temp_git_repo, monkeypatch
         channel_id=channel_id,
         project=project_name,
         goal="Test worktree goal",
+        provider="diagnostic",
         worktree_mode="isolated",
     )
     assert session.worktree_mode == "isolated"
@@ -149,6 +150,7 @@ def test_supervised_session_with_worktree_integration(temp_git_repo, monkeypatch
         channel_id=channel_id,
         project=project_name,
         goal="Followup goal",
+        provider="diagnostic",
         discovered_from=session.id,
     )
     assert followup.worktree_mode == "reuse"
@@ -183,6 +185,7 @@ def test_supervised_session_with_direct_mode(temp_git_repo):
         channel_id=channel_id,
         project=project_name,
         goal="Test direct goal",
+        provider="diagnostic",
         worktree_mode="direct",
     )
     assert session.worktree_mode == "direct"

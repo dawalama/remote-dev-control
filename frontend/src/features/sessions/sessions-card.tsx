@@ -313,13 +313,19 @@ export function SessionsCard({
     return () => window.clearInterval(interval)
   })
 
+  const stagedProviderRef = useRef<Record<string, string>>({})
+  const startingSessionRef = useRef<string | null>(null)
+
   const assignStagedAgent = async (sessionId: string, provider: string) => {
+    stagedProviderRef.current[sessionId] = provider
     setSessions((prev) => prev.map((session) => (
       session.id === sessionId ? { ...session, agent_provider: provider } : session
     )))
     try {
       await PATCH(`/sessions/${sessionId}/agent`, { provider })
     } catch (err) {
+      if (startingSessionRef.current === sessionId) return
+      delete stagedProviderRef.current[sessionId]
       const msg = err instanceof Error ? err.message : String(err || "")
       const detail = msg.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] || msg.replace(/^API \d+:\s*/, "") || "Could not change agent"
       toast(detail, "error")
@@ -330,8 +336,10 @@ export function SessionsCard({
   // Start a proposed (staged) session
   const startSession = async (sessionId: string) => {
     setStartingSessionId(sessionId)
+    startingSessionRef.current = sessionId
     try {
-      await POST(`/sessions/${sessionId}/start`)
+      const provider = stagedProviderRef.current[sessionId]
+      await POST(`/sessions/${sessionId}/start`, provider ? { provider } : undefined)
       toast("Session launched into execution", "success")
       await load()
       openSessionFromHub(sessionId)
@@ -340,6 +348,7 @@ export function SessionsCard({
       const detail = msg.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] || msg.replace(/^API \d+:\s*/, "") || "Could not start session"
       toast(detail, "error")
     } finally {
+      if (startingSessionRef.current === sessionId) startingSessionRef.current = null
       setStartingSessionId(null)
     }
   }

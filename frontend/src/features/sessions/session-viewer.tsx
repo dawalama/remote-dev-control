@@ -123,6 +123,7 @@ export function SessionViewer({
   const [showMoreActions, setShowMoreActions] = useState(false)
   const [terminalGeneration, setTerminalGeneration] = useState(0)
   const [retryProvider, setRetryProvider] = useState("orchestrated")
+  const startingStagedRef = useRef(false)
   const [providerOptions, setProviderOptions] = useState<Array<{ id: string; label: string; ready?: boolean }>>([
     { id: "codex", label: "Codex CLI" },
     { id: "claude", label: "Claude Code" },
@@ -297,8 +298,9 @@ export function SessionViewer({
     setSession({ ...session, agent_provider: provider })
     try {
       await PATCH(`/sessions/${sessionId}/agent`, { provider })
-      await loadSession()
+      if (!startingStagedRef.current) await loadSession()
     } catch (error) {
+      if (startingStagedRef.current) return
       setSession((current) => (current ? { ...current, agent_provider: previous } : current))
       toast(apiErrorDetail(error, "Could not change agent"), "error")
       await loadSession()
@@ -306,13 +308,18 @@ export function SessionViewer({
   }
 
   const startStaged = async () => {
+    startingStagedRef.current = true
     try {
-      await POST(`/sessions/${sessionId}/start`)
+      await POST(`/sessions/${sessionId}/start`, {
+        provider: session?.agent_provider || "orchestrated",
+      })
       toast("Session started", "success")
       await Promise.all([loadSession(), loadSupervision(), loadArtifact(), loadGitStatus()])
     } catch (error) {
       toast(apiErrorDetail(error, "Could not start session"), "error")
       await loadSession()
+    } finally {
+      startingStagedRef.current = false
     }
   }
 

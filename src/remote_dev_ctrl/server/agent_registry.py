@@ -648,13 +648,14 @@ def wrapper_for_starter(
 def _path_known_agents(
     seen: set[str],
     disabled: set[str],
-    which_fn: Callable[[str], str | None] = shutil.which,
+    which_fn: Callable[[str], str | None] | None = None,
 ) -> list[AgentWrapperSpec]:
+    check = which_fn or shutil.which
     found: list[AgentWrapperSpec] = []
     for agent_id in _KNOWN_TERMINAL_AGENTS:
         if agent_id in seen or agent_id in disabled:
             continue
-        if which_fn(_KNOWN_TERMINAL_AGENTS[agent_id]["executable"]) is None:
+        if check(_KNOWN_TERMINAL_AGENTS[agent_id]["executable"]) is None:
             continue
         found.append(_known_agent_spec(agent_id))
     return found
