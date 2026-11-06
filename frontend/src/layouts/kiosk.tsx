@@ -4,7 +4,6 @@ import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
 import { ProcessesCard } from "@/features/mobile/processes-card"
-import { SessionsNavButton } from "@/features/sessions/sessions-hub"
 import { ContextsCard } from "@/features/mobile/contexts-card"
 import { BrowserCard } from "@/features/mobile/browser-card"
 import { TerminalOverlay } from "@/features/mobile/terminal-overlay"
@@ -55,8 +54,31 @@ export function KioskLayout() {
   const needsAttentionCount = useUIStore((s) => s.needsAttentionCount)
   const openProcessLog = useLogsStore((s) => s.openProcessLog)
 
-  // Primary view mode: split, terminal, chat, preview, services, goals
-  const [viewMode, setViewMode] = useState<KioskViewMode>("split")
+  // Primary view mode: default to terminal (clean, focused, full-width canvas) or user's saved preference
+  const [viewMode, setViewModeState] = useState<KioskViewMode>(() => {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("rdc_kiosk_view") : null
+    return (saved as KioskViewMode) || "terminal"
+  })
+
+  const setViewMode = (mode: KioskViewMode) => {
+    localStorage.setItem("rdc_kiosk_view", mode)
+    setViewModeState(mode)
+  }
+
+  // Side panel toggle state (collapsible companion panel in split view)
+  const [sidePanelOpen, setSidePanelOpen] = useState<boolean>(() => {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("rdc_kiosk_side_panel") : null
+    return saved !== null ? saved === "true" : true
+  })
+
+  const toggleSidePanel = () => {
+    setSidePanelOpen((prev) => {
+      const next = !prev
+      localStorage.setItem("rdc_kiosk_side_panel", String(next))
+      return next
+    })
+  }
+
   const [activeSideTab, setActiveSideTab] = useState<KioskSideTab>("chat")
 
   const [projectSheetOpen, setProjectSheetOpen] = useState(false)
@@ -208,19 +230,6 @@ export function KioskLayout() {
         >
           <button
             role="tab"
-            aria-selected={viewMode === "split"}
-            onClick={() => setViewMode("split")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[38px] flex items-center gap-1.5 ${
-              viewMode === "split"
-                ? "bg-blue-600 text-white shadow-sm"
-                : "text-gray-400 hover:text-gray-200 hover:bg-gray-700/50"
-            }`}
-          >
-            <span>◫</span>
-            <span className="hidden sm:inline">Split</span>
-          </button>
-          <button
-            role="tab"
             aria-selected={viewMode === "terminal"}
             onClick={() => setViewMode("terminal")}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[38px] flex items-center gap-1.5 ${
@@ -244,6 +253,19 @@ export function KioskLayout() {
           >
             <span>💬</span>
             <span className="hidden sm:inline">Chat</span>
+          </button>
+          <button
+            role="tab"
+            aria-selected={viewMode === "goals"}
+            onClick={() => setViewMode("goals")}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[38px] flex items-center gap-1.5 ${
+              viewMode === "goals"
+                ? "bg-amber-600 text-white shadow-sm"
+                : "text-gray-400 hover:text-gray-200 hover:bg-gray-700/50"
+            }`}
+          >
+            <span>🎯</span>
+            <span className="hidden sm:inline">Goals</span>
           </button>
           <button
             role="tab"
@@ -273,23 +295,21 @@ export function KioskLayout() {
           </button>
           <button
             role="tab"
-            aria-selected={viewMode === "goals"}
-            onClick={() => setViewMode("goals")}
+            aria-selected={viewMode === "split"}
+            onClick={() => setViewMode("split")}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[38px] flex items-center gap-1.5 ${
-              viewMode === "goals"
-                ? "bg-amber-600 text-white shadow-sm"
+              viewMode === "split"
+                ? "bg-blue-600 text-white shadow-sm"
                 : "text-gray-400 hover:text-gray-200 hover:bg-gray-700/50"
             }`}
           >
-            <span>🎯</span>
-            <span className="hidden sm:inline">Goals</span>
+            <span>◫</span>
+            <span className="hidden sm:inline">Split</span>
           </button>
         </div>
 
         {/* Right: Status, Voice & Menu */}
         <div className="flex items-center gap-2">
-          <SessionsNavButton compact />
-
           <button
             onClick={voice.toggle}
             className={`w-10 h-10 rounded-full flex items-center justify-center text-base transition-all ${
@@ -361,37 +381,54 @@ export function KioskLayout() {
 
       {/* ── Main Canvas Viewport ── */}
       <main className="flex-1 min-h-0 overflow-hidden p-3">
-        {/* Split Mode: 55% Terminal on Left, 45% Touch Panel on Right */}
+        {/* Split Mode: Resizable / Toggleable Terminal & Companion Touch Panel */}
         {viewMode === "split" && (
           <div className="h-full grid grid-cols-1 lg:grid-cols-12 gap-3 min-h-0">
-            <div className="lg:col-span-7 flex flex-col min-h-0 bg-gray-950 rounded-xl border border-gray-800 overflow-hidden shadow-inner">
-              <EmbeddedTerminal onTerminalSendReady={(send) => { terminalSendRef.current = send }} />
+            <div className={`${sidePanelOpen ? "lg:col-span-7" : "lg:col-span-12"} flex flex-col min-h-0 bg-gray-950 rounded-xl border border-gray-800 overflow-hidden shadow-inner transition-all`}>
+              <div className="flex items-center justify-between px-3 py-1.5 bg-gray-900 border-b border-gray-800 flex-shrink-0">
+                <span className="text-xs font-semibold text-gray-300 font-mono">📟 Active Terminal</span>
+                <button
+                  type="button"
+                  onClick={toggleSidePanel}
+                  className="px-2.5 py-1 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 flex items-center gap-1.5 transition-colors border border-gray-700 shadow-sm"
+                  title={sidePanelOpen ? "Collapse Companion Panel" : "Expand Companion Panel"}
+                >
+                  <span>{sidePanelOpen ? "◧ Hide Side Panel" : "◫ Show Side Panel"}</span>
+                </button>
+              </div>
+              <div className="flex-1 min-h-0">
+                <EmbeddedTerminal onTerminalSendReady={(send) => { terminalSendRef.current = send }} />
+              </div>
             </div>
-            <div className="lg:col-span-5 flex flex-col min-h-0 bg-gray-850 rounded-xl border border-gray-800 overflow-hidden shadow-sm">
-              <KioskSideTouchPanel
-                activeTab={activeSideTab}
-                onSelectTab={setActiveSideTab}
-                currentProject={currentProject}
-                processesWithPorts={processesWithPorts}
-                onLogs={(id, name) => openProcessLog(id, name)}
-                onOpenSession={(session) => {
-                  useBrowserStore.getState().setActiveSession({
-                    id: session.session_id,
-                    target_url: "",
-                    status: "running",
-                    viewer_url: session.viewer_url,
-                  } as BrowserSession)
-                  setBrowserFullscreen(true)
-                }}
-                onPlayRecording={(id) => setPlayingRecording(id)}
-                onEditProject={() => setProjectSettingsOpen(true)}
-                onCreateTask={() => setCreateTaskOpen(true)}
-                onSpawnTerminal={handleSpawnTerminal}
-                onOpenBrowserUrl={() => setBrowserUrlOpen(true)}
-                onOpenActivity={() => setActivityOpen(true)}
-                onOpenMenu={() => setHamburgerOpen(true)}
-              />
-            </div>
+
+            {sidePanelOpen && (
+              <div className="lg:col-span-5 flex flex-col min-h-0 bg-gray-850 rounded-xl border border-gray-800 overflow-hidden shadow-sm">
+                <KioskSideTouchPanel
+                  activeTab={activeSideTab}
+                  onSelectTab={setActiveSideTab}
+                  onClose={() => setSidePanelOpen(false)}
+                  currentProject={currentProject}
+                  processesWithPorts={processesWithPorts}
+                  onLogs={(id, name) => openProcessLog(id, name)}
+                  onOpenSession={(session) => {
+                    useBrowserStore.getState().setActiveSession({
+                      id: session.session_id,
+                      target_url: "",
+                      status: "running",
+                      viewer_url: session.viewer_url,
+                    } as BrowserSession)
+                    setBrowserFullscreen(true)
+                  }}
+                  onPlayRecording={(id) => setPlayingRecording(id)}
+                  onEditProject={() => setProjectSettingsOpen(true)}
+                  onCreateTask={() => setCreateTaskOpen(true)}
+                  onSpawnTerminal={handleSpawnTerminal}
+                  onOpenBrowserUrl={() => setBrowserUrlOpen(true)}
+                  onOpenActivity={() => setActivityOpen(true)}
+                  onOpenMenu={() => setHamburgerOpen(true)}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -498,9 +535,7 @@ export function KioskLayout() {
           if (!currentProject) { toast("Select a project first", "warning"); return }
           void handleSpawnTerminal("")
         }}
-        onOpenBrowser={() => setBrowserUrlOpen(true)}
         onOpenActivity={() => setActivityOpen(true)}
-        onOpenChat={() => setViewMode("chat")}
         onOpenMenu={() => setHamburgerOpen(true)}
         voice={voice}
       />
@@ -627,6 +662,7 @@ function KioskSideTouchPanel({
   onOpenBrowserUrl,
   onOpenActivity,
   onOpenMenu,
+  onClose,
 }: {
   activeTab: KioskSideTab
   onSelectTab: (tab: KioskSideTab) => void
@@ -641,6 +677,7 @@ function KioskSideTouchPanel({
   onOpenBrowserUrl: () => void
   onOpenActivity: () => void
   onOpenMenu: () => void
+  onClose?: () => void
 }) {
   const tabs: { id: KioskSideTab; label: string; icon: string }[] = [
     { id: "chat", label: "Chat", icon: "💬" },
@@ -675,6 +712,19 @@ function KioskSideTouchPanel({
             <span>{t.label}</span>
           </button>
         ))}
+
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="ml-auto px-2 py-1 text-xs rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors flex-shrink-0 flex items-center gap-1 border border-gray-700"
+            title="Hide Companion Panel"
+            aria-label="Hide Companion Panel"
+          >
+            <span>✕</span>
+            <span className="hidden sm:inline text-[11px]">Hide</span>
+          </button>
+        )}
       </div>
 
       {/* Side Tab Body Viewport */}
@@ -767,18 +817,14 @@ function KioskSideTouchPanel({
 function KioskActionBar({
   onCreateTask,
   onSpawnTerminal,
-  onOpenBrowser,
   onOpenActivity,
   onOpenMenu,
-  onOpenChat,
   voice,
 }: {
   onCreateTask: () => void
   onSpawnTerminal: () => void
-  onOpenBrowser: () => void
   onOpenActivity: () => void
   onOpenMenu: () => void
-  onOpenChat: () => void
   voice: { listening: boolean; toggle: () => void }
 }) {
   const phone = useStateStore((s) => s.phone)
@@ -803,45 +849,33 @@ function KioskActionBar({
       <div className="max-w-7xl mx-auto px-4 py-2">
         <div className="flex gap-2.5">
           <button
-            className="flex-1 py-2.5 text-sm rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold shadow-sm transition-colors min-h-[48px]"
+            className="flex-1 py-2.5 text-sm rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold shadow-sm transition-colors min-h-[46px]"
             onClick={onCreateTask}
           >
             + New Goal
           </button>
           <button
-            className="flex-1 py-2.5 text-sm rounded-xl bg-gray-800 hover:bg-gray-750 text-gray-200 font-mono font-medium border border-gray-700/60 transition-colors min-h-[48px]"
+            className="flex-1 py-2.5 text-sm rounded-xl bg-gray-800 hover:bg-gray-750 text-gray-200 font-mono font-medium border border-gray-700/60 transition-colors min-h-[46px]"
             onClick={onSpawnTerminal}
           >
-            &gt;_ Shell
+            &gt;_ New Shell
           </button>
           <button
-            className="flex-1 py-2.5 text-sm rounded-xl bg-gray-800 hover:bg-gray-750 text-gray-200 font-semibold border border-gray-700/60 transition-colors min-h-[48px]"
-            onClick={onOpenChat}
-          >
-            💬 Chat
-          </button>
-          <button
-            className="flex-1 py-2.5 text-sm rounded-xl bg-gray-800 hover:bg-gray-750 text-gray-200 font-semibold border border-gray-700/60 transition-colors min-h-[48px]"
-            onClick={onOpenBrowser}
-          >
-            🌐 Preview
-          </button>
-          <button
-            className="flex-1 py-2.5 text-sm rounded-xl bg-gray-800 hover:bg-gray-750 text-gray-200 font-semibold border border-gray-700/60 transition-colors min-h-[48px]"
+            className="flex-1 py-2.5 text-sm rounded-xl bg-gray-800 hover:bg-gray-750 text-gray-200 font-semibold border border-gray-700/60 transition-colors min-h-[46px]"
             onClick={onOpenActivity}
           >
-            📜 Activity
+            📜 Activity Timeline
           </button>
 
           {/* Voice Dictation Button */}
           <button
-            className={`w-12 py-2.5 rounded-xl flex items-center justify-center text-lg flex-shrink-0 transition-all min-h-[48px] ${
+            className={`w-12 py-2 rounded-xl flex items-center justify-center text-lg flex-shrink-0 transition-all min-h-[46px] ${
               voice.listening
                 ? "bg-red-600 text-white animate-pulse shadow-md"
                 : "bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-750 border border-gray-700/60"
             }`}
             onClick={voice.toggle}
-            title={voice.listening ? "Stop voice" : "Start voice"}
+            title={voice.listening ? "Stop voice dictation" : "Start voice dictation"}
             aria-label="Voice Dictation"
           >
             🎤
@@ -849,7 +883,7 @@ function KioskActionBar({
 
           {/* Phone Button */}
           <button
-            className={`w-12 py-2.5 rounded-xl flex items-center justify-center text-lg flex-shrink-0 transition-all min-h-[48px] ${
+            className={`w-12 py-2 rounded-xl flex items-center justify-center text-lg flex-shrink-0 transition-all min-h-[46px] ${
               phone?.active
                 ? "bg-emerald-600 text-white animate-pulse shadow-md"
                 : phone?.configured
@@ -865,7 +899,7 @@ function KioskActionBar({
 
           {/* Menu Button */}
           <button
-            className="w-12 py-2.5 rounded-xl flex items-center justify-center text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-750 border border-gray-700/60 flex-shrink-0 transition-colors min-h-[48px]"
+            className="w-12 py-2 rounded-xl flex items-center justify-center text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-750 border border-gray-700/60 flex-shrink-0 transition-colors min-h-[46px]"
             onClick={onOpenMenu}
             title="Menu"
             aria-label="Menu"
