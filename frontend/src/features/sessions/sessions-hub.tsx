@@ -17,6 +17,7 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
   const [briefing, setBriefing] = useState(false)
   const [briefText, setBriefText] = useState<string | null>(null)
   const toast = useUIStore((state) => state.toast)
+  const layout = useUIStore((state) => state.layout)
   const setVoicePanelOpen = useUIStore((state) => state.setVoicePanelOpen)
   const viewingSessionId = useUIStore((state) => state.viewingSessionId)
   const setViewingSessionId = useUIStore((state) => state.setViewingSessionId)
@@ -27,6 +28,7 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
   const activeChannel = channels.find((c) => c.id === activeChannelId)
   const allActions = useStateStore((state) => state.actions)
   const workstreamProjects = activeChannel?.project_names ?? []
+  const isMobileOrKiosk = layout === "mobile" || layout === "kiosk"
   const runningActions = allActions.filter(
     (a) => a.status === "running" && workstreamProjects.includes(a.project)
   )
@@ -67,18 +69,18 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
 
   return (
     <section className="flex-1 flex flex-col min-h-0 overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
-      <header className="flex flex-wrap items-center gap-2.5 border-b border-gray-800 px-4 py-2.5 bg-gray-900/90">
-        <div className="min-w-0 flex-1 flex items-center gap-2.5">
-          <h2 className="text-sm font-semibold text-gray-100 flex items-center gap-2">
-            <span>{activeChannel?.type === "system" ? "HomeBase Overview" : "Goal Board"}</span>
+      <header className="flex items-center justify-between gap-1.5 border-b border-gray-800 px-3 py-2 bg-gray-900/90 overflow-x-auto">
+        <div className="min-w-0 flex items-center gap-1.5 flex-shrink-0">
+          <h2 className="text-sm font-semibold text-gray-100 flex items-center gap-1.5 whitespace-nowrap">
+            <span>{activeChannel?.type === "system" ? "HomeBase" : "Goal Board"}</span>
             {activeChannel && (
-              <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-mono font-medium">
-                {activeChannel.name}
+              <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-mono font-medium truncate max-w-[120px]">
+                #{activeChannel.name.replace(/^#+/, "")}
               </span>
             )}
           </h2>
           {runningActions.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 pl-2 border-l border-gray-800">
+            <div className="hidden sm:flex items-center gap-1.5 pl-2 border-l border-gray-800">
               {runningActions.map((action) => {
                 const url = action.preview_url || (action.port ? `http://localhost:${action.port}` : null)
                 if (!url) return null
@@ -92,7 +94,7 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
                     title={`Open ${action.name || action.id} (${url}) in new tab`}
                   >
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
-                    <span className="truncate max-w-[140px]">{action.name || action.id}</span>
+                    <span className="truncate max-w-[120px]">{action.name || action.id}</span>
                     <span className="text-[10px] text-emerald-400/70 font-mono flex-shrink-0">
                       {action.preview_url ? action.preview_url.replace(/^https?:\/\//, "") : `:${action.port}`}
                     </span>
@@ -104,76 +106,78 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
           )}
         </div>
 
-        {!onCloseModal && (
-          <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5">
-            <button
-              type="button"
-              onClick={() => setWorkspaceMode("goals")}
-              className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-                workspaceMode === "goals" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              📋 Board
-            </button>
-            <button
-              type="button"
-              onClick={() => setWorkspaceMode("terminal")}
-              className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-                workspaceMode === "terminal" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
-              }`}
-              title="Switch to raw PTY terminal view (⌘J)"
-            >
-              💻 Terminal (⌘J)
-            </button>
-          </div>
-        )}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {!onCloseModal && layout === "desktop" && (
+            <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 mr-1">
+              <button
+                type="button"
+                onClick={() => setWorkspaceMode("goals")}
+                className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                  workspaceMode === "goals" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                📋 Board
+              </button>
+              <button
+                type="button"
+                onClick={() => setWorkspaceMode("terminal")}
+                className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                  workspaceMode === "terminal" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+                }`}
+                title="Switch to raw PTY terminal view (⌘J)"
+              >
+                💻 Terminal (⌘J)
+              </button>
+            </div>
+          )}
 
-        <button
-          type="button"
-          disabled={briefing}
-          onClick={() => { void runBrief() }}
-          className="rounded border border-blue-500/40 bg-blue-500/10 px-2.5 py-1 text-xs font-medium text-blue-200 hover:bg-blue-500/20 disabled:opacity-50"
-          title="Whole HomeBase status (all projects)"
-        >
-          {briefing ? "Briefing…" : "Brief me"}
-        </button>
+          <button
+            type="button"
+            disabled={briefing}
+            onClick={() => { void runBrief() }}
+            className="rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-[11px] sm:text-xs font-medium text-blue-200 hover:bg-blue-500/20 disabled:opacity-50 whitespace-nowrap"
+            title="Whole HomeBase status (all projects)"
+          >
+            {briefing ? "Briefing…" : isMobileOrKiosk ? "🎙️ Brief" : "Brief me"}
+          </button>
 
-        <button
-          type="button"
-          onClick={() => setShowSetupCards((v) => !v)}
-          className={`rounded border px-2.5 py-1 text-xs transition-colors ${
-            showSetupCards
-              ? "border-gray-600 bg-gray-800 text-white"
-              : "border-gray-700 text-gray-400 hover:text-gray-200"
-          }`}
-        >
-          Agent &amp; Evidence Setup
-        </button>
+          <button
+            type="button"
+            onClick={() => setShowSetupCards((v) => !v)}
+            className={`rounded border px-2 py-1 text-[11px] sm:text-xs whitespace-nowrap transition-colors ${
+              showSetupCards
+                ? "border-gray-600 bg-gray-800 text-white"
+                : "border-gray-700 text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            {isMobileOrKiosk ? "⚙️ Setup" : "Agent & Evidence Setup"}
+          </button>
 
-        <button
-          onClick={() => setShowProjectBootstrap(true)}
-          className="rounded border border-gray-700 bg-gray-800 px-2.5 py-1 text-xs text-gray-200 hover:bg-gray-700"
-        >
-          + Project
-        </button>
+          <button
+            onClick={() => setShowProjectBootstrap(true)}
+            className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-[11px] sm:text-xs text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+          >
+            + Project
+          </button>
 
-        {onCloseModal && (
-          <>
-            <button
-              type="button"
-              onClick={() => setVoicePanelOpen(true)}
-              className="rounded border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-200 hover:bg-red-500/20"
-            >
-              🎤 Voice
-            </button>
-            <button
-              onClick={onCloseModal}
-              className="rounded border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800 hover:text-white"
-            >
-              Close
-            </button>
-          </>
-        )}
+          {onCloseModal && (
+            <>
+              <button
+                type="button"
+                onClick={() => setVoicePanelOpen(true)}
+                className="rounded border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-200 hover:bg-red-500/20"
+              >
+                🎤 Voice
+              </button>
+              <button
+                onClick={onCloseModal}
+                className="rounded border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800 hover:text-white"
+              >
+                Close
+              </button>
+            </>
+          )}
+        </div>
       </header>
 
       {briefText && (

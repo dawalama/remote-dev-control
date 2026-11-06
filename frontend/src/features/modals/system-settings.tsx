@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 import { GET, POST, PATCH, DELETE } from "@/lib/api"
 import { useUIStore } from "@/stores/ui-store"
-import { useTerminalPresetsStore } from "@/stores/terminal-presets-store"
+import { useTerminalPresetsStore, type TerminalPreset } from "@/stores/terminal-presets-store"
 import { useModels, fetchModels, ModelSelector } from "@/features/tasks/create-task-form"
 
 interface TTSConfig {
@@ -287,21 +287,34 @@ export function SystemSettingsModal({ onClose }: { onClose: () => void }) {
 
 // ─── Voice & TTS ──────────────────────────────────────────────────────
 
+const GOAL_CLI = new Set(["grok", "agy", "claude", "codex", "cursor", "cursor-agent"])
+
+function starterCommandHead(command: string): string {
+  const parts = command.trim().split(/\s+/)
+  if (parts[0] === "rdc-launch") {
+    const next = parts.slice(1).find((part) => part && !part.startsWith("-"))
+    return next?.split("/").pop() || ""
+  }
+  return parts[0]?.split("/").pop() || ""
+}
+
+function starterRunsGoals(preset: TerminalPreset): boolean {
+  if ((preset.goal_command || "").includes("{prompt}")) return true
+  const head = starterCommandHead(preset.command)
+  if (GOAL_CLI.has(head)) return true
+  return Boolean(preset.runs_goals && preset.agent_id && head === preset.agent_id)
+}
+
 function TerminalSectionGlobal() {
-  const presets = useTerminalPresetsStore((s) => s.presets)
   const loadPresets = useTerminalPresetsStore((s) => s.load)
   const savePresets = useTerminalPresetsStore((s) => s.save)
   const toast = useUIStore((s) => s.toast)
   const [saving, setSaving] = useState(false)
-  const [editList, setEditList] = useState<typeof presets>([])
+  const [editList, setEditList] = useState<TerminalPreset[]>([])
 
-  useEffect(() => {
-    loadPresets()
-  }, [loadPresets])
-
-  useEffect(() => {
-    setEditList(presets)
-  }, [presets])
+  useMountEffect(() => {
+    void loadPresets().then((rows) => setEditList(rows))
+  })
 
   const updateStarter = (idx: number, patch: Partial<(typeof editList)[0]>) => {
     setEditList((prev) => prev.map((p, i) => (i === idx ? { ...p, ...patch } : p)))
@@ -337,7 +350,8 @@ function TerminalSectionGlobal() {
   const save = async () => {
     setSaving(true)
     try {
-      await savePresets(editList)
+      const saved = await savePresets(editList)
+      setEditList(saved)
       toast("Terminal starters saved", "success")
     } catch {
       toast("Failed to save terminal starters", "error")
@@ -348,36 +362,45 @@ function TerminalSectionGlobal() {
   return (
     <div className="space-y-3">
       <p className="text-[11px] text-gray-400">
-        Configure the global terminal starters shown in the "+" menus (Cursor, Claude, Shell, etc.).
-        Projects can still choose their own default starter in project settings.
-      </p>
-      <p className="text-[11px] text-gray-500">
-        Tip: put the full command here (including args). Example: <span className="font-mono">claude --continue</span>
+        Each row is a terminal starter and an agent. grok, agy, Claude, Codex, and Cursor run goals.
+        Any other command stays a terminal until you add a goal command that includes {"{prompt}"}.
       </p>
       <div className="space-y-2 border border-gray-700 rounded p-2 bg-gray-900/60">
         {editList.map((p, idx) => (
-          <div key={p.id} className="flex flex-wrap items-center gap-2 text-xs">
-            <input
-              className="w-10 font-mono bg-gray-800 rounded px-1"
-              value={p.icon}
-              onChange={(e) => updateStarter(idx, { icon: e.target.value })}
-              placeholder="icon"
-            />
-            <input
-              className="w-24 bg-gray-800 rounded px-1"
-              value={p.label}
-              onChange={(e) => updateStarter(idx, { label: e.target.value })}
-              placeholder="Label"
-            />
-            <input
-              className="flex-1 min-w-0 font-mono bg-gray-800 rounded px-1"
-              value={p.command}
-              onChange={(e) => updateStarter(idx, { command: e.target.value })}
-              placeholder="command"
-            />
-            <button type="button" className="text-gray-500 hover:text-gray-300 text-[10px]" onClick={() => moveStarter(idx, -1)} disabled={idx === 0} title="Move up">▲</button>
-            <button type="button" className="text-gray-500 hover:text-gray-300 text-[10px]" onClick={() => moveStarter(idx, 1)} disabled={idx === editList.length - 1} title="Move down">▼</button>
-            <button type="button" className="text-red-400 hover:text-red-300" onClick={() => removeStarter(idx)}>×</button>
+          <div key={p.id} className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <input
+                className="w-10 font-mono bg-gray-800 rounded px-1"
+                value={p.icon}
+                onChange={(e) => updateStarter(idx, { icon: e.target.value })}
+                placeholder="icon"
+              />
+              <input
+                className="w-24 bg-gray-800 rounded px-1"
+                value={p.label}
+                onChange={(e) => updateStarter(idx, { label: e.target.value })}
+                placeholder="Label"
+              />
+              <input
+                className="flex-1 min-w-0 font-mono bg-gray-800 rounded px-1"
+                value={p.command}
+                onChange={(e) => updateStarter(idx, { command: e.target.value })}
+                placeholder="command"
+              />
+              <button type="button" className="text-gray-500 hover:text-gray-300 text-[10px]" onClick={() => moveStarter(idx, -1)} disabled={idx === 0} title="Move up">▲</button>
+              <button type="button" className="text-gray-500 hover:text-gray-300 text-[10px]" onClick={() => moveStarter(idx, 1)} disabled={idx === editList.length - 1} title="Move down">▼</button>
+              <button type="button" className="text-red-400 hover:text-red-300" onClick={() => removeStarter(idx)}>×</button>
+            </div>
+            {p.command.trim() && (starterRunsGoals(p) ? (
+              <div className="pl-12 text-[10px] text-emerald-400/80">Runs goals</div>
+            ) : (
+              <input
+                className="w-full font-mono bg-gray-800 rounded px-1 text-[11px]"
+                value={p.goal_command ?? ""}
+                onChange={(e) => updateStarter(idx, { goal_command: e.target.value })}
+                placeholder="Goal command with {prompt} — empty keeps this terminal-only"
+              />
+            ))}
           </div>
         ))}
         <div className="flex gap-2">

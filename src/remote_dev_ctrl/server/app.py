@@ -8580,78 +8580,20 @@ async def update_project_config(name: str, config: dict):
 # Terminal presets (global, editable in frontend)
 # =============================================================================
 
-_DEFAULT_TERMINAL_PRESETS = [
-    {"id": "codex", "label": "Codex", "command": "rdc-launch codex", "icon": "O", "description": "OpenAI Codex CLI"},
-    {"id": "claude", "label": "Claude", "command": "rdc-launch claude --resume", "icon": "A", "description": "Anthropic Claude Code"},
-    {"id": "cursor", "label": "Cursor", "command": "rdc-launch cursor-agent", "icon": "C", "description": "Cursor AI agent"},
-    {"id": "shell", "label": "Shell", "command": "", "icon": "$", "description": "Plain login shell"},
-]
-
-
-def _terminal_presets_path() -> Path:
-    return get_rdc_home() / "terminal_presets.json"
-
-
 @app.get("/settings/terminal-presets")
 async def get_terminal_presets():
-    """Return terminal starter presets (launcher list) backed by unified agent registry + ~/.rdc/terminal_presets.json."""
-    from .agent_registry import list_registered_wrappers
+    """Return the + menu. Each row is an agent in the same catalog."""
+    from .agent_registry import terminal_menu
 
-    path = _terminal_presets_path()
-    base_presets = list(_DEFAULT_TERMINAL_PRESETS)
-    if path.exists():
-        try:
-            data = json.loads(path.read_text())
-            if isinstance(data, list):
-                cleaned = [
-                    p for p in data
-                    if isinstance(p, dict)
-                    and str(p.get("id", "")).lower() != "gemini"
-                    and "gemini" not in str(p.get("command", "")).lower()
-                ]
-                if len(cleaned) != len(data):
-                    path.write_text(json.dumps(cleaned, indent=2))
-                base_presets = cleaned
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    existing_ids = {str(p.get("id", "")) for p in base_presets}
-    existing_cmds = {str(p.get("command", "")).strip() for p in base_presets}
-    extra_presets = []
-    for spec in list_registered_wrappers():
-        if not spec.show_in_terminal_menu or spec.source == "builtin":
-            continue
-        cmd = (spec.terminal_command or spec.executable or spec.id).strip()
-        if spec.id in existing_ids or cmd in existing_cmds:
-            continue
-        extra_presets.append({
-            "id": spec.id,
-            "label": spec.id if spec.source == "alias" else spec.label,
-            "command": cmd,
-            "icon": spec.icon or "•",
-            "description": spec.description,
-        })
-    return extra_presets + base_presets
+    return terminal_menu()
 
 
 @app.patch("/settings/terminal-presets")
 async def update_terminal_presets(presets: list[dict] = Body(...)):
-    """Update terminal starter presets. Each item: id, label, command, icon, description."""
-    path = _terminal_presets_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    normalized = []
-    for p in presets:
-        if not isinstance(p, dict):
-            continue
-        normalized.append({
-            "id": str(p.get("id", "")),
-            "label": str(p.get("label", "")),
-            "command": str(p.get("command", "")),
-            "icon": str(p.get("icon", "")) or "•",
-            "description": str(p.get("description", "")),
-        })
-    path.write_text(json.dumps(normalized, indent=2))
-    return normalized
+    """Save the + menu. A command named here becomes a session agent."""
+    from .agent_registry import save_terminal_menu
+
+    return save_terminal_menu(presets)
 
 
 # =============================================================================

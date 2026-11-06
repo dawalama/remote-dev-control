@@ -399,7 +399,7 @@ def test_custom_wrapper_crud_in_agent_registry(monkeypatch, tmp_path):
     assert "grok" in provider_ids
 
     grok_cmd = build_agent_command("grok", "Optimize the query")
-    assert "grok -p 'Optimize the query'" in grok_cmd
+    assert "grok --permission-mode dontAsk -p 'Optimize the query'" in grok_cmd
     assert "__RDC_FINAL_BEGIN__" in grok_cmd
 
     del_resp = client.delete(
@@ -408,6 +408,54 @@ def test_custom_wrapper_crud_in_agent_registry(monkeypatch, tmp_path):
     )
     assert del_resp.status_code == 200
     assert "grok" not in [p["id"] for p in del_resp.json()["providers"]]
+
+
+def test_terminal_starter_is_the_session_agent(monkeypatch, tmp_path):
+    """A + menu row is an agent. grok and agy run goals; an unknown command does not."""
+    monkeypatch.setattr("remote_dev_ctrl.server.agent_registry.get_rdc_home", lambda: tmp_path)
+    monkeypatch.setattr("remote_dev_ctrl.server.agent_registry.discover_agent_aliases", lambda: {})
+    monkeypatch.setattr(
+        "remote_dev_ctrl.server.agent_registry.shutil.which",
+        lambda name: f"/bin/{name}" if name in {"grok", "agy"} else None,
+    )
+    from remote_dev_ctrl.server.agent_registry import (
+        build_agent_command,
+        list_registered_wrappers,
+        save_terminal_menu,
+        terminal_menu,
+    )
+
+    ids = {wrapper.id for wrapper in list_registered_wrappers() if wrapper.supports_sessions}
+    assert {"grok", "agy"} <= ids
+    assert "--permission-mode dontAsk -p 'Optimize the query'" in build_agent_command("grok", "Optimize the query")
+    assert "--print --dangerously-skip-permissions 'Ship the fix'" in build_agent_command("agy", "Ship the fix")
+
+    menu = terminal_menu()
+    assert any(row["agent_id"] == "grok" and row["runs_goals"] for row in menu)
+    assert any(row["agent_id"] == "agy" and row["runs_goals"] for row in menu)
+
+    kept = [row for row in menu if row["agent_id"] != "grok"]
+    kept.append({
+        "id": "custom-tools",
+        "label": "Tools",
+        "command": "my-tool",
+        "icon": "•",
+        "description": "",
+        "goal_command": "",
+    })
+    saved = save_terminal_menu(kept)
+    by_label = {row["label"]: row for row in saved}
+    assert "grok" not in {wrapper.id for wrapper in list_registered_wrappers()}
+    assert by_label["Tools"]["runs_goals"] is False
+    assert any(row["agent_id"] == "agy" and row["runs_goals"] for row in saved)
+
+    with_goal = [dict(row) for row in saved]
+    for row in with_goal:
+        if row["label"] == "Tools":
+            row["goal_command"] = "my-tool --yes {prompt}"
+    saved = save_terminal_menu(with_goal)
+    assert "my-tool --yes 'Do it'" in build_agent_command("my-tool", "Do it")
+    assert next(row for row in saved if row["label"] == "Tools")["runs_goals"] is True
 
 
 def test_followup_run_keeps_its_own_diff_beside_the_review_artifact(monkeypatch, tmp_path):

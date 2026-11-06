@@ -464,8 +464,6 @@ _KNOWN_TERMINAL_AGENTS: dict[str, dict[str, Any]] = {
         "hosting": "cloud",
         "auth_check_args": ["--version"],
         "setup_command": "agy",
-        "session_command_template": "agy --print --dangerously-skip-permissions {prompt}",
-        "session_resume_template": "agy --print --dangerously-skip-permissions --continue {prompt}",
     },
 }
 
@@ -590,6 +588,10 @@ def _known_agent_spec(agent_id: str, row: dict[str, Any] | None = None) -> Agent
     source = row or {}
     command = str(source.get("command") or meta["executable"])
     goal = str(source.get("goal_command") or "").strip()
+    if "{prompt}" not in goal:
+        goal = ""
+    exe_name = str(meta["executable"])
+    resolved = shutil.which(exe_name)
     return AgentWrapperSpec(
         id=agent_id,
         label=str(source.get("label") or meta["label"]),
@@ -600,7 +602,7 @@ def _known_agent_spec(agent_id: str, row: dict[str, Any] | None = None) -> Agent
         model_provider=str(meta.get("model_provider") or "vendor"),
         model_tier="coding",
         hosting=str(meta.get("hosting") or "cloud"),
-        executable=str(meta["executable"]),
+        executable=resolved or exe_name,
         auth_check_args=list(meta.get("auth_check_args") or []),
         setup_command=meta.get("setup_command"),
         env_key=meta.get("env_key"),
@@ -707,10 +709,12 @@ def terminal_menu() -> list[dict[str, Any]]:
 
 def save_terminal_menu(presets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Save the + menu and make each new command an agent. Removed commands are disabled."""
+    # Compare against the menu the UI is editing, including agents discovered
+    # on PATH. A save is the whole list, so omitting one disables it.
     previous_ids = {
-        agent_id
-        for row in load_terminal_preset_rows()
-        if (agent_id := starter_agent_id(row))
+        str(row.get("agent_id") or "")
+        for row in terminal_menu()
+        if str(row.get("agent_id") or "")
     }
     normalized: list[dict[str, Any]] = []
     for item in presets:
@@ -1238,7 +1242,14 @@ def check_provider_blocker(
     if alias_info:
         setup_command = f"{provider} {' '.join(sub_args[:-1])} login".strip() if driver == "claude" else f"{provider} login"
 
-    if base_bin and not which_fn(base_bin):
+    # Prefer the absolute binary recorded on the agent. The server process PATH
+    # often lacks ~/.local/bin even when a login shell can run `grok` or `agy`.
+    if spec.executable and os.path.isabs(spec.executable) and os.path.isfile(spec.executable):
+        base_bin = spec.executable
+    installed = bool(base_bin) and (
+        (os.path.isabs(base_bin) and os.path.isfile(base_bin)) or which_fn(base_bin) is not None
+    )
+    if base_bin and not installed:
         return f"{label} is not installed on the RDC host."
 
     if not sub_args:

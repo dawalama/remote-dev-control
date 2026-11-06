@@ -6,7 +6,7 @@ interface ProviderReadiness {
   id: string
   label: string
   driver?: string
-  source?: "builtin" | "alias" | "custom" | "dropin"
+  source?: "builtin" | "alias" | "custom" | "dropin" | "terminal"
   model_provider?: string
   default_model?: string | null
   model_tier?: "decision" | "fast" | "coding" | "reasoning" | string
@@ -384,7 +384,7 @@ export function ProviderSetup() {
                     </div>
                   )}
                 </div>
-                {(provider.source === "custom" || provider.source === "dropin") && (
+                {(provider.source === "custom" || provider.source === "dropin" || provider.source === "terminal") && (
                   <button
                     disabled={saving}
                     onClick={() => { void handleRemoveWrapper(provider.id) }}
@@ -508,7 +508,7 @@ export function ProviderSetup() {
                 onClick={() => setAddingCustom(true)}
                 className="text-blue-400 hover:text-blue-300"
               >
-                + Add CLI wrapper (Aider, Grok, OpenCode, custom)
+                + Advanced wrapper (model, host, or a custom driver)
               </button>
               <button
                 onClick={() => { void load() }}

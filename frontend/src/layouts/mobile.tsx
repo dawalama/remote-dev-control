@@ -458,24 +458,7 @@ export function MobileLayout() {
 
         {/* Tab 4: 🎯 Goals & Supervised Sessions */}
         {activeTab === "goals" && (
-          <div className="flex-1 overflow-y-auto min-h-0 bg-gray-900">
-            {/* Needs Attention review banner */}
-            {needsAttentionCount > 0 && (
-              <div
-                onClick={() => useUIStore.getState().setSessionsHubOpen(true)}
-                className="mx-3 mt-3 rounded-lg border border-amber-500/50 bg-amber-950/30 p-3 flex items-center justify-between cursor-pointer hover:bg-amber-950/40 transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full bg-amber-400 animate-pulse" />
-                  <span className="text-xs font-semibold text-amber-200">
-                    {needsAttentionCount} goal session{needsAttentionCount === 1 ? "" : "s"} need your review
-                  </span>
-                </div>
-                <span className="rounded bg-amber-500/20 px-2.5 py-1 text-xs font-bold text-amber-300">
-                  Review →
-                </span>
-              </div>
-            )}
+          <div className="flex-1 flex flex-col min-h-0 bg-gray-900">
             <WorkstreamGoalsWorkspace />
           </div>
         )}

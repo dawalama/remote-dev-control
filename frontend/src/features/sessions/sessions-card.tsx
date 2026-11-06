@@ -1042,131 +1042,400 @@ function AttentionColumnsGrid({
   startingSessionId: string | null
   onOpenTerminal?: (terminalId: string) => void
 }) {
+  const layout = useUIStore((state) => state.layout)
+  const isMobile = layout === "mobile"
+  const [viewMode, setViewMode] = useState<"stream" | "board">(isMobile ? "stream" : "board")
+  const [laneFilter, setLaneFilter] = useState<"all" | "needs_attention" | "running" | "staged" | "accepted">("all")
+
+  const totalCards = needsAttention.length + running.length + staged.length + accepted.length
+
+  const emptyLanes: string[] = []
+  if (needsAttention.length === 0) emptyLanes.push("Needs Attention")
+  if (running.length === 0) emptyLanes.push("Running")
+  if (staged.length === 0) emptyLanes.push("Staged")
+  if (accepted.length === 0) emptyLanes.push("Accepted")
+  const allClear = emptyLanes.length === 4
+  const emptyLanesText =
+    emptyLanes.length > 0 && !allClear
+      ? `${emptyLanes.join(", ")} all clear`
+      : null
+
   return (
-    <div className="grid gap-3 lg:grid-cols-4">
-      {/* 🔴 Needs Attention Column */}
-      <div className="flex flex-col rounded-lg border border-amber-500/30 bg-amber-950/10 p-2.5">
-        <div className="mb-2 flex items-center justify-between border-b border-amber-500/20 pb-1.5">
-          <span className="flex items-center gap-1.5 text-xs font-semibold text-amber-300">
-            <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
-            Needs Attention
-          </span>
-          <span className="rounded-full bg-amber-500/20 px-1.5 py-0.2 text-[10px] font-bold text-amber-300">
-            {needsAttention.length}
-          </span>
+    <div className="space-y-3">
+      {/* ── Responsive Lane Filter & View Switcher ── */}
+      <div className="flex items-center justify-between gap-2 border-b border-gray-800 pb-2">
+        <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 no-scrollbar flex-1 min-w-0">
+          <button
+            type="button"
+            onClick={() => setLaneFilter("all")}
+            className={`rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap flex-shrink-0 transition-all ${
+              laneFilter === "all"
+                ? "bg-blue-600 text-white shadow-sm"
+                : "border border-gray-700 bg-gray-800 text-gray-300 hover:text-white"
+            }`}
+          >
+            All ({totalCards})
+          </button>
+          <button
+            type="button"
+            onClick={() => setLaneFilter("needs_attention")}
+            className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap flex-shrink-0 transition-all ${
+              laneFilter === "needs_attention"
+                ? "bg-amber-600 text-white shadow-sm"
+                : "border border-amber-500/30 bg-amber-950/20 text-amber-300 hover:bg-amber-950/40"
+            }`}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+            Attention ({needsAttention.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setLaneFilter("running")}
+            className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap flex-shrink-0 transition-all ${
+              laneFilter === "running"
+                ? "bg-blue-600 text-white shadow-sm"
+                : "border border-blue-500/30 bg-blue-950/20 text-blue-300 hover:bg-blue-950/40"
+            }`}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
+            Running ({running.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setLaneFilter("staged")}
+            className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap flex-shrink-0 transition-all ${
+              laneFilter === "staged"
+                ? "bg-purple-600 text-white shadow-sm"
+                : "border border-purple-500/30 bg-purple-950/20 text-purple-300 hover:bg-purple-950/40"
+            }`}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-purple-400" />
+            Staged ({staged.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setLaneFilter("accepted")}
+            className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap flex-shrink-0 transition-all ${
+              laneFilter === "accepted"
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "border border-emerald-500/30 bg-emerald-950/20 text-emerald-300 hover:bg-emerald-950/40"
+            }`}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            Accepted ({accepted.length})
+          </button>
         </div>
-        <div className="flex-1 space-y-2 overflow-y-auto">
-          {needsAttention.length === 0 ? (
-            <p className="py-4 text-center text-[11px] text-gray-500">All clear</p>
-          ) : (
-            needsAttention.map((card) => (
-              <GoalCardItem
-                key={card.id}
-                card={card}
-                onOpenSession={onOpenSession}
-                onStartSession={onStartSession}
-                onNewRun={onNewRun}
-                onSelectWorkstream={onSelectWorkstream}
-                startingSessionId={startingSessionId}
-                onOpenTerminal={onOpenTerminal}
-              />
-            ))
-          )}
+
+        {/* View Switcher: Stream vs Kanban Board */}
+        <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => setViewMode("stream")}
+            className={`rounded px-2.5 py-0.5 text-xs font-medium transition-colors ${
+              viewMode === "stream" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+            }`}
+            title="Stream View (Full-width touch cards)"
+          >
+            ≡ Stream
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("board")}
+            className={`rounded px-2.5 py-0.5 text-xs font-medium transition-colors ${
+              viewMode === "board" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
+            }`}
+            title="Kanban Board View (Side-by-side columns)"
+          >
+            ⊞ Board
+          </button>
         </div>
       </div>
 
-      {/* 🟡 Running Column */}
-      <div className="flex flex-col rounded-lg border border-blue-500/20 bg-gray-900/50 p-2.5">
-        <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-1.5">
-          <span className="flex items-center gap-1.5 text-xs font-semibold text-blue-300">
-            <span className="h-2 w-2 rounded-full bg-blue-400" />
-            Running
-          </span>
-          <span className="rounded-full bg-blue-500/20 px-1.5 py-0.2 text-[10px] font-bold text-blue-300">
-            {running.length}
-          </span>
-        </div>
-        <div className="flex-1 space-y-2 overflow-y-auto">
-          {running.length === 0 ? (
-            <p className="py-4 text-center text-[11px] text-gray-500">No active runs</p>
-          ) : (
-            running.map((card) => (
-              <GoalCardItem
-                key={card.id}
-                card={card}
-                onOpenSession={onOpenSession}
-                onStartSession={onStartSession}
-                onNewRun={onNewRun}
-                onSelectWorkstream={onSelectWorkstream}
-                startingSessionId={startingSessionId}
-                onOpenTerminal={onOpenTerminal}
-              />
-            ))
+      {viewMode === "stream" ? (
+        /* ── Stream Mode (Touch-first Full-Width Cards) ── */
+        <div className="space-y-4">
+          {totalCards === 0 && (
+            <div className="rounded-lg border border-dashed border-gray-800 p-8 text-center text-xs text-gray-500 space-y-1">
+              <p className="font-semibold text-gray-300 text-sm">No active goals on this board</p>
+              <p>Stage or start a goal using "+ New Goal" above.</p>
+            </div>
           )}
-        </div>
-      </div>
 
-      {/* ⚪ Staged Column */}
-      <div className="flex flex-col rounded-lg border border-purple-500/20 bg-gray-900/50 p-2.5">
-        <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-1.5">
-          <span className="flex items-center gap-1.5 text-xs font-semibold text-purple-300">
-            <span className="h-2 w-2 rounded-full bg-purple-400" />
-            Staged
-          </span>
-          <span className="rounded-full bg-purple-500/20 px-1.5 py-0.2 text-[10px] font-bold text-purple-300">
-            {staged.length}
-          </span>
-        </div>
-        <div className="flex-1 space-y-2 overflow-y-auto">
-          {staged.length === 0 ? (
-            <p className="py-4 text-center text-[11px] text-gray-500">None staged</p>
-          ) : (
-            staged.map((card) => (
-              <GoalCardItem
-                key={card.id}
-                card={card}
-                onOpenSession={onOpenSession}
-                onStartSession={onStartSession}
-                onNewRun={onNewRun}
-                onSelectWorkstream={onSelectWorkstream}
-                startingSessionId={startingSessionId}
-                onOpenTerminal={onOpenTerminal}
-              />
-            ))
+          {/* Lane: Needs Attention */}
+          {(laneFilter === "all" || laneFilter === "needs_attention") && (
+            needsAttention.length > 0 ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between border-b border-amber-500/30 pb-1 pt-1">
+                  <span className="flex items-center gap-1.5 text-xs font-bold text-amber-300">
+                    <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+                    Needs Attention ({needsAttention.length})
+                  </span>
+                  <span className="text-[10px] text-amber-400/80">Requires verification or user input</span>
+                </div>
+                <div className="space-y-2.5">
+                  {needsAttention.map((card) => (
+                    <GoalCardItem
+                      key={card.id}
+                      card={card}
+                      onOpenSession={onOpenSession}
+                      onStartSession={onStartSession}
+                      onNewRun={onNewRun}
+                      onSelectWorkstream={onSelectWorkstream}
+                      startingSessionId={startingSessionId}
+                      onOpenTerminal={onOpenTerminal}
+                      isStream
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : laneFilter === "needs_attention" ? (
+              <div className="rounded-lg border border-amber-500/20 bg-amber-950/10 p-6 text-center text-xs text-amber-200/90 space-y-1">
+                <div className="text-sm font-semibold">🎉 All Clear!</div>
+                <p className="text-amber-300/70">No goals currently need attention or human review.</p>
+              </div>
+            ) : null
           )}
-        </div>
-      </div>
 
-      {/* 🟢 Accepted Column */}
-      <div className="flex flex-col rounded-lg border border-emerald-500/20 bg-gray-900/50 p-2.5">
-        <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-1.5">
-          <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
-            <span className="h-2 w-2 rounded-full bg-emerald-400" />
-            Accepted
-          </span>
-          <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.2 text-[10px] font-bold text-emerald-300">
-            {accepted.length}
-          </span>
-        </div>
-        <div className="flex-1 space-y-2 overflow-y-auto">
-          {accepted.length === 0 ? (
-            <p className="py-4 text-center text-[11px] text-gray-500">No accepted goals</p>
-          ) : (
-            accepted.map((card) => (
-              <GoalCardItem
-                key={card.id}
-                card={card}
-                onOpenSession={onOpenSession}
-                onStartSession={onStartSession}
-                onNewRun={onNewRun}
-                onSelectWorkstream={onSelectWorkstream}
-                startingSessionId={startingSessionId}
-                onOpenTerminal={onOpenTerminal}
-              />
-            ))
+          {/* Lane: Running */}
+          {(laneFilter === "all" || laneFilter === "running") && (
+            running.length > 0 ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between border-b border-blue-500/30 pb-1 pt-1">
+                  <span className="flex items-center gap-1.5 text-xs font-bold text-blue-300">
+                    <span className="h-2 w-2 rounded-full bg-blue-400" />
+                    Running ({running.length})
+                  </span>
+                  <span className="text-[10px] text-blue-400/80">Active agent runs executing now</span>
+                </div>
+                <div className="space-y-2.5">
+                  {running.map((card) => (
+                    <GoalCardItem
+                      key={card.id}
+                      card={card}
+                      onOpenSession={onOpenSession}
+                      onStartSession={onStartSession}
+                      onNewRun={onNewRun}
+                      onSelectWorkstream={onSelectWorkstream}
+                      startingSessionId={startingSessionId}
+                      onOpenTerminal={onOpenTerminal}
+                      isStream
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : laneFilter === "running" ? (
+              <div className="rounded-lg border border-blue-500/20 bg-blue-950/10 p-6 text-center text-xs text-blue-200/90 space-y-1">
+                <div className="text-sm font-semibold">No Active Runs</div>
+                <p className="text-blue-300/70">No agents are actively executing in this workstream.</p>
+              </div>
+            ) : null
+          )}
+
+          {/* Lane: Staged */}
+          {(laneFilter === "all" || laneFilter === "staged") && (
+            staged.length > 0 ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between border-b border-purple-500/30 pb-1 pt-1">
+                  <span className="flex items-center gap-1.5 text-xs font-bold text-purple-300">
+                    <span className="h-2 w-2 rounded-full bg-purple-400" />
+                    Staged ({staged.length})
+                  </span>
+                  <span className="text-[10px] text-purple-400/80">Planned goals ready to launch</span>
+                </div>
+                <div className="space-y-2.5">
+                  {staged.map((card) => (
+                    <GoalCardItem
+                      key={card.id}
+                      card={card}
+                      onOpenSession={onOpenSession}
+                      onStartSession={onStartSession}
+                      onNewRun={onNewRun}
+                      onSelectWorkstream={onSelectWorkstream}
+                      startingSessionId={startingSessionId}
+                      onOpenTerminal={onOpenTerminal}
+                      isStream
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : laneFilter === "staged" ? (
+              <div className="rounded-lg border border-purple-500/20 bg-purple-950/10 p-6 text-center text-xs text-purple-200/90 space-y-1">
+                <div className="text-sm font-semibold">None Staged</div>
+                <p className="text-purple-300/70">No proposed goals waiting to be started.</p>
+              </div>
+            ) : null
+          )}
+
+          {/* Lane: Accepted */}
+          {(laneFilter === "all" || laneFilter === "accepted") && (
+            accepted.length > 0 ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between border-b border-emerald-500/30 pb-1 pt-1">
+                  <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-300">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                    Accepted ({accepted.length})
+                  </span>
+                  <span className="text-[10px] text-emerald-400/80">Completed and verified outcomes</span>
+                </div>
+                <div className="space-y-2.5">
+                  {accepted.map((card) => (
+                    <GoalCardItem
+                      key={card.id}
+                      card={card}
+                      onOpenSession={onOpenSession}
+                      onStartSession={onStartSession}
+                      onNewRun={onNewRun}
+                      onSelectWorkstream={onSelectWorkstream}
+                      startingSessionId={startingSessionId}
+                      onOpenTerminal={onOpenTerminal}
+                      isStream
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : laneFilter === "accepted" ? (
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-950/10 p-6 text-center text-xs text-emerald-200/90 space-y-1">
+                <div className="text-sm font-semibold">No Accepted Goals</div>
+                <p className="text-emerald-300/70">Completed goals will appear here once accepted.</p>
+              </div>
+            ) : null
+          )}
+
+          {/* Subtle footer summary when in All view and some lanes are empty */}
+          {laneFilter === "all" && emptyLanesText && totalCards > 0 && (
+            <div className="rounded-lg border border-gray-800/80 bg-gray-900/40 px-3 py-2 text-center text-[11px] text-gray-500">
+              ✓ {emptyLanesText}
+            </div>
           )}
         </div>
-      </div>
+      ) : (
+        /* ── Board Mode (Responsive Kanban Grid) ── */
+        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+          {/* 🔴 Needs Attention Column */}
+          <div className="flex flex-col rounded-lg border border-amber-500/30 bg-amber-950/10 p-2.5">
+            <div className="mb-2 flex items-center justify-between border-b border-amber-500/20 pb-1.5">
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-amber-300">
+                <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+                Needs Attention
+              </span>
+              <span className="rounded-full bg-amber-500/20 px-1.5 py-0.2 text-[10px] font-bold text-amber-300">
+                {needsAttention.length}
+              </span>
+            </div>
+            <div className="flex-1 space-y-2 overflow-y-auto">
+              {needsAttention.length === 0 ? (
+                <p className="py-4 text-center text-[11px] text-gray-500">All clear</p>
+              ) : (
+                needsAttention.map((card) => (
+                  <GoalCardItem
+                    key={card.id}
+                    card={card}
+                    onOpenSession={onOpenSession}
+                    onStartSession={onStartSession}
+                    onNewRun={onNewRun}
+                    onSelectWorkstream={onSelectWorkstream}
+                    startingSessionId={startingSessionId}
+                    onOpenTerminal={onOpenTerminal}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* 🟡 Running Column */}
+          <div className="flex flex-col rounded-lg border border-blue-500/20 bg-gray-900/50 p-2.5">
+            <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-1.5">
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-blue-300">
+                <span className="h-2 w-2 rounded-full bg-blue-400" />
+                Running
+              </span>
+              <span className="rounded-full bg-blue-500/20 px-1.5 py-0.2 text-[10px] font-bold text-blue-300">
+                {running.length}
+              </span>
+            </div>
+            <div className="flex-1 space-y-2 overflow-y-auto">
+              {running.length === 0 ? (
+                <p className="py-4 text-center text-[11px] text-gray-500">No active runs</p>
+              ) : (
+                running.map((card) => (
+                  <GoalCardItem
+                    key={card.id}
+                    card={card}
+                    onOpenSession={onOpenSession}
+                    onStartSession={onStartSession}
+                    onNewRun={onNewRun}
+                    onSelectWorkstream={onSelectWorkstream}
+                    startingSessionId={startingSessionId}
+                    onOpenTerminal={onOpenTerminal}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* ⚪ Staged Column */}
+          <div className="flex flex-col rounded-lg border border-purple-500/20 bg-gray-900/50 p-2.5">
+            <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-1.5">
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-purple-300">
+                <span className="h-2 w-2 rounded-full bg-purple-400" />
+                Staged
+              </span>
+              <span className="rounded-full bg-purple-500/20 px-1.5 py-0.2 text-[10px] font-bold text-purple-300">
+                {staged.length}
+              </span>
+            </div>
+            <div className="flex-1 space-y-2 overflow-y-auto">
+              {staged.length === 0 ? (
+                <p className="py-4 text-center text-[11px] text-gray-500">None staged</p>
+              ) : (
+                staged.map((card) => (
+                  <GoalCardItem
+                    key={card.id}
+                    card={card}
+                    onOpenSession={onOpenSession}
+                    onStartSession={onStartSession}
+                    onNewRun={onNewRun}
+                    onSelectWorkstream={onSelectWorkstream}
+                    startingSessionId={startingSessionId}
+                    onOpenTerminal={onOpenTerminal}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* 🟢 Accepted Column */}
+          <div className="flex flex-col rounded-lg border border-emerald-500/20 bg-gray-900/50 p-2.5">
+            <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-1.5">
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                Accepted
+              </span>
+              <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.2 text-[10px] font-bold text-emerald-300">
+                {accepted.length}
+              </span>
+            </div>
+            <div className="flex-1 space-y-2 overflow-y-auto">
+              {accepted.length === 0 ? (
+                <p className="py-4 text-center text-[11px] text-gray-500">No accepted goals</p>
+              ) : (
+                accepted.map((card) => (
+                  <GoalCardItem
+                    key={card.id}
+                    card={card}
+                    onOpenSession={onOpenSession}
+                    onStartSession={onStartSession}
+                    onNewRun={onNewRun}
+                    onSelectWorkstream={onSelectWorkstream}
+                    startingSessionId={startingSessionId}
+                    onOpenTerminal={onOpenTerminal}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1179,6 +1448,7 @@ function GoalCardItem({
   onSelectWorkstream,
   startingSessionId,
   onOpenTerminal,
+  isStream = false,
 }: {
   card: GoalCard
   onOpenSession: (id: string) => void
@@ -1187,6 +1457,7 @@ function GoalCardItem({
   onSelectWorkstream?: (channelId: string) => void
   startingSessionId: string | null
   onOpenTerminal?: (terminalId: string) => void
+  isStream?: boolean
 }) {
   const latest = card.latestSession
   const goalText = card.goal || "Untitled Goal"
@@ -1225,12 +1496,14 @@ function GoalCardItem({
   return (
     <div
       onClick={() => onOpenSession(latest.id)}
-      className="group cursor-pointer rounded-md border border-gray-800 bg-gray-900/90 p-2.5 transition-all hover:border-gray-700 hover:bg-gray-850"
+      className={`group cursor-pointer rounded-lg border border-gray-800 bg-gray-900/90 transition-all hover:border-gray-700 hover:bg-gray-850 shadow-sm ${
+        isStream ? "p-3.5 space-y-2" : "p-2.5"
+      }`}
     >
       {/* Badges: Project, Channel, Status */}
       <div className="flex items-start justify-between gap-1.5">
-        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          <span className="text-[10px] font-semibold text-gray-400 truncate max-w-[100px]">{card.project}</span>
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0 flex-1">
+          <span className="text-[10px] font-semibold text-gray-400 truncate max-w-[120px]">{card.project}</span>
           {channelName && (
             <button
               type="button"
@@ -1240,7 +1513,7 @@ function GoalCardItem({
                   onSelectWorkstream(card.channel_id)
                 }
               }}
-              className="text-[9px] px-1.5 py-0.2 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 font-mono truncate max-w-[90px] transition-colors"
+              className="text-[9px] px-1.5 py-0.2 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 font-mono truncate max-w-[100px] transition-colors"
               title={`Switch to #${channelName}`}
             >
               #{channelName}
@@ -1248,7 +1521,7 @@ function GoalCardItem({
           )}
           {latest.worktree_branch ? (
             <span
-              className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-950/60 border border-indigo-800/40 text-indigo-300 font-mono truncate max-w-[120px]"
+              className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-950/60 border border-indigo-800/40 text-indigo-300 font-mono truncate max-w-[140px]"
               title={`Worktree branch: ${latest.worktree_branch}`}
             >
               ⎇ {latest.worktree_branch}
@@ -1265,9 +1538,22 @@ function GoalCardItem({
       </div>
 
       {/* Goal Title */}
-      <p className="mt-1 line-clamp-2 text-xs font-medium text-gray-200 group-hover:text-white" title={goalText}>
+      <p
+        className={`font-medium text-gray-100 group-hover:text-blue-300 transition-colors ${
+          isStream ? "text-sm line-clamp-3 leading-snug" : "mt-1 line-clamp-2 text-xs group-hover:text-white"
+        }`}
+        title={goalText}
+      >
         {goalText}
       </p>
+
+      {/* Acceptance Criteria count in stream mode */}
+      {isStream && card.acceptance_criteria && card.acceptance_criteria.length > 0 && (
+        <div className="text-[11px] text-gray-400 flex items-center gap-1.5">
+          <span className="text-emerald-400 font-bold">✓</span>
+          <span>{card.acceptance_criteria.length} acceptance criteria</span>
+        </div>
+      )}
 
       {/* Multiple Runs Badge and Chips */}
       {card.runsCount > 1 && (
@@ -1310,24 +1596,28 @@ function GoalCardItem({
       )}
 
       {latest.output_summary && latest.status === "completed" && (
-        <p className="mt-1 line-clamp-1 text-[10px] text-gray-400 italic">
+        <p className={`text-gray-400 italic bg-gray-950/40 rounded border border-gray-800/40 ${
+          isStream ? "mt-1.5 px-2.5 py-1.5 text-xs line-clamp-2" : "mt-1 px-1.5 py-0.5 text-[10px] line-clamp-1"
+        }`}>
           {latest.output_summary.replace(/[*_#]/g, "")}
         </p>
       )}
 
       {/* Quick Action Bar */}
       <div className="mt-2.5 flex items-center justify-between border-t border-gray-800/80 pt-1.5">
-        <span className="text-[9px] text-gray-500">
-          {latest.agent_provider || "orchestrated"}
+        <span className="text-[10px] text-gray-400 font-mono">
+          {latest.agent_provider ? `🤖 ${latest.agent_provider}` : "🤖 orchestrated"}
         </span>
 
-        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
           {isProposed && (
             <button
               type="button"
               disabled={isStarting}
               onClick={() => onStartSession(latest.id)}
-              className="rounded bg-purple-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-purple-500 disabled:opacity-50"
+              className={`rounded bg-purple-600 font-semibold text-white hover:bg-purple-500 disabled:opacity-50 transition-colors ${
+                isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+              }`}
             >
               {isStarting ? "Starting…" : "▶ Start"}
             </button>
@@ -1337,7 +1627,9 @@ function GoalCardItem({
             <button
               type="button"
               onClick={() => onOpenSession(latest.id)}
-              className="rounded bg-amber-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-amber-500"
+              className={`rounded bg-amber-600 font-semibold text-white hover:bg-amber-500 transition-colors ${
+                isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+              }`}
             >
               🔍 Review
             </button>
@@ -1353,7 +1645,9 @@ function GoalCardItem({
                   onOpenSession(latest.id)
                 }
               }}
-              className="rounded bg-yellow-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-yellow-500"
+              className={`rounded bg-yellow-600 font-semibold text-white hover:bg-yellow-500 transition-colors ${
+                isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+              }`}
             >
               💬 Input
             </button>
@@ -1365,7 +1659,9 @@ function GoalCardItem({
                 type="button"
                 disabled={isStarting}
                 onClick={() => onStartSession(latest.id)}
-                className="rounded bg-red-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+                className={`rounded bg-red-600 font-semibold text-white hover:bg-red-500 disabled:opacity-50 transition-colors ${
+                  isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+                }`}
               >
                 ↺ Retry
               </button>
@@ -1373,7 +1669,9 @@ function GoalCardItem({
                 <button
                   type="button"
                   onClick={() => onNewRun(card)}
-                  className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-300 hover:bg-gray-700"
+                  className={`rounded border border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 transition-colors ${
+                    isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
+                  }`}
                   title="Launch follow-up run on this goal"
                 >
                   + Run
@@ -1386,7 +1684,9 @@ function GoalCardItem({
             <button
               type="button"
               onClick={() => onNewRun(card)}
-              className="rounded border border-emerald-500/40 bg-emerald-950/30 px-1.5 py-0.5 text-[10px] text-emerald-300 hover:bg-emerald-900/40"
+              className={`rounded border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/40 transition-colors ${
+                isStream ? "px-3 py-1 text-xs font-semibold min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
+              }`}
               title="Launch follow-up run"
             >
               + Follow-up
@@ -1401,7 +1701,9 @@ function GoalCardItem({
                 if (onOpenTerminal) onOpenTerminal(tid)
                 else useTerminalStore.getState().setActiveTerminalId(tid)
               }}
-              className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-[10px] font-mono text-gray-300 hover:bg-gray-700"
+              className={`rounded border border-gray-700 bg-gray-800 font-mono text-gray-300 hover:bg-gray-700 transition-colors ${
+                isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
+              }`}
             >
               &gt;_ Term
             </button>
