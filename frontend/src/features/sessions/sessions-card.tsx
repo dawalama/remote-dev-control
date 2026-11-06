@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from "react"
 import { useChannelStore } from "@/stores/channel-store"
 import { useTerminalStore } from "@/stores/terminal-store"
-import { api, GET, POST } from "@/lib/api"
+import { api, GET, PATCH, POST } from "@/lib/api"
 import { useUIStore } from "@/stores/ui-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useStateStore } from "@/stores/state-store"
@@ -312,6 +312,20 @@ export function SessionsCard({
     }, 5000)
     return () => window.clearInterval(interval)
   })
+
+  const assignStagedAgent = async (sessionId: string, provider: string) => {
+    setSessions((prev) => prev.map((session) => (
+      session.id === sessionId ? { ...session, agent_provider: provider } : session
+    )))
+    try {
+      await PATCH(`/sessions/${sessionId}/agent`, { provider })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err || "")
+      const detail = msg.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] || msg.replace(/^API \d+:\s*/, "") || "Could not change agent"
+      toast(detail, "error")
+      await load()
+    }
+  }
 
   // Start a proposed (staged) session
   const startSession = async (sessionId: string) => {
@@ -921,6 +935,8 @@ export function SessionsCard({
                             accepted={wsGroup.accepted}
                             onOpenSession={openSessionFromHub}
                             onStartSession={startSession}
+                            providerOptions={providerOptions}
+                            onAssignProvider={assignStagedAgent}
                             onNewRun={handleFollowupRun}
                             onSelectWorkstream={selectChannel}
                             startingSessionId={startingSessionId}
@@ -943,6 +959,8 @@ export function SessionsCard({
                           accepted={group.orphanCards.filter((card) => card.attention_state === "accepted")}
                           onOpenSession={openSessionFromHub}
                           onStartSession={startSession}
+                          providerOptions={providerOptions}
+                          onAssignProvider={assignStagedAgent}
                           onNewRun={handleFollowupRun}
                           onSelectWorkstream={selectChannel}
                           startingSessionId={startingSessionId}
@@ -959,6 +977,8 @@ export function SessionsCard({
                     accepted={group.accepted}
                     onOpenSession={openSessionFromHub}
                     onStartSession={startSession}
+                    providerOptions={providerOptions}
+                    onAssignProvider={assignStagedAgent}
                     onNewRun={handleFollowupRun}
                     onSelectWorkstream={selectChannel}
                     startingSessionId={startingSessionId}
@@ -980,6 +1000,8 @@ export function SessionsCard({
           accepted={accepted}
           onOpenSession={openSessionFromHub}
           onStartSession={startSession}
+          providerOptions={providerOptions}
+          onAssignProvider={assignStagedAgent}
           onNewRun={handleFollowupRun}
           onSelectWorkstream={selectChannel}
           startingSessionId={startingSessionId}
@@ -1006,6 +1028,8 @@ export function SessionsCard({
                   card={card}
                   onOpenSession={openSessionFromHub}
                   onStartSession={startSession}
+                  providerOptions={providerOptions}
+                  onAssignProvider={assignStagedAgent}
                   onNewRun={handleFollowupRun}
                   onSelectWorkstream={selectChannel}
                   startingSessionId={startingSessionId}
@@ -1030,6 +1054,8 @@ function AttentionColumnsGrid({
   onSelectWorkstream,
   startingSessionId,
   onOpenTerminal,
+  providerOptions = [],
+  onAssignProvider,
 }: {
   needsAttention: GoalCard[]
   running: GoalCard[]
@@ -1041,6 +1067,8 @@ function AttentionColumnsGrid({
   onSelectWorkstream?: (channelId: string) => void
   startingSessionId: string | null
   onOpenTerminal?: (terminalId: string) => void
+  providerOptions?: Array<{ id: string; label: string; ready?: boolean }>
+  onAssignProvider?: (sessionId: string, provider: string) => void
 }) {
   const layout = useUIStore((state) => state.layout)
   const isMobile = layout === "mobile"
@@ -1183,6 +1211,8 @@ function AttentionColumnsGrid({
                       onSelectWorkstream={onSelectWorkstream}
                       startingSessionId={startingSessionId}
                       onOpenTerminal={onOpenTerminal}
+                      providerOptions={providerOptions}
+                      onAssignProvider={onAssignProvider}
                       isStream
                     />
                   ))}
@@ -1218,6 +1248,8 @@ function AttentionColumnsGrid({
                       onSelectWorkstream={onSelectWorkstream}
                       startingSessionId={startingSessionId}
                       onOpenTerminal={onOpenTerminal}
+                      providerOptions={providerOptions}
+                      onAssignProvider={onAssignProvider}
                       isStream
                     />
                   ))}
@@ -1253,6 +1285,8 @@ function AttentionColumnsGrid({
                       onSelectWorkstream={onSelectWorkstream}
                       startingSessionId={startingSessionId}
                       onOpenTerminal={onOpenTerminal}
+                      providerOptions={providerOptions}
+                      onAssignProvider={onAssignProvider}
                       isStream
                     />
                   ))}
@@ -1288,6 +1322,8 @@ function AttentionColumnsGrid({
                       onSelectWorkstream={onSelectWorkstream}
                       startingSessionId={startingSessionId}
                       onOpenTerminal={onOpenTerminal}
+                      providerOptions={providerOptions}
+                      onAssignProvider={onAssignProvider}
                       isStream
                     />
                   ))}
@@ -1336,6 +1372,8 @@ function AttentionColumnsGrid({
                     onSelectWorkstream={onSelectWorkstream}
                     startingSessionId={startingSessionId}
                     onOpenTerminal={onOpenTerminal}
+                    providerOptions={providerOptions}
+                    onAssignProvider={onAssignProvider}
                   />
                 ))
               )}
@@ -1367,6 +1405,8 @@ function AttentionColumnsGrid({
                     onSelectWorkstream={onSelectWorkstream}
                     startingSessionId={startingSessionId}
                     onOpenTerminal={onOpenTerminal}
+                    providerOptions={providerOptions}
+                    onAssignProvider={onAssignProvider}
                   />
                 ))
               )}
@@ -1398,6 +1438,8 @@ function AttentionColumnsGrid({
                     onSelectWorkstream={onSelectWorkstream}
                     startingSessionId={startingSessionId}
                     onOpenTerminal={onOpenTerminal}
+                    providerOptions={providerOptions}
+                    onAssignProvider={onAssignProvider}
                   />
                 ))
               )}
@@ -1429,6 +1471,8 @@ function AttentionColumnsGrid({
                     onSelectWorkstream={onSelectWorkstream}
                     startingSessionId={startingSessionId}
                     onOpenTerminal={onOpenTerminal}
+                    providerOptions={providerOptions}
+                    onAssignProvider={onAssignProvider}
                   />
                 ))
               )}
@@ -1448,6 +1492,8 @@ function GoalCardItem({
   onSelectWorkstream,
   startingSessionId,
   onOpenTerminal,
+  providerOptions = [],
+  onAssignProvider,
   isStream = false,
 }: {
   card: GoalCard
@@ -1457,6 +1503,8 @@ function GoalCardItem({
   onSelectWorkstream?: (channelId: string) => void
   startingSessionId: string | null
   onOpenTerminal?: (terminalId: string) => void
+  providerOptions?: Array<{ id: string; label: string; ready?: boolean }>
+  onAssignProvider?: (sessionId: string, provider: string) => void
   isStream?: boolean
 }) {
   const latest = card.latestSession
@@ -1492,6 +1540,14 @@ function GoalCardItem({
   const channels = useChannelStore.getState().channels
   const ch = channels.find((c) => c.id === card.channel_id)
   const channelName = ch ? ch.name.replace(/^#+/, "") : null
+  const currentAgent = latest.agent_provider || "orchestrated"
+  const agentChoices = [
+    { id: "orchestrated", label: "Orchestrated" },
+    ...providerOptions.filter((option) => option.id !== "orchestrated" && option.id !== "shell"),
+  ]
+  if (!agentChoices.some((option) => option.id === currentAgent)) {
+    agentChoices.push({ id: currentAgent, label: currentAgent })
+  }
 
   return (
     <div
@@ -1605,9 +1661,30 @@ function GoalCardItem({
 
       {/* Quick Action Bar */}
       <div className="mt-2.5 flex items-center justify-between border-t border-gray-800/80 pt-1.5">
-        <span className="text-[10px] text-gray-400 font-mono">
-          {latest.agent_provider ? `🤖 ${latest.agent_provider}` : "🤖 orchestrated"}
-        </span>
+        {isProposed && onAssignProvider ? (
+          <select
+            aria-label="Agent"
+            title="Change the agent. The goal stays staged."
+            value={currentAgent}
+            onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onChange={(event) => {
+              event.stopPropagation()
+              onAssignProvider(latest.id, event.target.value)
+            }}
+            className={`truncate rounded border border-gray-700 bg-gray-950 text-gray-200 ${
+              isStream ? "max-w-[12rem] px-1.5 py-1 text-xs" : "max-w-[9.5rem] px-1 py-0.5 text-[10px]"
+            }`}
+          >
+            {agentChoices.map((option) => (
+              <option key={option.id} value={option.id}>{option.label}</option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-[10px] text-gray-400 font-mono">
+            {latest.agent_provider ? `🤖 ${latest.agent_provider}` : "🤖 orchestrated"}
+          </span>
+        )}
 
         <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
           {isProposed && (

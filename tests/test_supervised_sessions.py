@@ -35,7 +35,7 @@ def _channel(channel_id: str, name: str = "test-ws", type: str = "project", coll
     db = sm._db()
     db.execute(
         "INSERT OR IGNORE INTO channels (id, name, type, collection_id) VALUES (?, ?, ?, ?)",
-        (channel_id, name, type, collection_id),
+        (channel_id, name, type, collection_id or "general"),
     )
     db.commit()
     return channel_id
@@ -273,6 +273,64 @@ def test_create_session_null_default_stores_preferred_provider():
     )
     pref = _load_agent_provider_policy().get("preferred_provider", "codex")
     assert session.agent_provider == pref
+
+
+def test_staged_goal_can_change_agent_without_starting():
+    cid = _channel(f"ws-reassign-{uuid.uuid4().hex[:6]}")
+    project = _project("reassign-proj")
+    session = create_supervised_session(
+        channel_id=cid,
+        project=project,
+        goal="Switch the agent before launch",
+        provider="codex",
+        status="proposed",
+    )
+    token, _ = get_auth_manager().create_token("staged-agent", Role.ADMIN)
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    changed = client.patch(
+        f"/sessions/{session.id}/agent",
+        headers=headers,
+        json={"provider": "claude"},
+    )
+    assert changed.status_code == 200
+    assert changed.json()["agent_provider"] == "claude"
+    assert changed.json()["status"] == "proposed"
+
+    preferred = client.patch(
+        f"/sessions/{session.id}/agent",
+        headers=headers,
+        json={"provider": "orchestrated"},
+    )
+    assert preferred.status_code == 200
+    assert preferred.json()["agent_provider"] == "orchestrated"
+    assert preferred.json()["status"] == "proposed"
+
+    unknown = client.patch(
+        f"/sessions/{session.id}/agent",
+        headers=headers,
+        json={"provider": "not-a-real-agent"},
+    )
+    assert unknown.status_code == 422
+    fresh = get_session_manager().get(session.id)
+    assert fresh is not None
+    assert fresh.agent_provider == "orchestrated"
+
+    started = create_supervised_session(
+        channel_id=cid,
+        project=project,
+        goal="Already queued",
+        provider="codex",
+        status="pending",
+    )
+    rejected = client.patch(
+        f"/sessions/{started.id}/agent",
+        headers=headers,
+        json={"provider": "claude"},
+    )
+    assert rejected.status_code == 409
+    assert get_session_manager().get(started.id).agent_provider == "codex"
 
 
 def test_create_session_explicit_provider_stored_as_given():

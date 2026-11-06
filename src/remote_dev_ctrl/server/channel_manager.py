@@ -399,7 +399,7 @@ class ChannelManager:
             name=d["name"],
             type=ChannelType(d["type"]),
             parent_channel_id=d.get("parent_channel_id"),
-            collection_id=d.get("collection_id", "general"),
+            collection_id=d.get("collection_id") or "general",
             project_ids=project_ids,
             auto_mode=bool(d.get("auto_mode", False)),
             token_spent=d.get("token_spent", 0),

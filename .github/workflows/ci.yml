@@ -23,7 +23,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Install Python dependencies
-        run: uv sync --extra dev --locked
+        run: uv sync --extra dev --extra knowledge --locked
       - name: Install dbmate
         run: |
           curl -fsSL -o "${RUNNER_TEMP}/dbmate" \

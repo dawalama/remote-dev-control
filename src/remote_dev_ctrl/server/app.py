@@ -11582,6 +11582,26 @@ def _session_execution_prompt(session) -> str:
     return session_execution_prompt(session)
 
 
+class AssignStagedAgentRequest(BaseModel):
+    provider: str
+
+
+@app.patch("/sessions/{session_id}/agent")
+async def assign_staged_session_agent(session_id: str, body: AssignStagedAgentRequest):
+    """Change the agent on a staged goal without starting it."""
+    from .supervised_sessions import assign_staged_agent
+
+    try:
+        session = assign_staged_agent(session_id, body.provider)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    return _session_response(session)
+
+
 @app.post("/sessions/{session_id}/start")
 @app.post("/sessions/{session_id}/retry")
 async def retry_session(session_id: str, body: RetrySessionRequest | None = None):

@@ -292,6 +292,32 @@ def _use_project_checkout(sm, session: Session, project_path: Path, wm, previous
     return project_path
 
 
+def assign_staged_agent(session_id: str, provider: str) -> Session:
+    """Change the agent on a staged goal. The goal stays staged."""
+    sm = get_session_manager()
+    session = sm.get(session_id)
+    if not session:
+        raise LookupError(f"Session not found: {session_id}")
+    status = session.status.value if isinstance(session.status, SessionStatus) else str(session.status)
+    if status != SessionStatus.PROPOSED.value:
+        raise RuntimeError("Agent can be changed only while the goal is staged")
+
+    requested = (provider or "").strip()
+    if not requested:
+        raise ValueError("Provider is required")
+    if requested != "orchestrated" and requested != (session.agent_provider or ""):
+        from .agent_registry import list_registered_wrappers
+
+        known = {wrapper.id for wrapper in list_registered_wrappers() if wrapper.supports_sessions}
+        if requested not in known:
+            raise ValueError(f"Unknown agent: {requested}")
+
+    session.agent_provider = requested
+    sm._persist(session)
+    sm.log_event(session, "session.agent_assigned", {"provider": requested})
+    return session
+
+
 def start_supervised_session(
     session_id: str,
     *,

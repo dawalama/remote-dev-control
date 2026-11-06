@@ -593,17 +593,10 @@ wheels = [
 [[package]]
 name = "corpusnote"
 version = "0.1.0"
-source = { editable = "/Users/dawa/TrueSteps/corpusnote" }
+source = { git = "https://github.com/dawalama/corpusnote.git#91f0fbb81ad221b7d259aeaa902adc2d17bdaf03" }
 dependencies = [
     { name = "pyyaml" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-]
-provides-extras = ["test"]
 
 [[package]]
 name = "cryptography"
@@ -6054,7 +6047,7 @@ requires-dist = [
     { name = "accelerate", marker = "extra == 'compress'", specifier = ">=0.25.0" },
     { name = "aiofiles", specifier = ">=25.1.0" },
     { name = "browser-use", marker = "extra == 'browser'", specifier = ">=0.1.0" },
-    { name = "corpusnote", marker = "extra == 'knowledge'", editable = "/Users/dawa/TrueSteps/corpusnote" },
+    { name = "corpusnote", marker = "extra == 'knowledge'", git = "https://github.com/dawalama/corpusnote.git" },
     { name = "duckdb", specifier = ">=1.4.4" },
     { name = "fastapi", specifier = ">=0.109.0" },
     { name = "httpx", specifier = ">=0.27.0" },

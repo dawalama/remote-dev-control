@@ -6,7 +6,7 @@ import { useUIStore } from "@/stores/ui-store"
 import { TerminalView, TerminalToolbar } from "@/features/terminal/terminal-view"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 
-type SessionStatusValue = "pending" | "running" | "waiting" | "verifying" | "done" | "completed" | "failed" | "cancelled"
+type SessionStatusValue = "pending" | "proposed" | "running" | "waiting" | "verifying" | "done" | "completed" | "failed" | "cancelled"
 
 interface SessionData {
   id: string
@@ -291,6 +291,31 @@ export function SessionViewer({
     }
   }
 
+  const assignAgent = async (provider: string) => {
+    if (!session || provider === (session.agent_provider || "")) return
+    const previous = session.agent_provider
+    setSession({ ...session, agent_provider: provider })
+    try {
+      await PATCH(`/sessions/${sessionId}/agent`, { provider })
+      await loadSession()
+    } catch (error) {
+      setSession((current) => (current ? { ...current, agent_provider: previous } : current))
+      toast(apiErrorDetail(error, "Could not change agent"), "error")
+      await loadSession()
+    }
+  }
+
+  const startStaged = async () => {
+    try {
+      await POST(`/sessions/${sessionId}/start`)
+      toast("Session started", "success")
+      await Promise.all([loadSession(), loadSupervision(), loadArtifact(), loadGitStatus()])
+    } catch (error) {
+      toast(apiErrorDetail(error, "Could not start session"), "error")
+      await loadSession()
+    }
+  }
+
   const restoreReview = async () => {
     try { await POST(`/sessions/${sessionId}/restore-review`); toast("Review restored", "success"); await loadSession() }
     catch { toast("Could not restore review", "error") }
@@ -512,6 +537,37 @@ export function SessionViewer({
           <button onClick={retry} className="text-[10px] px-2 py-0.5 rounded bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/30 flex-shrink-0">
             Start
           </button>
+        )}
+        {session.status === "proposed" && (
+          <>
+            <select
+              aria-label="Agent"
+              title="Change the agent. The goal stays staged."
+              value={session.agent_provider || "orchestrated"}
+              onChange={(event) => { void assignAgent(event.target.value) }}
+              className="max-w-[11rem] truncate rounded border border-gray-600 bg-gray-900 px-2 py-1 text-[10px] text-gray-200"
+            >
+              <option value="orchestrated">Orchestrated (Server default)</option>
+              {providerOptions
+                .filter((option) => option.id !== "orchestrated")
+                .map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}{option.ready === true ? " (Ready)" : option.ready === false ? " (Setup)" : ""}
+                  </option>
+                ))}
+              {session.agent_provider
+                && session.agent_provider !== "orchestrated"
+                && !providerOptions.some((option) => option.id === session.agent_provider) && (
+                <option value={session.agent_provider}>{session.agent_provider}</option>
+              )}
+            </select>
+            <button
+              onClick={() => { void startStaged() }}
+              className="rounded bg-purple-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-purple-500 flex-shrink-0"
+            >
+              Start
+            </button>
+          </>
         )}
         {["failed", "cancelled"].includes(session.status) && (
           canRestoreReview ? (
@@ -1296,5 +1352,5 @@ function formatDuration(start: Date, end: Date): string {
 }
 
 function statusLabel(status: SessionStatusValue): string {
-  return ({ pending: "Queued", running: "Working", waiting: "Needs you", verifying: "Ready for review", done: "Completed", completed: "Completed", failed: "Failed", cancelled: "Cancelled" })[status]
+  return ({ pending: "Queued", proposed: "Staged", running: "Working", waiting: "Needs you", verifying: "Ready for review", done: "Completed", completed: "Completed", failed: "Failed", cancelled: "Cancelled" })[status]
 }

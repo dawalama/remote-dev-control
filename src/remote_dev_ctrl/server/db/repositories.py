@@ -192,7 +192,7 @@ class ProjectRepository:
             name=row["name"],
             path=row["path"],
             description=row["description"] if "description" in keys else None,
-            collection_id=row["collection_id"] if "collection_id" in keys else "general",
+            collection_id=(row["collection_id"] if "collection_id" in keys else None) or "general",
             tags=json.loads(raw_tags) if raw_tags else [],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
