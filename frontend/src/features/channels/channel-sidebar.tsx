@@ -5,7 +5,6 @@ import { useStateStore } from "@/stores/state-store"
 import { useUIStore } from "@/stores/ui-store"
 import { POST } from "@/lib/api"
 import { useMountEffect } from "@/hooks/use-mount-effect"
-import { ChannelSettings } from "./channel-settings"
 import { CollectionsManagerModal } from "@/features/modals/collections-manager"
 import { isCollectionVisible } from "@/components/collection-picker"
 
@@ -34,7 +33,6 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
   const [newName, setNewName] = useState("")
   const [newProjectId, setNewProjectId] = useState<string>("")
   const [newClientCollId, setNewClientCollId] = useState<string>("")
-  const [settingsChannelId, setSettingsChannelId] = useState<string | null>(null)
   const [showCollectionsModal, setShowCollectionsModal] = useState(false)
 
   useMountEffect(() => {
@@ -286,7 +284,6 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
                   active={ch.id === activeChannelId}
                   hasActivity={isChannelActive(ch, activeProjectNames)}
                   onSelect={() => selectChannel(ch.id)}
-                  onOpenSettings={() => setSettingsChannelId(ch.id)}
                   indent
                 />
               ))}
@@ -300,7 +297,6 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
               active={ch.id === activeChannelId}
               hasActivity={isChannelActive(ch, activeProjectNames)}
               onSelect={() => selectChannel(ch.id)}
-              onOpenSettings={() => setSettingsChannelId(ch.id)}
             />
           ))
         )}
@@ -323,9 +319,6 @@ export function ChannelSidebar({ onAddProject }: { onAddProject?: () => void } =
           </button>
         </div>
       )}
-      {settingsChannelId && (
-        <ChannelSettings channelId={settingsChannelId} onClose={() => setSettingsChannelId(null)} />
-      )}
     </div>
   )
 }
@@ -337,14 +330,12 @@ function ChannelItem({
   active,
   hasActivity,
   onSelect,
-  onOpenSettings,
   indent = false,
 }: {
   channel: Channel
   active: boolean
   hasActivity: boolean
   onSelect: () => void
-  onOpenSettings: () => void
   indent?: boolean
 }) {
   const typeIcon = {
@@ -357,8 +348,10 @@ function ChannelItem({
   const label = channel.name.replace(/^#/, "")
 
   return (
-    <div
-      className={`w-full flex items-center gap-1 pr-1 text-sm transition-colors ${
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`w-full flex items-center gap-1.5 py-1 pr-2 text-left text-sm transition-colors ${
         indent ? "pl-5" : "pl-3"
       } ${
         active
@@ -366,29 +359,15 @@ function ChannelItem({
           : "text-gray-400 hover:text-gray-200 hover:bg-gray-800/50"
       }`}
     >
-      <button
-        onClick={onSelect}
-        className="flex-1 flex items-center gap-1.5 py-1 text-left min-w-0"
-      >
-        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-          hasActivity ? "bg-green-500" : "bg-transparent"
-        }`} />
-        <span className="text-gray-600 text-[10px] w-3 flex-shrink-0">{typeIcon}</span>
-        <span className="truncate flex-1 text-xs">{label}</span>
-        {channel.auto_mode && (
-          <span className="text-[9px] text-yellow-500" title="Auto-mode">A</span>
-        )}
-      </button>
-      <button
-        type="button"
-        onClick={onOpenSettings}
-        className="px-1 py-1 text-sm leading-none text-gray-500 hover:text-gray-200 rounded hover:bg-gray-700"
-        title="Workstream settings"
-        aria-label={`Settings for ${label}`}
-      >
-        ⋯
-      </button>
-    </div>
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+        hasActivity ? "bg-green-500" : "bg-transparent"
+      }`} />
+      <span className="text-gray-600 text-[10px] w-3 flex-shrink-0">{typeIcon}</span>
+      <span className="truncate flex-1 text-xs">{label}</span>
+      {channel.auto_mode && (
+        <span className="text-[9px] text-yellow-500" title="Auto-mode">A</span>
+      )}
+    </button>
   )
 }
 

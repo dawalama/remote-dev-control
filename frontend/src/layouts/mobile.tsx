@@ -20,6 +20,7 @@ import { ProcessLogOverlay } from "@/features/mobile/process-log-overlay"
 import { PairedDevicesSheet } from "@/features/mobile/paired-devices-sheet"
 import { ProjectSettingsModal } from "@/features/modals/project-settings"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
+import { ChannelSettings } from "@/features/channels/channel-settings"
 import { CollectionsManagerModal } from "@/features/modals/collections-manager"
 import { RecordingPlayer } from "@/features/browser/recording-player"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
@@ -52,6 +53,8 @@ export function MobileLayout() {
   const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
   const needsAttentionCount = useUIStore((s) => s.needsAttentionCount)
+  const workstreamSettingsOpen = useUIStore((s) => s.workstreamSettingsOpen)
+  const setWorkstreamSettingsOpen = useUIStore((s) => s.setWorkstreamSettingsOpen)
   const cycleActiveProject = useProjectStore((s) => s.cycleActiveProject)
 
   const activeNames = useMemo(() => {
@@ -592,6 +595,7 @@ export function MobileLayout() {
           onCreateTask={() => { setHamburgerOpen(false); setActiveTab("goals"); useUIStore.getState().setSessionsHubOpen(true) }}
           onActivity={() => { setHamburgerOpen(false); setActivityOpen(true) }}
           onProjectSettings={() => { setHamburgerOpen(false); setProjectSettingsOpen(true) }}
+          onWorkstreamSettings={() => { setHamburgerOpen(false); setWorkstreamSettingsOpen(true) }}
           onCollections={() => { setHamburgerOpen(false); setCollectionsOpen(true) }}
           onSystemSettings={() => { setHamburgerOpen(false); setSystemSettingsOpen(true) }}
           onPairedDevices={() => { setHamburgerOpen(false); setPairedDevicesOpen(true) }}
@@ -651,6 +655,10 @@ export function MobileLayout() {
 
       {systemSettingsOpen && (
         <SystemSettingsModal onClose={() => setSystemSettingsOpen(false)} />
+      )}
+
+      {workstreamSettingsOpen && activeChannelId && (
+        <ChannelSettings channelId={activeChannelId} onClose={() => setWorkstreamSettingsOpen(false)} />
       )}
 
       {collectionsOpen && (

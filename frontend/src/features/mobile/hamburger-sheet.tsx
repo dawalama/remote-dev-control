@@ -1,4 +1,5 @@
 import { useProjectStore } from "@/stores/project-store"
+import { useChannelStore } from "@/stores/channel-store"
 import { useUIStore } from "@/stores/ui-store"
 import { POST } from "@/lib/api"
 import { Sheet } from "./sheet"
@@ -21,6 +22,7 @@ export function HamburgerSheet({
   onCreateTask,
   onActivity,
   onProjectSettings,
+  onWorkstreamSettings,
   onSystemSettings,
   onCollections,
   onPairedDevices,
@@ -30,11 +32,15 @@ export function HamburgerSheet({
   onCreateTask: () => void
   onActivity: () => void
   onProjectSettings: () => void
+  onWorkstreamSettings: () => void
   onSystemSettings: () => void
   onCollections?: () => void
   onPairedDevices: () => void
 }) {
   const currentProject = useProjectStore((s) => s.currentProject)
+  const channels = useChannelStore((s) => s.channels)
+  const activeChannelId = useChannelStore((s) => s.activeChannelId)
+  const activeWorkstream = channels.find((channel) => channel.id === activeChannelId)
   const toast = useUIStore((s) => s.toast)
   const theme = useUIStore((s) => s.theme)
   const setTheme = useUIStore((s) => s.setTheme)
@@ -60,6 +66,12 @@ export function HamburgerSheet({
         <hr className="border-gray-700 my-2" />
         {currentProject && (
           <MenuItem onClick={onProjectSettings}>Project Settings</MenuItem>
+        )}
+        {activeWorkstream && (
+          <MenuItem onClick={onWorkstreamSettings}>
+            Workstream Settings
+            <span className="ml-1 text-[10px] text-gray-500">{activeWorkstream.name.replace(/^#/, "")}</span>
+          </MenuItem>
         )}
         {onCollections && (
           <MenuItem onClick={onCollections}>Collections & Clients</MenuItem>

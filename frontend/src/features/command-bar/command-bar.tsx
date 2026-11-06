@@ -202,6 +202,9 @@ function ChatToggle() {
 function SettingsButton() {
   const [open, setOpen] = useState(false)
   const currentProject = useProjectStore((s) => s.currentProject)
+  const channels = useChannelStore((s) => s.channels)
+  const activeChannelId = useChannelStore((s) => s.activeChannelId)
+  const activeWorkstream = channels.find((channel) => channel.id === activeChannelId)
   const theme = useUIStore((s) => s.theme)
   const setTheme = useUIStore((s) => s.setTheme)
 
@@ -223,7 +226,7 @@ function SettingsButton() {
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-10 right-0 z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 w-48">
+          <div className="absolute bottom-10 right-0 z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 w-56">
             {currentProject && (
               <button
                 className="w-full px-3 py-2 text-xs text-gray-200 hover:bg-gray-700 text-left"
@@ -231,6 +234,15 @@ function SettingsButton() {
               >
                 Project Settings
                 <span className="text-[10px] text-gray-500 ml-1">{currentProject}</span>
+              </button>
+            )}
+            {activeWorkstream && (
+              <button
+                className="w-full px-3 py-2 text-xs text-gray-200 hover:bg-gray-700 text-left truncate"
+                onClick={() => { setOpen(false); useUIStore.getState().setWorkstreamSettingsOpen(true) }}
+              >
+                Workstream Settings
+                <span className="text-[10px] text-gray-500 ml-1">{activeWorkstream.name.replace(/^#/, "")}</span>
               </button>
             )}
             <button

@@ -15,6 +15,7 @@ import { AddProjectSheet } from "@/features/mobile/add-project-sheet"
 import { PairedDevicesSheet } from "@/features/mobile/paired-devices-sheet"
 import { ProjectSettingsModal } from "@/features/modals/project-settings"
 import { SystemSettingsModal } from "@/features/modals/system-settings"
+import { ChannelSettings } from "@/features/channels/channel-settings"
 import { RecordingPlayer } from "@/features/browser/recording-player"
 import { EmbeddedTerminal } from "@/features/terminal/embedded-terminal"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
@@ -52,6 +53,8 @@ export function KioskLayout() {
   const processes = useStateStore((s) => s.actions)
   const toast = useUIStore((s) => s.toast)
   const needsAttentionCount = useUIStore((s) => s.needsAttentionCount)
+  const workstreamSettingsOpen = useUIStore((s) => s.workstreamSettingsOpen)
+  const setWorkstreamSettingsOpen = useUIStore((s) => s.setWorkstreamSettingsOpen)
   const openProcessLog = useLogsStore((s) => s.openProcessLog)
 
   // Primary view mode: default to terminal (clean, focused, full-width canvas) or user's saved preference
@@ -571,6 +574,7 @@ export function KioskLayout() {
           onCreateTask={() => { setHamburgerOpen(false); setCreateTaskOpen(true) }}
           onActivity={() => { setHamburgerOpen(false); setActivityOpen(true) }}
           onProjectSettings={() => { setHamburgerOpen(false); setProjectSettingsOpen(true) }}
+          onWorkstreamSettings={() => { setHamburgerOpen(false); setWorkstreamSettingsOpen(true) }}
           onSystemSettings={() => { setHamburgerOpen(false); setSystemSettingsOpen(true) }}
           onPairedDevices={() => { setHamburgerOpen(false); setPairedDevicesOpen(true) }}
         />
@@ -629,6 +633,10 @@ export function KioskLayout() {
 
       {systemSettingsOpen && (
         <SystemSettingsModal onClose={() => setSystemSettingsOpen(false)} />
+      )}
+
+      {workstreamSettingsOpen && activeChannel && (
+        <ChannelSettings channelId={activeChannel.id} onClose={() => setWorkstreamSettingsOpen(false)} />
       )}
 
       {browserFullscreen && (

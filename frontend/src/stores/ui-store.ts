@@ -32,6 +32,7 @@ interface UIState {
   voicePanelOpen: boolean
   projectSettingsOpen: boolean
   systemSettingsOpen: boolean
+  workstreamSettingsOpen: boolean
 
   // Global text input — any component can register as the target
   textInputOpen: boolean
@@ -73,6 +74,7 @@ interface UIState {
   toggleVoicePanel: () => void
   setProjectSettingsOpen: (open: boolean) => void
   setSystemSettingsOpen: (open: boolean) => void
+  setWorkstreamSettingsOpen: (open: boolean) => void
   openTextInput: (callback: (text: string) => void, label?: string, initialValue?: string, keepOpen?: boolean, targetEl?: HTMLElement | null) => void
   appendTextInput: (text: string) => void
   closeTextInput: () => void
@@ -105,6 +107,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   voicePanelOpen: false,
   projectSettingsOpen: false,
   systemSettingsOpen: false,
+  workstreamSettingsOpen: false,
   textInputOpen: false,
   textInputLabel: "Terminal",
   textInputCallback: null,
@@ -187,6 +190,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   toggleVoicePanel: () => set((s) => ({ voicePanelOpen: !s.voicePanelOpen })),
   setProjectSettingsOpen: (open) => set({ projectSettingsOpen: open }),
   setSystemSettingsOpen: (open) => set({ systemSettingsOpen: open }),
+  setWorkstreamSettingsOpen: (open) => set({ workstreamSettingsOpen: open }),
 
   openTextInput: (callback, label, initialValue, keepOpen, targetEl) =>
     set({ textInputOpen: true, textInputCallback: callback, textInputLabel: label || "Input", textInputInitialValue: initialValue || "", textInputKeepOpen: keepOpen || false, textInputTargetEl: targetEl || null }),

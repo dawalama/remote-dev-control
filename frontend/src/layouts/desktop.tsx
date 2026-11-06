@@ -16,6 +16,7 @@ import { GlobalTextInput } from "@/components/global-text-input"
 import { FloatingAgentPanel } from "@/features/browser/floating-agent-panel"
 import { useChannelStore } from "@/stores/channel-store"
 import { ChannelSidebar } from "@/features/channels/channel-sidebar"
+import { ChannelSettings } from "@/features/channels/channel-settings"
 import { FloatingChannelPanel } from "@/features/channels/floating-channel-panel"
 import { SessionsNavButton, WorkstreamGoalsWorkspace } from "@/features/sessions/sessions-hub"
 import { useMountEffect } from "@/hooks/use-mount-effect"
@@ -49,6 +50,9 @@ export function DesktopLayout() {
   const setSystemSettingsOpen = useUIStore((s) => s.setSystemSettingsOpen)
   const projectSettingsOpen = useUIStore((s) => s.projectSettingsOpen)
   const setProjectSettingsOpen = useUIStore((s) => s.setProjectSettingsOpen)
+  const workstreamSettingsOpen = useUIStore((s) => s.workstreamSettingsOpen)
+  const setWorkstreamSettingsOpen = useUIStore((s) => s.setWorkstreamSettingsOpen)
+  const activeChannelId = useChannelStore((s) => s.activeChannelId)
   const [addProjectOpen, setAddProjectOpen] = useState(false)
 
   useMountEffect(() => {
@@ -264,6 +268,9 @@ export function DesktopLayout() {
       )}
       {projectSettingsOpen && currentProject && (
         <ProjectSettingsModal projectName={currentProject} onClose={() => setProjectSettingsOpen(false)} fullPage />
+      )}
+      {workstreamSettingsOpen && activeChannelId && (
+        <ChannelSettings channelId={activeChannelId} onClose={() => setWorkstreamSettingsOpen(false)} />
       )}
       {addProjectOpen && (
         <AddProjectModal

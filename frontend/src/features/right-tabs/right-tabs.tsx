@@ -472,7 +472,11 @@ function SystemTab() {
   const terminals = useStateStore((s) => s.terminals)
   const processes = useStateStore((s) => s.actions)
   const currentProject = useProjectStore((s) => s.currentProject)
+  const channels = useChannelStore((s) => s.channels)
+  const activeChannelId = useChannelStore((s) => s.activeChannelId)
+  const activeWorkstream = channels.find((channel) => channel.id === activeChannelId)
   const toast = useUIStore((s) => s.toast)
+  const setWorkstreamSettingsOpen = useUIStore((s) => s.setWorkstreamSettingsOpen)
   const openSystemLog = useLogsStore((s) => s.openSystemLog)
 
   const fetchAll = useCallback(() => {
@@ -557,7 +561,9 @@ function SystemTab() {
         {currentProject && (
           <Btn color="gray" onClick={() => setShowSettings(true)}>Project Settings</Btn>
         )}
-
+        {activeWorkstream && (
+          <Btn color="gray" onClick={() => setWorkstreamSettingsOpen(true)}>Workstream Settings</Btn>
+        )}
         <Btn color="gray" onClick={() => setShowSystemSettings(true)}>System Settings</Btn>
       </div>
 
