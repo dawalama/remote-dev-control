@@ -7,9 +7,10 @@ import { MessageRenderer } from "./message-renderer"
 import type { ChannelMessage } from "@/stores/channel-store"
 
 /**
- * Mobile channel panel — two modes:
- * 1. Compact: bottom bar with quick actions + input (tap to expand)
- * 2. Fullscreen: full chat experience for back-and-forth interaction
+ * Mobile channel panel — modes:
+ * 1. Inline: full-height conversational stream embedded directly in the layout tab
+ * 2. Fullscreen: full-screen modal overlay for back-and-forth interaction
+ * 3. Compact: bottom bar with quick actions + input (tap to expand)
  */
 export function MobileChannelPanel({
   onOpenTerminal,
@@ -21,6 +22,9 @@ export function MobileChannelPanel({
   onSystemSettings,
   hideActions = false,
   startFullscreen = false,
+  inline = false,
+  hideHeader = false,
+  voiceButton,
   onClose,
 }: {
   onOpenTerminal?: (project: string) => void
@@ -32,6 +36,9 @@ export function MobileChannelPanel({
   onSystemSettings?: () => void
   hideActions?: boolean
   startFullscreen?: boolean
+  inline?: boolean
+  hideHeader?: boolean
+  voiceButton?: React.ReactNode
   onClose?: () => void
 }) {
   const [fullscreen, setFullscreen] = useState(startFullscreen)
@@ -78,6 +85,99 @@ export function MobileChannelPanel({
       if (fullscreen) fullscreenInputRef.current?.focus()
       else inputRef.current?.focus()
     })
+  }
+
+  // ── Inline embedded view (Mobile & Kiosk tabs) ──
+  if (inline) {
+    return (
+      <div className="flex-1 flex flex-col min-h-0 bg-gray-900 overflow-hidden">
+        {!hideHeader && (
+          <div className="flex items-center gap-3 px-4 py-2 border-b border-gray-800 flex-shrink-0">
+            <div className="flex-1 min-w-0">
+              <span className="text-sm font-semibold text-gray-200 truncate">
+                {channel?.name.replace(/^#/, "") || "Chat"}
+              </span>
+              {projectName && (
+                <span className="text-xs text-gray-400 ml-2">{projectName}</span>
+              )}
+            </div>
+            {channel?.auto_mode && (
+              <span className="text-[10px] bg-yellow-600/30 text-yellow-400 px-2 py-0.5 rounded font-medium">Auto</span>
+            )}
+          </div>
+        )}
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+          {messages.length === 0 && (
+            <div className="text-center py-12">
+              <p className="text-gray-400 text-sm font-medium">Start a conversation with HomeBase</p>
+              <p className="text-gray-500 text-xs mt-1 max-w-xs mx-auto">
+                Ask a question, propose a goal, run shell commands, or supervise active workers.
+              </p>
+            </div>
+          )}
+          {messages.map((msg) => (
+            <FullscreenMessage key={msg.id} message={msg} onRespond={handleRespond} />
+          ))}
+          {sending && (
+            <div className="flex justify-start">
+              <div className="bg-gray-800 text-gray-300 px-4 py-2 rounded-2xl text-sm flex items-center gap-2 border border-gray-700/50">
+                <span className="flex gap-1">
+                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                </span>
+                <span className="text-xs text-gray-400">Agent thinking...</span>
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Quick action chips */}
+        {!hideActions && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 border-t border-gray-800 overflow-x-auto flex-shrink-0 scrollbar-none">
+            <ActionButton label="+ Goal" onClick={onCreateTask} primary />
+            <ActionButton label="+ Terminal" onClick={() => onOpenTerminal?.(projectName || "")} />
+            <ActionButton label="Browser" onClick={onOpenBrowser} />
+            <ActionButton label="Activity" onClick={onOpenActivity} />
+            <ActionButton label="Menu" onClick={onOpenMenu} />
+          </div>
+        )}
+
+        {/* Input */}
+        <div className="flex items-center gap-2 px-3 py-2 border-t border-gray-800 flex-shrink-0 bg-gray-900">
+          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files?.length) uploadMultiple(e.target.files); e.target.value = "" }} />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="w-9 h-9 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 flex-shrink-0 text-base"
+            title="Attach file"
+            aria-label="Attach file"
+          >
+            📎
+          </button>
+          <input
+            ref={fullscreenInputRef}
+            data-no-global-intercept
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend() } }}
+            placeholder={projectName ? `Message ${projectName}...` : "Message agent..."}
+            className="flex-1 min-w-0 px-4 py-2 text-sm bg-gray-800 border border-gray-700 rounded-full text-gray-200 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+            disabled={sending}
+          />
+          {voiceButton}
+          <button
+            onClick={handleSend}
+            disabled={sending || !input.trim()}
+            className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-full text-white font-medium flex-shrink-0 transition-colors"
+          >
+            {sending ? "..." : "Send"}
+          </button>
+        </div>
+      </div>
+    )
   }
 
   // ── Fullscreen chat view ──
@@ -216,10 +316,10 @@ function ActionButton({ label, onClick, primary }: { label: string; onClick?: ()
   return (
     <button
       onClick={onClick}
-      className={`px-2.5 py-1 text-[11px] font-medium rounded-md whitespace-nowrap flex-shrink-0 ${
+      className={`px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap flex-shrink-0 transition-colors min-h-[32px] ${
         primary
-          ? "bg-blue-600 text-white"
-          : "border border-gray-600 text-gray-300"
+          ? "bg-blue-600 text-white hover:bg-blue-500 shadow-sm"
+          : "border border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-750 hover:text-white"
       }`}
     >
       {label}

@@ -89,7 +89,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   commandPaletteOpen: false,
   addProjectOpen: false,
   theme: localStorage.getItem("rdc_theme") || "default",
-  layout: localStorage.getItem("rdc_layout") || "desktop",
+  layout: localStorage.getItem("rdc_layout") || (typeof window !== "undefined" && window.innerWidth < 768 ? "mobile" : "desktop"),
   toasts: [],
   selectedTaskId: null,
   agentPanelOpen: false,

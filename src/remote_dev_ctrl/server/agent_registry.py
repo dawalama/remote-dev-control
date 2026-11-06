@@ -238,6 +238,8 @@ def classify_agent_family(name: str, expansion: str) -> str | None:
         return "cursor"
     if name_l.startswith(("grok-", "grok_")) or re.search(r"\bgrok\b", name_l):
         return "grok"
+    if name_l.startswith(("agy-", "agy_")) or re.search(r"\bagy\b", name_l):
+        return "agy"
     if name_l.startswith(("aider-", "aider_")) or re.search(r"\baider\b", name_l):
         return "aider"
     if name_l.startswith(("opencode-", "opencode_")) or re.search(r"\bopencode\b", name_l):
@@ -252,6 +254,8 @@ def classify_agent_family(name: str, expansion: str) -> str | None:
         return "cursor"
     if re.search(r"(?:^|\s|/)grok(?:\s|$)", exp_l):
         return "grok"
+    if re.search(r"(?:^|\s|/)agy(?:\s|$)", exp_l):
+        return "agy"
     if re.search(r"(?:^|\s|/)aider(?:\s|$)", exp_l):
         return "aider"
     if re.search(r"(?:^|\s|/)opencode(?:\s|$)", exp_l):
@@ -314,7 +318,7 @@ def discover_agent_aliases() -> dict[str, dict[str, str]]:
         return current
 
     discovered: dict[str, dict[str, str]] = {}
-    base_names = {"claude", "codex", "cursor", "cursor-agent", "grok"}
+    base_names = {"claude", "codex", "cursor", "cursor-agent", "grok", "agy"}
     for name, val in raw_aliases.items():
         if name in base_names:
             continue
@@ -433,6 +437,319 @@ def _save_registry_store(store: dict[str, Any]) -> None:
             pass
 
 
+# Terminal starters and session agents are one catalog. A row in
+# ~/.rdc/terminal_presets.json is an agent. These commands already know how
+# to run a goal; every other command is a terminal until its row has a
+# goal_command containing {prompt}.
+_KNOWN_TERMINAL_AGENTS: dict[str, dict[str, Any]] = {
+    "grok": {
+        "label": "Grok CLI",
+        "driver": "grok",
+        "icon": "G",
+        "executable": "grok",
+        "description": "xAI Grok CLI",
+        "model_provider": "xai",
+        "hosting": "cloud",
+        "auth_check_args": ["--version"],
+        "setup_command": "grok login",
+        "env_key": "XAI_API_KEY",
+    },
+    "agy": {
+        "label": "agy",
+        "driver": "agy",
+        "icon": "Y",
+        "executable": "agy",
+        "description": "agy CLI",
+        "model_provider": "vendor",
+        "hosting": "cloud",
+        "auth_check_args": ["--version"],
+        "setup_command": "agy",
+        "session_command_template": "agy --print --dangerously-skip-permissions {prompt}",
+        "session_resume_template": "agy --print --dangerously-skip-permissions --continue {prompt}",
+    },
+}
+
+_BUILTIN_COMMAND_IDS = {
+    "claude": "claude",
+    "codex": "codex",
+    "cursor": "cursor",
+    "cursor-agent": "cursor",
+    "shell": "shell",
+}
+
+_DEFAULT_TERMINAL_PRESETS = [
+    {"id": "codex", "label": "Codex", "command": "rdc-launch codex", "icon": "O", "description": "OpenAI Codex CLI", "goal_command": ""},
+    {"id": "claude", "label": "Claude", "command": "rdc-launch claude --resume", "icon": "A", "description": "Anthropic Claude Code", "goal_command": ""},
+    {"id": "cursor", "label": "Cursor", "command": "rdc-launch cursor-agent", "icon": "C", "description": "Cursor AI agent", "goal_command": ""},
+    {"id": "shell", "label": "Shell", "command": "", "icon": "$", "description": "Plain login shell", "goal_command": ""},
+]
+
+_STARTER_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+
+
+def _terminal_presets_path() -> Path:
+    return get_rdc_home() / "terminal_presets.json"
+
+
+def command_head(command: str) -> str:
+    """First executable token of a starter command. `rdc-launch claude --resume` is `claude`."""
+    raw = (command or "").strip()
+    if not raw:
+        return ""
+    try:
+        parts = shlex.split(raw)
+    except ValueError:
+        parts = raw.split()
+    if not parts:
+        return ""
+    if parts[0] == "rdc-launch":
+        parts = [part for part in parts[1:] if not part.startswith("-")]
+    if not parts:
+        return ""
+    return Path(parts[0]).name
+
+
+def starter_agent_id(row: dict[str, Any]) -> str | None:
+    """Agent id a starter row addresses. Empty for a plain shell or an unsafe token."""
+    head = command_head(str(row.get("command") or ""))
+    if not head or head.lower() == "gemini":
+        return None
+    mapped = _BUILTIN_COMMAND_IDS.get(head)
+    if mapped:
+        return mapped
+    if _STARTER_ID_RE.match(head):
+        return head
+    return None
+
+
+def _starter_runs_goals(row: dict[str, Any], agent_id: str | None, aliases: dict[str, dict[str, str]]) -> bool:
+    if not agent_id or agent_id == "shell":
+        return False
+    goal = str(row.get("goal_command") or "")
+    if "{prompt}" in goal:
+        return True
+    if agent_id in _KNOWN_TERMINAL_AGENTS or agent_id in aliases:
+        return True
+    return agent_id in _BUILTIN_COMMAND_IDS.values() and agent_id != "shell"
+
+
+def load_terminal_preset_rows() -> list[dict[str, Any]]:
+    """Ordered + menu. Missing file uses the built-in starters."""
+    path = _terminal_presets_path()
+    rows: list[dict[str, Any]] | None = None
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            data = None
+        if isinstance(data, list):
+            rows = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                command = str(item.get("command") or "")
+                preset_id = str(item.get("id") or "")
+                if preset_id.lower() == "gemini" or "gemini" in command.lower():
+                    continue
+                rows.append({
+                    "id": preset_id,
+                    "label": str(item.get("label") or ""),
+                    "command": command,
+                    "icon": str(item.get("icon") or "") or "•",
+                    "description": str(item.get("description") or ""),
+                    "goal_command": str(item.get("goal_command") or ""),
+                })
+            if len(rows) != len(data):
+                _write_terminal_preset_rows(rows)
+    if rows is None:
+        rows = [dict(item) for item in _DEFAULT_TERMINAL_PRESETS]
+    return rows
+
+
+def _write_terminal_preset_rows(rows: list[dict[str, Any]]) -> None:
+    path = _terminal_presets_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rows, indent=2) + "\n")
+
+
+def _drop_starter_rows(agent_id: str) -> None:
+    """Remove + menu rows that address this agent. Missing file stays missing."""
+    if not _terminal_presets_path().exists():
+        return
+    rows = load_terminal_preset_rows()
+    kept = [
+        row for row in rows
+        if starter_agent_id(row) != agent_id and str(row.get("id") or "") != agent_id
+    ]
+    if len(kept) != len(rows):
+        _write_terminal_preset_rows(kept)
+
+
+def _known_agent_spec(agent_id: str, row: dict[str, Any] | None = None) -> AgentWrapperSpec:
+    meta = _KNOWN_TERMINAL_AGENTS[agent_id]
+    source = row or {}
+    command = str(source.get("command") or meta["executable"])
+    goal = str(source.get("goal_command") or "").strip()
+    return AgentWrapperSpec(
+        id=agent_id,
+        label=str(source.get("label") or meta["label"]),
+        driver=str(meta["driver"]),
+        icon=str(source.get("icon") or meta["icon"]),
+        description=str(source.get("description") or meta["description"]),
+        source="terminal",
+        model_provider=str(meta.get("model_provider") or "vendor"),
+        model_tier="coding",
+        hosting=str(meta.get("hosting") or "cloud"),
+        executable=str(meta["executable"]),
+        auth_check_args=list(meta.get("auth_check_args") or []),
+        setup_command=meta.get("setup_command"),
+        env_key=meta.get("env_key"),
+        supports_sessions=True,
+        session_command_template=goal or meta.get("session_command_template"),
+        session_resume_template=None if goal else meta.get("session_resume_template"),
+        show_in_terminal_menu=True,
+        terminal_command=command,
+    )
+
+
+def wrapper_for_starter(
+    row: dict[str, Any],
+    aliases: dict[str, dict[str, str]] | None = None,
+) -> AgentWrapperSpec | None:
+    """Build the agent a starter row adds. Builtins and plain aliases stay as they are."""
+    agent_id = starter_agent_id(row)
+    if not agent_id or agent_id in {spec.id for spec in _BUILTIN_SPECS}:
+        return None
+    aliases = aliases if aliases is not None else discover_agent_aliases()
+    goal = str(row.get("goal_command") or "").strip()
+    if agent_id in _KNOWN_TERMINAL_AGENTS:
+        return _known_agent_spec(agent_id, row)
+    if agent_id in aliases and not goal:
+        return None
+    supports = "{prompt}" in goal
+    return AgentWrapperSpec(
+        id=agent_id,
+        label=str(row.get("label") or agent_id),
+        driver="generic",
+        icon=str(row.get("icon") or "") or "•",
+        description=str(row.get("description") or f"Terminal starter {agent_id}"),
+        source="terminal",
+        executable=command_head(str(row.get("command") or "")) or agent_id,
+        supports_sessions=supports,
+        session_command_template=goal if supports else None,
+        show_in_terminal_menu=True,
+        terminal_command=str(row.get("command") or agent_id),
+        auth_check_args=["--version"] if supports else [],
+    )
+
+
+def _path_known_agents(
+    seen: set[str],
+    disabled: set[str],
+    which_fn: Callable[[str], str | None] = shutil.which,
+) -> list[AgentWrapperSpec]:
+    found: list[AgentWrapperSpec] = []
+    for agent_id in _KNOWN_TERMINAL_AGENTS:
+        if agent_id in seen or agent_id in disabled:
+            continue
+        if which_fn(_KNOWN_TERMINAL_AGENTS[agent_id]["executable"]) is None:
+            continue
+        found.append(_known_agent_spec(agent_id))
+    return found
+
+
+def _annotate_starter(row: dict[str, Any], aliases: dict[str, dict[str, str]]) -> dict[str, Any]:
+    agent_id = starter_agent_id(row)
+    goal = str(row.get("goal_command") or "")
+    # Known agents and aliases run goals without a typed template. An override
+    # is the only goal_command we echo back, so the field stays empty until set.
+    explicit_goal = goal if "{prompt}" in goal else ""
+    return {
+        "id": str(row.get("id") or ""),
+        "label": str(row.get("label") or ""),
+        "command": str(row.get("command") or ""),
+        "icon": str(row.get("icon") or "") or "•",
+        "description": str(row.get("description") or ""),
+        "goal_command": explicit_goal,
+        "runs_goals": _starter_runs_goals(row, agent_id, aliases),
+        "agent_id": agent_id or "",
+    }
+
+
+def terminal_menu() -> list[dict[str, Any]]:
+    """Ordered starter list. Installed agents missing from the file are included."""
+    aliases = discover_agent_aliases()
+    rows = load_terminal_preset_rows()
+    annotated = [_annotate_starter(row, aliases) for row in rows]
+    existing_ids = {row["id"] for row in annotated}
+    existing_cmds = {row["command"].strip() for row in annotated}
+    existing_heads = {command_head(row["command"]) for row in annotated}
+    extras: list[dict[str, Any]] = []
+    for spec in list_registered_wrappers():
+        if not spec.show_in_terminal_menu or spec.source == "builtin":
+            continue
+        command = (spec.terminal_command or spec.executable or spec.id).strip()
+        head = command_head(command)
+        if spec.id in existing_ids or command in existing_cmds or (head and head in existing_heads):
+            continue
+        extras.append({
+            "id": spec.id,
+            "label": spec.id if spec.source == "alias" else spec.label,
+            "command": command,
+            "icon": spec.icon or "•",
+            "description": spec.description,
+            "goal_command": "" if spec.id in _KNOWN_TERMINAL_AGENTS else (spec.session_command_template or ""),
+            "runs_goals": spec.supports_sessions,
+            "agent_id": spec.id,
+        })
+    return extras + annotated
+
+
+def save_terminal_menu(presets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Save the + menu and make each new command an agent. Removed commands are disabled."""
+    previous_ids = {
+        agent_id
+        for row in load_terminal_preset_rows()
+        if (agent_id := starter_agent_id(row))
+    }
+    normalized: list[dict[str, Any]] = []
+    for item in presets:
+        if not isinstance(item, dict):
+            continue
+        command = str(item.get("command") or "")
+        preset_id = str(item.get("id") or "")
+        if preset_id.lower() == "gemini" or "gemini" in command.lower():
+            continue
+        normalized.append({
+            "id": preset_id,
+            "label": str(item.get("label") or ""),
+            "command": command,
+            "icon": str(item.get("icon") or "") or "•",
+            "description": str(item.get("description") or ""),
+            "goal_command": str(item.get("goal_command") or ""),
+        })
+    _write_terminal_preset_rows(normalized)
+
+    aliases = discover_agent_aliases()
+    builtin_ids = {spec.id for spec in _BUILTIN_SPECS}
+    new_ids: set[str] = set()
+    for row in normalized:
+        spec = wrapper_for_starter(row, aliases)
+        if spec is None:
+            agent_id = starter_agent_id(row)
+            if agent_id:
+                new_ids.add(agent_id)
+            continue
+        new_ids.add(spec.id)
+        upsert_wrapper_spec(spec)
+
+    for removed in previous_ids - new_ids:
+        if removed in builtin_ids or removed in aliases:
+            continue
+        remove_wrapper_spec(removed)
+    return terminal_menu()
+
+
 def list_registered_wrappers(*, include_disabled: bool = False) -> list[AgentWrapperSpec]:
     """Return all registered wrappers (discovered aliases + drop-in manifests + custom wrappers + builtins)."""
     store = _load_registry_store()
@@ -455,6 +772,7 @@ def list_registered_wrappers(*, include_disabled: bool = False) -> list[AgentWra
         "claude": ("Claude Code", "claude", ["auth", "status"], "A", "ANTHROPIC_API_KEY", "anthropic", "claude-sonnet-4-5", "cloud"),
         "cursor": ("Cursor Agent", "cursor-agent", ["about"], "C", "CURSOR_API_KEY", "cursor", "auto", "cloud"),
         "grok": ("Grok CLI", "grok", ["--version"], "G", "XAI_API_KEY", "xai", "grok-code-fast-1", "cloud"),
+        "agy": ("agy", "agy", ["--version"], "Y", None, "vendor", None, "cloud"),
         "aider": ("Aider", "aider", ["--version"], "Ai", None, "ollama", "qwen3-coder", "local"),
         "opencode": ("OpenCode", "opencode", ["--version"], "OC", None, "openrouter", "qwen3-coder", "hybrid"),
         "goose": ("Goose Agent", "goose", ["--version"], "Gs", None, "ollama", "qwen3-coder", "local"),
@@ -470,12 +788,21 @@ def list_registered_wrappers(*, include_disabled: bool = False) -> list[AgentWra
         base_label, base_bin, auth_args, icon, env_key, mod_prov, def_mod, hosting = family_meta.get(
             fam, (fam.title(), fam, ["--version"], "•", None, "vendor", None, "cloud")
         )
-        setup_cmd = f"{alias_id} auth login" if fam == "claude" else f"{alias_id} login"
-        resume_cmd = (
-            f"{alias_id} --continue"
-            if fam == "claude"
-            else (f"{alias_id} --resume" if fam == "cursor" else f"{alias_id} resume --last")
-        )
+        if fam == "claude":
+            setup_cmd = f"{alias_id} auth login"
+            resume_cmd = f"{alias_id} --continue"
+        elif fam == "cursor":
+            setup_cmd = f"{alias_id} login"
+            resume_cmd = f"{alias_id} --resume"
+        elif fam == "grok":
+            setup_cmd = f"{alias_id} login"
+            resume_cmd = f"{alias_id} -c"
+        elif fam == "agy":
+            setup_cmd = alias_id
+            resume_cmd = f"{alias_id} --continue"
+        else:
+            setup_cmd = f"{alias_id} login"
+            resume_cmd = f"{alias_id} resume --last"
         if alias_id in custom_by_id:
             spec = custom_by_id[alias_id]
         else:
@@ -526,6 +853,20 @@ def list_registered_wrappers(*, include_disabled: bool = False) -> list[AgentWra
             specs.append(spec)
         seen_ids.add(wid)
 
+    # A starter row is an agent even before anyone opens the wrapper form.
+    # Installed known CLIs (grok, agy) join the same way when no row names them.
+    for row in load_terminal_preset_rows():
+        spec = wrapper_for_starter(row, aliases)
+        if spec is None or spec.id in seen_ids or spec.id in disabled_ids:
+            continue
+        if include_disabled or spec.enabled:
+            specs.append(spec)
+        seen_ids.add(spec.id)
+    for spec in _path_known_agents(seen_ids, disabled_ids):
+        if include_disabled or spec.enabled:
+            specs.append(spec)
+        seen_ids.add(spec.id)
+
     return specs
 
 
@@ -539,7 +880,7 @@ def upsert_wrapper_spec(spec: AgentWrapperSpec) -> AgentWrapperSpec:
         if isinstance(item, dict) and item.get("id") != spec.id
     ]
     payload = spec.model_dump()
-    if spec.source not in {"builtin", "alias", "dropin"}:
+    if spec.source not in {"builtin", "alias", "dropin", "terminal"}:
         payload["source"] = "custom"
     custom_list.append(payload)
     store["custom_wrappers"] = custom_list
@@ -571,14 +912,18 @@ def remove_wrapper_spec(wrapper_id: str) -> bool:
         except OSError:
             pass
     builtin_or_alias = wrapper_id in {b.id for b in _BUILTIN_SPECS} or wrapper_id in discover_agent_aliases()
-    if builtin_or_alias:
+    known = wrapper_id in _KNOWN_TERMINAL_AGENTS
+    if builtin_or_alias or known:
         disabled = set(store.get("disabled_ids") or [])
         disabled.add(wrapper_id)
         store["disabled_ids"] = sorted(disabled)
         _save_registry_store(store)
+        if known and not builtin_or_alias:
+            _drop_starter_rows(wrapper_id)
         return True
     if after < before or removed_dropin:
         _save_registry_store(store)
+        _drop_starter_rows(wrapper_id)
         return True
     return False
 
@@ -635,7 +980,7 @@ def resolve_provider_spec(provider: str) -> tuple[str, str, dict[str, str] | Non
             id=provider,
             label=provider,
             driver=info["family"],
-            executable={"codex": "codex", "claude": "claude", "cursor": "cursor-agent", "grok": "grok"}.get(info["family"], info["family"]),
+            executable={"codex": "codex", "claude": "claude", "cursor": "cursor-agent", "grok": "grok", "agy": "agy"}.get(info["family"], info["family"]),
             source="alias",
         )
         return spec.driver, info["expansion"], info, spec
@@ -648,7 +993,7 @@ def resolve_provider_spec(provider: str) -> tuple[str, str, dict[str, str] | Non
     # Heuristic fallback if user typed a custom alias name like claude-work or codex-quill not yet in static parse
     family = classify_agent_family(provider, provider)
     if family:
-        base_bin = {"codex": "codex", "claude": "claude", "cursor": "cursor-agent", "grok": "grok"}.get(family, family)
+        base_bin = {"codex": "codex", "claude": "claude", "cursor": "cursor-agent", "grok": "grok", "agy": "agy"}.get(family, family)
         alias_info = {"id": provider, "family": family, "expansion": provider, "kind": "zsh_dynamic"}
         spec = AgentWrapperSpec(
             id=provider,
@@ -804,8 +1149,17 @@ def build_agent_command(
 
     elif driver == "grok":
         base_exe = spec.executable or "grok"
-        run_call = f"{wrap_alias_invocation(alias_info, base_exe, f'-p {prompt}')} > \"$rdc_final\""
+        resume_flag = "--continue " if resume else ""
+        run_args = f"--permission-mode dontAsk {resume_flag}-p {prompt}"
+        run_call = f"{wrap_alias_invocation(alias_info, base_exe, run_args)} > \"$rdc_final\""
         inner = _wrap_final_capture("grok", run_call)
+
+    elif driver == "agy":
+        base_exe = spec.executable or "agy"
+        resume_flag = "--continue " if resume else ""
+        run_args = f"--print --dangerously-skip-permissions {resume_flag}{prompt}"
+        run_call = f"{wrap_alias_invocation(alias_info, base_exe, run_args)} > \"$rdc_final\""
+        inner = _wrap_final_capture("agy", run_call)
 
     elif driver == "aider":
         base_exe = spec.executable or "aider"
@@ -869,6 +1223,7 @@ def check_provider_blocker(
         "codex": ("codex", ["login", "status"], "Codex CLI", "codex login", "OPENAI_API_KEY"),
         "claude": ("claude", ["auth", "status"], "Claude Code", "claude auth login", "ANTHROPIC_API_KEY"),
         "grok": ("grok", ["--version"], "Grok CLI", "grok login", "XAI_API_KEY"),
+        "agy": ("agy", ["--version"], "agy", "agy", ""),
     }
     if driver in default_checks:
         base_bin, sub_args, base_label, setup_command, key_name = default_checks[driver]
@@ -1006,12 +1361,12 @@ def resolve_interactive_terminal_command(
     if head in aliases:
         alias_info = aliases[head]
         driver = alias_info["family"]
-        base_cmd = {"codex": "codex", "claude": "claude", "cursor": "cursor-agent", "grok": "grok"}.get(driver, head)
+        base_cmd = {"codex": "codex", "claude": "claude", "cursor": "cursor-agent", "grok": "grok", "agy": "agy"}.get(driver, head)
     elif head in wrappers_by_id:
         spec = wrappers_by_id[head]
         driver = spec.driver
         base_cmd = spec.executable or spec.terminal_command or head
-    elif head in ("cursor-agent", "claude", "codex", "grok"):
+    elif head in ("cursor-agent", "claude", "codex", "grok", "agy"):
         driver = "cursor" if head == "cursor-agent" else head
 
     # Determine resume arguments if not already present in tail

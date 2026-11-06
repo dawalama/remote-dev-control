@@ -1,7 +1,8 @@
-import { useState, useEffect, lazy, Suspense } from "react"
+import { useState, lazy, Suspense } from "react"
 import { BrowserRouter, Routes, Route, useLocation } from "react-router"
 import { useAuthStore } from "@/stores/auth-store"
 import { useUIStore } from "@/stores/ui-store"
+import { useMountEffect } from "@/hooks/use-mount-effect"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { ToastContainer } from "@/components/toast"
 import { DesktopLayout } from "@/layouts/desktop"
@@ -79,7 +80,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const login = useAuthStore((s) => s.login)
 
   // Auto-login from ?token= query param (used by direct share links)
-  useEffect(() => {
+  useMountEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const token = params.get("token")
     if (token) {
@@ -89,7 +90,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
       url.searchParams.delete("token")
       window.history.replaceState({}, "", url.pathname + url.hash)
     }
-  }, [login])
+  })
 
   if (!isAuthenticated) return <LoginPage />
   return <>{children}</>
@@ -143,17 +144,14 @@ export default function App() {
   const theme = useUIStore((s) => s.theme)
   const layout = useUIStore((s) => s.layout)
 
-  useEffect(() => {
+  useMountEffect(() => {
     document.documentElement.setAttribute("data-theme", theme)
-  }, [theme])
-
-  useEffect(() => {
     document.documentElement.setAttribute("data-layout", layout)
-  }, [layout])
+  })
 
   return (
     <TooltipProvider>
-      <div className="dark">
+      <div className={theme === "modern" ? "light" : "dark"}>
         <BrowserRouter basename="/">
           <AppRoutes />
         </BrowserRouter>
