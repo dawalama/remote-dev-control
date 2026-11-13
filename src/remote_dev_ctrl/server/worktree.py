@@ -108,6 +108,10 @@ class WorktreeManager:
             worktrees.append(current)
         return worktrees
 
+    def worktree_path_for(self, project_path: Path, session_id: str) -> Path:
+        """Path reserved for a session worktree, whether or not it exists yet."""
+        return (self.worktrees_dir / project_path.name / session_id).resolve()
+
     def get_worktree_path(self, session_id: str, project_slug: Optional[str] = None) -> Optional[Path]:
         """Return the active worktree path if it exists on disk."""
         if project_slug:
@@ -136,8 +140,7 @@ class WorktreeManager:
         if not self.is_git_repo(project_path):
             return None, None
 
-        project_slug = project_path.name
-        target_path = (self.worktrees_dir / project_slug / session_id).resolve()
+        target_path = self.worktree_path_for(project_path, session_id)
 
         target_branch = branch_name.strip() if branch_name and branch_name.strip() else f"rdc/{session_id}"
 

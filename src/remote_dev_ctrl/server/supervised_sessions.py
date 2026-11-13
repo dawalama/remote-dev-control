@@ -252,44 +252,142 @@ def _status_label(session: Session) -> str:
     return session.status.value if isinstance(session.status, SessionStatus) else str(session.status)
 
 
-def _same_checkout(path: str | None, root: Path) -> bool:
-    if not path:
+def _paths_equal(left: str | Path | None, right: str | Path | None) -> bool:
+    if not left or not right:
         return False
     try:
-        return Path(path).resolve() == root.resolve()
+        return Path(left).resolve() == Path(right).resolve()
     except OSError:
         return False
 
 
-def _checkout_blocker(project: str, project_root: Path, exclude_session_id: str) -> Session | None:
-    """Another active session already writing this project directory."""
+def _checkout_blocker(project: str, candidate: Path, project_root: Path, exclude_session_id: str) -> Session | None:
+    """Another started session already writing this checkout path.
+
+    A pending session is created but has not claimed a checkout. Start moves
+    the session to running before this check, so a staged peer does not reserve
+    the project root. A started direct session still blocks that root when its
+    path was never stored.
+    """
+    candidate_is_root = _paths_equal(candidate, project_root)
     for other in get_session_manager().list_active():
         if other.id == exclude_session_id or other.project != project:
             continue
-        if (other.worktree_mode or "") == "direct" or _same_checkout(other.worktree_path, project_root):
+        if _status_label(other) == SessionStatus.PENDING.value:
+            continue
+        if _paths_equal(other.worktree_path, candidate):
+            return other
+        if candidate_is_root and (other.worktree_mode or "") == "direct":
             return other
     return None
 
 
-def _refuse_if_checkout_busy(sm, session: Session, project_root: Path, previous: str) -> None:
-    blocker = _checkout_blocker(session.project, project_root, session.id)
-    if blocker is None:
-        return
-    message = (
+def _busy_message(blocker: Session) -> str:
+    return (
         f"Checkout is in use by session {blocker.id} ({_status_label(blocker)}). "
         "Wait for it to finish or cancel it before starting another writer on this path."
     )
-    _fail_claimed_start(sm, session, previous, summary=message, error=message)
 
 
-def _use_project_checkout(sm, session: Session, project_path: Path, wm, previous: str) -> Path:
-    """Point a session at the project directory when that checkout is free."""
-    _refuse_if_checkout_busy(sm, session, project_path, previous)
+def _try_claim_project_root(sm, session: Session, project_path: Path, wm) -> str | None:
+    """Reserve the live checkout. Returns a refusal message, or None when claimed."""
+    blocker = _checkout_blocker(session.project, project_path, project_path, session.id)
+    if blocker is not None:
+        return _busy_message(blocker)
     session.worktree_mode = "direct"
-    session.worktree_path = str(project_path)
+    session.worktree_path = str(project_path.resolve())
     if wm.is_git_repo(project_path):
         session.worktree_branch = wm.get_current_branch(project_path)
-    return project_path
+    sm._persist(session)
+    return None
+
+
+def _assign_checkout(sm, session: Session, project_path: Path, wm, previous: str) -> Path:
+    """Choose the session directory and persist that claim before the terminal starts.
+
+    An isolated session whose worktree cannot be created fails. It does not switch
+    to the live project checkout. The check and the claim share the rdc database lock.
+    """
+    from .db.connection import get_db_manager
+
+    is_git = wm.is_git_repo(project_path)
+    sm._db()
+    lock = get_db_manager().get_lock("rdc")
+    refusal: str | None = None
+    create_isolated = False
+    claimed: Path | None = None
+    with lock:
+        mode = session.worktree_mode or "isolated"
+        existing = Path(session.worktree_path) if session.worktree_path else None
+        existing_ready = bool(existing and existing.is_dir())
+        on_project_root = existing_ready and _paths_equal(existing, project_path)
+
+        if (not is_git) or mode == "direct" or on_project_root:
+            refusal = _try_claim_project_root(sm, session, project_path, wm)
+            if refusal is None:
+                claimed = project_path.resolve()
+        elif mode == "reuse":
+            if not existing_ready or existing is None:
+                refusal = (
+                    "The isolated worktree for this session is missing. "
+                    "The session was not started on the project checkout."
+                )
+            else:
+                blocker = _checkout_blocker(session.project, existing, project_path, session.id)
+                refusal = _busy_message(blocker) if blocker is not None else None
+                if refusal is None:
+                    sm._persist(session)
+                    claimed = existing.resolve()
+        else:
+            if existing_ready and existing is not None:
+                blocker = _checkout_blocker(session.project, existing, project_path, session.id)
+                refusal = _busy_message(blocker) if blocker is not None else None
+                if refusal is None:
+                    sm._persist(session)
+                    claimed = existing.resolve()
+            else:
+                planned = wm.worktree_path_for(project_path, session.id)
+                blocker = _checkout_blocker(session.project, planned, project_path, session.id)
+                if blocker is not None:
+                    refusal = _busy_message(blocker)
+                else:
+                    session.worktree_mode = "isolated"
+                    session.worktree_path = str(planned)
+                    sm._persist(session)
+                    create_isolated = True
+
+    if refusal:
+        _fail_claimed_start(sm, session, previous, summary=refusal, error=refusal)
+    if create_isolated:
+        try:
+            wt_path, wt_branch = wm.create_worktree(
+                project_path,
+                session.id,
+                branch_name=session.worktree_branch,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not create worktree for session %s: %s",
+                session.id,
+                type(exc).__name__,
+            )
+            wt_path, wt_branch = None, None
+        if not wt_path:
+            message = (
+                "Could not create an isolated worktree. "
+                "The session was not started on the project checkout."
+            )
+            _fail_claimed_start(sm, session, previous, summary=message, error=message)
+            raise RuntimeError(message)
+        session.worktree_path = str(wt_path)
+        session.worktree_branch = wt_branch
+        sm._persist(session)
+        claimed = wt_path
+    if claimed is None:
+        message = "Could not choose a checkout for this session."
+        _fail_claimed_start(sm, session, previous, summary=message, error=message)
+        raise RuntimeError(message)
+    return claimed
 
 
 def assign_staged_agent(session_id: str, provider: str) -> Session:
@@ -414,36 +512,8 @@ def start_supervised_session(
     record = get_project_repo().get(s.project)
     project_path = Path(record.path).resolve() if record and record.path else None
 
-    target_cwd: Optional[Path] = None
-    if project_path and wm.is_git_repo(project_path):
-        mode = s.worktree_mode or "isolated"
-        if mode == "isolated":
-            if s.worktree_path and Path(s.worktree_path).is_dir():
-                target_cwd = Path(s.worktree_path)
-            else:
-                _refuse_if_checkout_busy(sm, s, project_path, previous)
-                try:
-                    wt_path, wt_branch = wm.create_worktree(
-                        project_path,
-                        s.id,
-                        branch_name=s.worktree_branch,
-                    )
-                    if wt_path:
-                        s.worktree_path = str(wt_path)
-                        s.worktree_branch = wt_branch
-                        target_cwd = wt_path
-                except Exception as e:
-                    logger.warning("Could not create worktree for session %s: %s", s.id, type(e).__name__)
-                    target_cwd = _use_project_checkout(sm, s, project_path, wm, previous)
-        elif mode == "reuse":
-            if s.worktree_path and Path(s.worktree_path).is_dir():
-                target_cwd = Path(s.worktree_path)
-            else:
-                target_cwd = _use_project_checkout(sm, s, project_path, wm, previous)
-        else:  # direct
-            target_cwd = _use_project_checkout(sm, s, project_path, wm, previous)
-    elif project_path:
-        target_cwd = _use_project_checkout(sm, s, project_path, wm, previous)
+    if project_path:
+        target_cwd: Optional[Path] = _assign_checkout(sm, s, project_path, wm, previous)
     else:
         s.worktree_mode = "direct"
         target_cwd = None

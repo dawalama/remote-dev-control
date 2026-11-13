@@ -26,9 +26,12 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
   const channels = useChannelStore((state) => state.channels)
   const activeChannelId = useChannelStore((state) => state.activeChannelId)
   const activeChannel = channels.find((c) => c.id === activeChannelId)
+  const collections = useProjectStore((state) => state.collections)
+  const activeChannelClient = activeChannel
+    ? collections.find((c) => c.id === activeChannel.collection_id)
+    : null
   const allActions = useStateStore((state) => state.actions)
   const workstreamProjects = activeChannel?.project_names ?? []
-  const isMobileOrKiosk = layout === "mobile" || layout === "kiosk"
   const runningActions = allActions.filter(
     (a) => a.status === "running" && workstreamProjects.includes(a.project)
   )
@@ -69,16 +72,26 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
 
   return (
     <section className="flex-1 flex flex-col min-h-0 overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
-      <header className="flex items-center justify-between gap-1.5 border-b border-gray-800 px-3 py-2 bg-gray-900/90 overflow-x-auto">
+      <header className="flex items-center justify-between gap-2 border-b border-gray-800 px-3 py-2 bg-gray-900/95 overflow-x-auto no-scrollbar">
         <div className="min-w-0 flex items-center gap-1.5 flex-shrink-0">
           <h2 className="text-sm font-semibold text-gray-100 flex items-center gap-1.5 whitespace-nowrap">
-            <span>{activeChannel?.type === "system" ? "HomeBase" : "Goal Board"}</span>
+            <span>{activeChannel?.type === "system" ? "HomeBase" : "Goals"}</span>
             {activeChannel && (
-              <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-mono font-medium truncate max-w-[120px]">
+              <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-mono font-medium truncate max-w-[140px]">
                 #{activeChannel.name.replace(/^#+/, "")}
               </span>
             )}
           </h2>
+          {activeChannelClient && (
+            <span className="hidden md:inline-block rounded border border-purple-500/30 bg-purple-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-purple-300 whitespace-nowrap">
+              {activeChannelClient.name}
+            </span>
+          )}
+          {workstreamProjects.length > 0 && (
+            <span className="hidden lg:inline-block text-[10px] text-gray-500 font-mono whitespace-nowrap">
+              [{workstreamProjects.join(", ")}]
+            </span>
+          )}
           {runningActions.length > 0 && (
             <div className="hidden sm:flex items-center gap-1.5 pl-2 border-l border-gray-800">
               {runningActions.map((action) => {
@@ -106,27 +119,27 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
           )}
         </div>
 
-        <div className="flex items-center gap-1 flex-shrink-0">
+        <div className="flex items-center gap-1.5 flex-shrink-0">
           {!onCloseModal && layout === "desktop" && (
-            <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 mr-1">
+            <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 mr-0.5">
               <button
                 type="button"
                 onClick={() => setWorkspaceMode("goals")}
-                className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                className={`rounded px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-colors ${
                   workspaceMode === "goals" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
                 }`}
               >
-                📋 Board
+                Board
               </button>
               <button
                 type="button"
                 onClick={() => setWorkspaceMode("terminal")}
-                className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                className={`rounded px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-colors ${
                   workspaceMode === "terminal" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
                 }`}
                 title="Switch to raw PTY terminal view (⌘J)"
               >
-                💻 Terminal (⌘J)
+                &gt;_ Terminal
               </button>
             </div>
           )}
@@ -135,27 +148,28 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
             type="button"
             disabled={briefing}
             onClick={() => { void runBrief() }}
-            className="rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-[11px] sm:text-xs font-medium text-blue-200 hover:bg-blue-500/20 disabled:opacity-50 whitespace-nowrap"
+            className="rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-[11px] font-medium text-blue-200 hover:bg-blue-500/20 disabled:opacity-50 whitespace-nowrap"
             title="Whole HomeBase status (all projects)"
           >
-            {briefing ? "Briefing…" : isMobileOrKiosk ? "🎙️ Brief" : "Brief me"}
+            {briefing ? "Briefing…" : "🎙️ Brief"}
           </button>
 
           <button
             type="button"
             onClick={() => setShowSetupCards((v) => !v)}
-            className={`rounded border px-2 py-1 text-[11px] sm:text-xs whitespace-nowrap transition-colors ${
+            className={`rounded border px-2 py-1 text-[11px] whitespace-nowrap transition-colors ${
               showSetupCards
                 ? "border-gray-600 bg-gray-800 text-white"
                 : "border-gray-700 text-gray-400 hover:text-gray-200"
             }`}
+            title="Configure Agent Providers & Verification Evidence"
           >
-            {isMobileOrKiosk ? "⚙️ Setup" : "Agent & Evidence Setup"}
+            ⚙️ Setup
           </button>
 
           <button
             onClick={() => setShowProjectBootstrap(true)}
-            className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-[11px] sm:text-xs text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-[11px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
           >
             + Project
           </button>

@@ -5,6 +5,7 @@ import { api, BLOB, DELETE, GET, PATCH, POST, PUT } from "@/lib/api"
 import { useUIStore } from "@/stores/ui-store"
 import { TerminalView, TerminalToolbar } from "@/features/terminal/terminal-view"
 import { useMountEffect } from "@/hooks/use-mount-effect"
+import { loopBlocksAcceptance, loopStatusLabel, type SessionLoopState } from "./loop-status"
 
 type SessionStatusValue = "pending" | "proposed" | "running" | "waiting" | "verifying" | "done" | "completed" | "failed" | "cancelled"
 
@@ -31,6 +32,7 @@ interface SessionData {
   worktree_mode?: "isolated" | "direct" | "reuse"
   worktree_path?: string | null
   worktree_branch?: string | null
+  loop?: SessionLoopState | null
 }
 
 interface SessionDiffFile {
@@ -488,7 +490,8 @@ export function SessionViewer({
   const hasPassingVerification = evidence.some((item) => item.evidence_type === "verification" && item.data.exit_code === 0)
   const criteriaResolved = criteria.every((criterion) => ["passed", "waived"].includes(criterion.status))
   const needsImplementationEvidence = session.review_mode === "implementation"
-  const canComplete = criteriaResolved && (!needsImplementationEvidence || (hasGitEvidence && hasPassingVerification))
+  const canComplete = !loopBlocksAcceptance(session.loop) && criteriaResolved && (!needsImplementationEvidence || (hasGitEvidence && hasPassingVerification))
+  const blockedLoopLabel = session.status === "verifying" ? loopStatusLabel(session.loop?.status) : null
   const followups = session.followup_instructions ?? []
   const runCount = 1 + followups.length
   const activeRun = pinnedRun == null ? runCount - 1 : Math.min(pinnedRun, runCount - 1)
@@ -508,8 +511,30 @@ export function SessionViewer({
         <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium flex-shrink-0 ${
           activeBlocker ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" : "bg-gray-700 text-gray-300"
         }`}>
-          {activeBlocker && session.status === "verifying" ? "Needs action" : statusLabel(session.status)}
+          {blockedLoopLabel ? blockedLoopLabel : activeBlocker && session.status === "verifying" ? "Needs action" : statusLabel(session.status)}
         </span>
+        {session.loop && (
+          <span
+            className={`rounded border px-1.5 py-0.5 text-[10px] font-mono flex-shrink-0 ${
+              session.loop.status === "passed"
+                ? "border-emerald-500/40 bg-emerald-500/20 text-emerald-300"
+                : session.loop.status === "stalled" || session.loop.status === "budget_exhausted" || session.loop.status === "unverified"
+                  ? "border-amber-500/40 bg-amber-500/20 text-amber-300"
+                  : "border-blue-500/40 bg-blue-500/20 text-blue-300"
+            }`}
+            title={session.loop.last_summary || "Autonomous verify-and-retry loop status"}
+          >
+            {session.loop.status === "passed"
+              ? `✓ Verified (${session.loop.round || 1}/${session.loop.max_rounds || 1})`
+              : session.loop.status === "stalled"
+                ? `⚠️ Stalled (${session.loop.round || 1}/${session.loop.max_rounds || 1})`
+                : session.loop.status === "budget_exhausted"
+                  ? `⏱ ${session.loop.round || 1}/${session.loop.max_rounds || 1} rounds`
+                  : session.loop.status === "unverified"
+                    ? "Checks not run"
+                    : `↻ Round ${session.loop.round || 1}/${session.loop.max_rounds || 1}`}
+          </span>
+        )}
         <span className="text-[10px] text-gray-400 flex-shrink-0">{session.project}</span>
         {session.worktree_branch ? (
           <span

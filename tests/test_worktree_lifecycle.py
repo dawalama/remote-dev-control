@@ -287,7 +287,7 @@ def test_two_isolated_sessions_get_distinct_worktrees(temp_git_repo):
         _release(second.id, temp_git_repo)
 
 
-def test_direct_fallback_refuses_when_checkout_is_held(temp_git_repo, monkeypatch):
+def test_second_direct_session_refuses_held_checkout(temp_git_repo):
     project_name, channel_id = _register_project(temp_git_repo, "proj-held")
     holder = create_supervised_session(
         channel_id=channel_id,
@@ -299,16 +299,9 @@ def test_direct_fallback_refuses_when_checkout_is_held(temp_git_repo, monkeypatc
     newcomer = create_supervised_session(
         channel_id=channel_id,
         project=project_name,
-        goal="Would fall back onto the same checkout",
+        goal="Wants the same checkout",
         provider="diagnostic",
-        worktree_mode="isolated",
-    )
-    def _fail_worktree(*_args, **_kwargs):
-        raise RuntimeError("worktree failed")
-
-    monkeypatch.setattr(
-        "remote_dev_ctrl.server.worktree.WorktreeManager.create_worktree",
-        _fail_worktree,
+        worktree_mode="direct",
     )
     try:
         assert start_supervised_session(holder.id)["success"] is True
@@ -317,23 +310,22 @@ def test_direct_fallback_refuses_when_checkout_is_held(temp_git_repo, monkeypatc
         fresh = get_session_manager().get(newcomer.id)
         assert fresh is not None
         assert fresh.status == SessionStatus.FAILED
-        assert fresh.worktree_mode != "direct"
-        assert fresh.worktree_path != str(temp_git_repo.resolve())
         assert not fresh.terminal_ids
     finally:
         _release(holder.id, temp_git_repo)
         _release(newcomer.id, temp_git_repo)
 
 
-def test_first_session_falls_back_to_direct_when_worktree_create_fails(temp_git_repo, monkeypatch):
-    project_name, channel_id = _register_project(temp_git_repo, "proj-fallback")
+def test_isolated_start_fails_when_worktree_cannot_be_created(temp_git_repo, monkeypatch):
+    project_name, channel_id = _register_project(temp_git_repo, "proj-fail-closed")
     session = create_supervised_session(
         channel_id=channel_id,
         project=project_name,
-        goal="First writer may use the project checkout",
+        goal="Must not write the live checkout",
         provider="diagnostic",
         worktree_mode="isolated",
     )
+
     def _fail_worktree(*_args, **_kwargs):
         raise RuntimeError("worktree failed")
 
@@ -342,9 +334,43 @@ def test_first_session_falls_back_to_direct_when_worktree_create_fails(temp_git_
         _fail_worktree,
     )
     try:
-        assert start_supervised_session(session.id)["success"] is True
+        with pytest.raises(RuntimeError, match="isolated worktree"):
+            start_supervised_session(session.id)
         fresh = get_session_manager().get(session.id)
-        assert fresh.worktree_mode == "direct"
-        assert Path(fresh.worktree_path).resolve() == temp_git_repo.resolve()
+        assert fresh is not None
+        assert fresh.status == SessionStatus.FAILED
+        assert fresh.worktree_mode == "isolated"
+        assert fresh.worktree_path is None or Path(fresh.worktree_path).resolve() != temp_git_repo.resolve()
+        assert not fresh.terminal_ids
     finally:
         _release(session.id, temp_git_repo)
+
+
+def test_reuse_refuses_while_parent_worktree_is_active(temp_git_repo):
+    project_name, channel_id = _register_project(temp_git_repo, "proj-reuse")
+    parent = create_supervised_session(
+        channel_id=channel_id,
+        project=project_name,
+        goal="Parent writer",
+        provider="diagnostic",
+        worktree_mode="isolated",
+    )
+    try:
+        assert start_supervised_session(parent.id)["success"] is True
+        child = create_supervised_session(
+            channel_id=channel_id,
+            project=project_name,
+            goal="Child wants the same worktree",
+            provider="diagnostic",
+            discovered_from=parent.id,
+        )
+        assert child.worktree_mode == "reuse"
+        with pytest.raises(RuntimeError, match=parent.id):
+            start_supervised_session(child.id)
+        fresh = get_session_manager().get(child.id)
+        assert fresh is not None
+        assert fresh.status == SessionStatus.FAILED
+        assert Path(fresh.worktree_path).resolve() != temp_git_repo.resolve()
+        assert not fresh.terminal_ids
+    finally:
+        _release(parent.id, temp_git_repo)

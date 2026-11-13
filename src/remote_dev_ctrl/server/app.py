@@ -9857,10 +9857,10 @@ async def get_channel_context(channel_id: str, project: str | None = None):
     }
 
 
-def _session_git_snapshot(project: str) -> dict[str, str]:
+def _session_git_snapshot(project: str, override_path: Path | None = None) -> dict[str, str]:
     from .supervised_sessions import session_git_snapshot
 
-    return session_git_snapshot(project)
+    return session_git_snapshot(project, override_path=override_path)
 
 
 def _session_review_mode(session) -> str:
@@ -9868,7 +9868,9 @@ def _session_review_mode(session) -> str:
     if metadata.get("review_mode") in {"advisory", "implementation"}:
         return metadata["review_mode"]
     baseline = metadata.get("git_baseline")
-    current = _session_git_snapshot(session.project)
+    wt = getattr(session, "worktree_path", None)
+    override = Path(wt) if wt and Path(wt).is_dir() else None
+    current = _session_git_snapshot(session.project, override_path=override)
     if isinstance(baseline, dict):
         return "implementation" if current != baseline else "advisory"
     # Legacy sessions have no ownership baseline. Treat them as advisory rather
@@ -9880,7 +9882,10 @@ def _session_response(session) -> dict:
     metadata = session.metadata or {}
     project_record = get_project_repo().get(session.project)
     project_profile = (project_record.config or {}).get("profile", {}) if project_record else {}
-    verification_command = str(project_profile.get("test_command") or "").strip() or None
+    verification_command = (
+        str((session.policy or {}).get("verification_command") or metadata.get("verification_command") or project_profile.get("test_command") or "").strip()
+        or None
+    )
     
     from .session_manager import get_attention_state, SessionStatus
     from .channel_manager import get_channel_manager
@@ -9919,6 +9924,7 @@ def _session_response(session) -> dict:
         "worktree_branch": getattr(session, "worktree_branch", None),
         "handoff_brief": getattr(session, "handoff_brief", None),
         "verification_command": verification_command,
+        "loop": metadata.get("loop"),
         "followup_instructions": [
             {
                 "instruction": str(item.get("instruction") or ""),
@@ -9943,6 +9949,8 @@ class CreateSupervisedSessionRequest(BaseModel):
     parent_session_id: str | None = None
     worktree_mode: str | None = "isolated"
     worktree_branch: str | None = None
+    max_rounds: int | None = None
+    verification_command: str | None = None
 
 
 class ContinueSessionRequest(BaseModel):
@@ -10128,6 +10136,18 @@ async def create_supervised_session(body: CreateSupervisedSessionRequest):
     """Create a goal-centered session using the current session aggregate."""
     from .supervised_sessions import create_supervised_session as create_supervised
 
+    meta_extra: dict = {}
+    if body.parent_session_id:
+        meta_extra["parent_session_id"] = body.parent_session_id
+    if body.max_rounds is not None or body.verification_command:
+        loop_cfg: dict = {"round": 1}
+        if body.max_rounds is not None:
+            loop_cfg["max_rounds"] = max(1, min(int(body.max_rounds), 10))
+        if body.verification_command:
+            loop_cfg["verification_command"] = body.verification_command.strip()
+            meta_extra["verification_command"] = body.verification_command.strip()
+        meta_extra["loop"] = loop_cfg
+
     try:
         session = create_supervised(
             channel_id=body.channel_id,
@@ -10142,7 +10162,7 @@ async def create_supervised_session(body: CreateSupervisedSessionRequest):
             worktree_mode=body.worktree_mode,
             worktree_branch=body.worktree_branch,
             discovered_from=body.parent_session_id,
-            metadata_extra={"parent_session_id": body.parent_session_id} if body.parent_session_id else None,
+            metadata_extra=meta_extra or None,
         )
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -10864,7 +10884,7 @@ async def capture_session_git_evidence(session_id: str):
     session = get_session_manager().get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    path = _session_project_path(session.project)
+    path = _session_effective_path(session)
 
     def collect() -> dict:
         def git(*args: str) -> str:
@@ -11373,9 +11393,15 @@ async def run_session_verification(session_id: str, body: VerificationRequest):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     project = get_project_repo().get(session.project)
-    path = _session_project_path(session.project)
+    path = _session_effective_path(session)
     profile = (project.config or {}).get("profile", {}) if project else {}
-    command = (body.command or profile.get("test_command") or "").strip()
+    command = (
+        body.command
+        or (session.policy or {}).get("verification_command")
+        or (session.metadata or {}).get("verification_command")
+        or profile.get("test_command")
+        or ""
+    ).strip()
     if not command:
         raise HTTPException(status_code=422, detail="No verification command configured")
     try:
@@ -11594,6 +11620,10 @@ async def complete_session(session_id: str, body: CompleteSessionRequest | None 
             missing.append("passing verification evidence")
         if unresolved:
             missing.append("resolved acceptance criteria")
+        from .session_loop import loop_acceptance_block
+        blocked = loop_acceptance_block(s)
+        if blocked:
+            missing.append(blocked)
         if missing:
             override = bool(body and body.override)
             note = (body.note if body else "").strip()

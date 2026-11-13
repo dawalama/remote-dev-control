@@ -8,6 +8,9 @@ import { useStateStore } from "@/stores/state-store"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 import type { Action } from "@/types"
 import { isCollectionVisible } from "@/components/collection-picker"
+import { loopStatusLabel, type SessionLoopState } from "./loop-status"
+
+export type { SessionLoopState }
 
 export const SESSION_STATUS = {
   PROPOSED: "proposed",
@@ -41,6 +44,8 @@ export function getSessionAttentionState(status: string): AttentionState {
   return "closed"
 }
 
+
+
 export interface SessionInfo {
   id: string
   channel_id: string
@@ -66,6 +71,7 @@ export interface SessionInfo {
   worktree_branch?: string | null
   discovered_from?: string | null
   handoff_brief?: string | null
+  loop?: SessionLoopState | null
 }
 
 export interface GoalCard {
@@ -208,18 +214,12 @@ export function SessionsCard({
   const activeChannel = channels.find((channel) => channel.id === activeChannelId)
   const isSystemWorkstream = activeChannelId === "ch-system"
 
-  // Client info for the active workstream
-  const activeChannelClient = activeChannel
-    ? collections.find((c) => c.id === activeChannel.collection_id)
-    : null
-
   // Focus & Filter controls (for #system Overview Mode)
   const groupBy = useUIStore((s) => s.sessionsHubGroupBy)
   const setGroupBy = useUIStore((s) => s.setSessionsHubGroupBy)
 
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(false)
-  const [showCreate, setShowCreate] = useState(false)
   const [showOptions, setShowOptions] = useState(false)
   const [showClosed, setShowClosed] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -237,6 +237,8 @@ export function SessionsCard({
     branchOption: "auto" as "auto" | "existing" | "new",
     selectedBranch: "",
     newBranchName: "",
+    maxRounds: 3 as 1 | 3 | 5,
+    verificationCommand: "",
   })
   const [providerOptions, setProviderOptions] = useState<Array<{ id: string; label: string; ready?: boolean }>>([
     { id: "codex", label: "Codex CLI" },
@@ -251,10 +253,6 @@ export function SessionsCard({
     ? projects.filter((p) => workstreamProjects.includes(p.name))
     : projects
   const selectedProject = draft.project || availableProjects[0]?.name || (projects[0]?.name ?? "")
-
-  const activeRunningActions = allActions.filter(
-    (a) => a.status === "running" && workstreamProjects.includes(a.project)
-  )
 
   const fetchGitBranches = useCallback(async (projectName: string) => {
     if (!projectName) return
@@ -375,6 +373,8 @@ export function SessionsCard({
                 ? draft.selectedBranch || undefined
                 : undefined)
             : undefined,
+        max_rounds: draft.maxRounds,
+        verification_command: draft.verificationCommand.trim() || undefined,
       })
 
       // Step 8: Upload each chosen file as evidence on the session before starting
@@ -393,7 +393,6 @@ export function SessionsCard({
 
       setChosenFiles([])
       setDraft((value) => ({ ...value, goal: "", criteria: "", branchOption: "auto", newBranchName: "" }))
-      setShowCreate(false)
       setShowOptions(false)
 
       if (!asStaged) {
@@ -517,56 +516,290 @@ export function SessionsCard({
     })
     .filter((g) => g.cards.length > 0 || g.workstreamGroups.length > 0)
 
-  // Client badge styling
-  const clientBadgeColor =
-    activeChannelClient?.role === "client"
-      ? "bg-blue-500/20 text-blue-300 border-blue-500/30"
-      : activeChannelClient?.role === "own"
-        ? "bg-purple-500/20 text-purple-300 border-purple-500/30"
-        : "bg-gray-800 text-gray-400 border-gray-700"
-
   const gitInfo = projectGitMap[selectedProject]
 
+  const cycleMaxRounds = () => {
+    const next = draft.maxRounds === 3 ? 5 : draft.maxRounds === 5 ? 1 : 3
+    setDraft((prev) => ({ ...prev, maxRounds: next }))
+  }
+
   return (
-    <div className="space-y-4">
-      {/* ── MODE A: Focused Workstream Header Toolbar ── */}
+    <div className="space-y-3">
+      {/* ── MODE A: Always-Ready Inline Quick Goal Composer ── */}
       {!isSystemWorkstream && activeChannel && (
-        <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-gray-800 bg-gray-900/90 p-2.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold text-gray-200">{activeChannel.name}</span>
-            {activeChannelClient && (
-              <span className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${clientBadgeColor}`}>
-                {activeChannelClient.name}
-              </span>
-            )}
-            {workstreamProjects.length > 0 && (
-              <span className="text-[10px] text-gray-400 font-mono">
-                [{workstreamProjects.join(", ")}]
-              </span>
-            )}
-            {activeRunningActions.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5 pl-2 border-l border-gray-800">
-                {activeRunningActions.map((action) => (
-                  <ActionLinkChip key={action.id} action={action} />
-                ))}
-              </div>
-            )}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            void handleCreate(false)
+          }}
+          className="rounded-lg border border-gray-800 bg-gray-900/95 p-2 shadow-sm transition-colors focus-within:border-blue-500/50"
+        >
+          <div className="flex flex-wrap sm:flex-nowrap items-center gap-1.5">
+            <input
+              type="text"
+              value={draft.goal}
+              onChange={(e) => setDraft({ ...draft, goal: e.target.value })}
+              placeholder={`New goal for ${selectedProject || activeChannel.name.replace(/^#+/, "")}… (Enter to run)`}
+              className="min-w-[180px] flex-1 rounded border border-gray-800 bg-gray-950 px-3 py-1.5 text-xs sm:text-sm text-gray-100 placeholder:text-gray-500 focus:border-blue-500/60 focus:outline-none"
+            />
+
+            <div className="flex items-center gap-1.5 flex-shrink-0 ml-auto">
+              <button
+                type="button"
+                onClick={cycleMaxRounds}
+                className={`rounded border px-2 py-1 text-[11px] font-mono whitespace-nowrap transition-colors ${
+                  draft.maxRounds > 1
+                    ? "border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-950/50"
+                    : "border-gray-700 bg-gray-800 text-gray-400 hover:text-gray-200"
+                }`}
+                title="Autonomous verify-and-retry loop: runs project verification after each agent pass and retries automatically unless stalled (click to cycle 3x → 5x → 1x)"
+              >
+                {draft.maxRounds > 1 ? `↻ Loop ${draft.maxRounds}x` : "1x Pass"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowOptions((v) => {
+                    const next = !v
+                    if (next && selectedProject) void fetchGitBranches(selectedProject)
+                    return next
+                  })
+                }}
+                className={`rounded border px-2 py-1 text-[11px] whitespace-nowrap transition-colors ${
+                  showOptions || chosenFiles.length > 0 || draft.criteria.trim()
+                    ? "border-blue-500/50 bg-blue-950/40 text-blue-300"
+                    : "border-gray-700 bg-gray-800 text-gray-400 hover:text-gray-200"
+                }`}
+                title="Configure worktree branch, verification command, acceptance criteria, or attach files"
+              >
+                ⚙ Options{chosenFiles.length > 0 ? ` (${chosenFiles.length})` : ""}
+              </button>
+
+              <button
+                type="button"
+                disabled={creating || !draft.goal.trim() || !selectedProject}
+                onClick={() => void handleCreate(true)}
+                className="rounded border border-purple-500/40 bg-purple-950/30 px-2.5 py-1 text-xs font-medium text-purple-300 hover:bg-purple-900/40 disabled:opacity-40 whitespace-nowrap"
+                title="Stage goal on board without starting an agent immediately"
+              >
+                Stage
+              </button>
+
+              <button
+                type="submit"
+                disabled={creating || !draft.goal.trim() || !selectedProject}
+                className="rounded bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-40 whitespace-nowrap"
+              >
+                {creating ? "Starting…" : "⚡ Run"}
+              </button>
+            </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setShowCreate((v) => {
-                const next = !v
-                if (next && selectedProject) void fetchGitBranches(selectedProject)
-                return next
-              })
-            }}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition-colors"
-          >
-            {showCreate ? "Close Form" : "+ New Goal"}
-          </button>
-        </div>
+          {showOptions && (
+            <div className="mt-2.5 space-y-2.5 border-t border-gray-800 pt-2.5">
+              <div className="grid gap-2.5 sm:grid-cols-2">
+                {workstreamProjects.length !== 1 && (
+                  <div>
+                    <span className="mb-1 block text-[11px] text-gray-400">Target Project</span>
+                    <select
+                      required
+                      value={selectedProject}
+                      onChange={(e) => {
+                        const nextProj = e.target.value
+                        setDraft({ ...draft, project: nextProj })
+                        void fetchGitBranches(nextProj)
+                      }}
+                      className="w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-gray-200"
+                    >
+                      {availableProjects.map((p) => (
+                        <option key={p.name} value={p.name}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <span className="mb-1 block text-[11px] text-gray-400">Agent Provider</span>
+                  <select
+                    value={draft.provider}
+                    onChange={(e) => setDraft({ ...draft, provider: e.target.value })}
+                    className="w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-gray-200"
+                  >
+                    <option value="orchestrated">Orchestrated (Server default)</option>
+                    {providerOptions.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <span className="mb-1 block text-[11px] text-gray-400">Verification Command (optional override)</span>
+                  <input
+                    type="text"
+                    value={draft.verificationCommand}
+                    onChange={(e) => setDraft({ ...draft, verificationCommand: e.target.value })}
+                    placeholder="Auto-detected (e.g. uv run pytest -q)"
+                    className="w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs font-mono text-gray-200 placeholder:text-gray-600"
+                  />
+                </div>
+              </div>
+
+              {/* Workspace Execution Target & Branch Selection */}
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-[11px] font-medium text-gray-300">Workspace Isolation</span>
+                  <span className="text-[10px] text-gray-500">
+                    {draft.worktreeMode === "isolated" ? "Clean-room git worktree" : "Direct working copy"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setDraft({ ...draft, worktreeMode: "isolated" })}
+                    className={`rounded border p-2 text-left transition ${
+                      draft.worktreeMode === "isolated"
+                        ? "border-blue-500 bg-blue-950/40 text-blue-200"
+                        : "border-gray-800 bg-gray-950/60 text-gray-400 hover:border-gray-700"
+                    }`}
+                  >
+                    <div className="font-semibold text-gray-200">Isolated Worktree (Default)</div>
+                    <div className="text-[10px] text-gray-400">Safe sandbox branch outside active checkout</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDraft({ ...draft, worktreeMode: "direct" })}
+                    className={`rounded border p-2 text-left transition ${
+                      draft.worktreeMode === "direct"
+                        ? "border-blue-500 bg-blue-950/40 text-blue-200"
+                        : "border-gray-800 bg-gray-950/60 text-gray-400 hover:border-gray-700"
+                    }`}
+                  >
+                    <div className="font-semibold text-gray-200">Direct Checkout</div>
+                    <div className="text-[10px] text-gray-400">Runs directly in repository on active branch</div>
+                  </button>
+                </div>
+
+                {draft.worktreeMode === "isolated" && gitInfo?.is_git && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-gray-800 bg-gray-950/60 p-2">
+                    <span className="text-[11px] text-gray-400">Branch:</span>
+                    <select
+                      value={draft.branchOption}
+                      onChange={(e) => {
+                        const opt = e.target.value as "auto" | "existing" | "new"
+                        setDraft({
+                          ...draft,
+                          branchOption: opt,
+                          selectedBranch:
+                            opt === "existing" && gitInfo.branches.length > 0
+                              ? draft.selectedBranch || gitInfo.current_branch || gitInfo.branches[0]
+                              : draft.selectedBranch,
+                        })
+                      }}
+                      className="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200"
+                    >
+                      <option value="auto">Auto branch (rdc/sess-...)</option>
+                      {gitInfo.branches && gitInfo.branches.length > 0 && (
+                        <option value="existing">Existing branch...</option>
+                      )}
+                      <option value="new">+ Custom branch name...</option>
+                    </select>
+
+                    {draft.branchOption === "existing" && gitInfo.branches && (
+                      <select
+                        value={draft.selectedBranch || gitInfo.current_branch}
+                        onChange={(e) => setDraft({ ...draft, selectedBranch: e.target.value })}
+                        className="flex-1 min-w-[140px] rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200"
+                      >
+                        {gitInfo.branches.map((b) => (
+                          <option key={b} value={b}>
+                            {b} {b === gitInfo.current_branch ? "(HEAD)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+
+                    {draft.branchOption === "new" && (
+                      <input
+                        type="text"
+                        placeholder="e.g. fix/auth-token-backoff"
+                        value={draft.newBranchName}
+                        onChange={(e) => setDraft({ ...draft, newBranchName: e.target.value })}
+                        className="flex-1 min-w-[140px] rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200 placeholder:text-gray-500"
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid gap-2.5 sm:grid-cols-2">
+                <div>
+                  <span className="mb-1 block text-[11px] text-gray-400">Acceptance Criteria (one per line)</span>
+                  <textarea
+                    rows={2}
+                    value={draft.criteria}
+                    onChange={(e) => setDraft({ ...draft, criteria: e.target.value })}
+                    placeholder="pytest passes&#10;Zero unhandled refresh exceptions"
+                    className="w-full resize-y rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-gray-200"
+                  />
+                </div>
+
+                <div className="space-y-1.5 rounded border border-gray-800 bg-gray-950/60 p-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-medium text-gray-300">Evidence &amp; Attachments</span>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="text-xs text-blue-400 hover:text-blue-300"
+                    >
+                      + Attach Files
+                    </button>
+                  </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || [])
+                      if (files.length > 0) {
+                        setChosenFiles((prev) => [...prev, ...files])
+                      }
+                      e.target.value = ""
+                    }}
+                  />
+                  {chosenFiles.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {chosenFiles.map((file, idx) => (
+                        <span
+                          key={`${file.name}-${idx}`}
+                          className="inline-flex items-center gap-1.5 rounded bg-gray-800 px-2 py-0.5 text-[11px] text-gray-200 border border-gray-700"
+                        >
+                          <span className="truncate max-w-[160px]">{file.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setChosenFiles((prev) => prev.filter((_, i) => i !== idx))}
+                            className="text-gray-400 hover:text-red-400 font-bold ml-0.5"
+                            title="Remove file"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-gray-500">Attach screenshots, logs, or specs as session evidence.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </form>
       )}
 
       {/* ── MODE B: #system Executive Overview Toolbar ── */}
@@ -597,265 +830,6 @@ export function SessionsCard({
             </button>
           </div>
         </div>
-      )}
-
-      {/* ── New Goal Form ── */}
-      {showCreate && !isSystemWorkstream && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            void handleCreate(false)
-          }}
-          className="space-y-3 rounded-lg border border-blue-500/40 bg-gray-800/95 p-4 shadow-xl"
-        >
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-gray-200">What outcome should be accomplished?</span>
-            <textarea
-              autoFocus
-              required
-              rows={3}
-              value={draft.goal}
-              onChange={(e) => setDraft({ ...draft, goal: e.target.value })}
-              placeholder="e.g. Implement resilient OAuth refresh token backoff and write regression test..."
-              className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:border-blue-500 focus:outline-none"
-            />
-          </label>
-
-          <button
-            type="button"
-            onClick={() => setShowOptions((v) => !v)}
-            className="text-xs text-blue-400 hover:text-blue-300"
-          >
-            {showOptions ? "Hide Options ▴" : "Options (Workspace, Provider, Criteria) ▾"}
-          </button>
-
-          {showOptions && (
-            <div className="space-y-2.5 border-t border-gray-700 pt-3">
-              {workstreamProjects.length !== 1 && (
-                <div>
-                  <span className="mb-1 block text-[11px] text-gray-400">Target Project</span>
-                  <select
-                    required
-                    value={selectedProject}
-                    onChange={(e) => {
-                      const nextProj = e.target.value
-                      setDraft({ ...draft, project: nextProj })
-                      void fetchGitBranches(nextProj)
-                    }}
-                    className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-200"
-                  >
-                    {availableProjects.map((p) => (
-                      <option key={p.name} value={p.name}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {/* Workspace Execution Target & Branch Selection */}
-              <div>
-                <div className="mb-1 flex items-center justify-between">
-                  <span className="text-[11px] font-medium text-gray-300">Workspace Execution Target</span>
-                  <span className="text-[10px] text-gray-400">
-                    {draft.worktreeMode === "isolated" ? "Clean-room isolation" : "Direct working copy"}
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setDraft({ ...draft, worktreeMode: "isolated" })}
-                    className={`rounded border p-2 text-left transition ${
-                      draft.worktreeMode === "isolated"
-                        ? "border-blue-500 bg-blue-950/40 text-blue-200"
-                        : "border-gray-700 bg-gray-900/60 text-gray-400 hover:border-gray-600"
-                    }`}
-                  >
-                    <div className="font-semibold text-gray-200">Isolated Worktree (Default)</div>
-                    <div className="text-[10px] text-gray-400">Runs in isolated folder outside active checkout</div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setDraft({ ...draft, worktreeMode: "direct" })}
-                    className={`rounded border p-2 text-left transition ${
-                      draft.worktreeMode === "direct"
-                        ? "border-blue-500 bg-blue-950/40 text-blue-200"
-                        : "border-gray-700 bg-gray-900/60 text-gray-400 hover:border-gray-600"
-                    }`}
-                  >
-                    <div className="font-semibold text-gray-200">Direct Checkout</div>
-                    <div className="text-[10px] text-gray-400">Runs directly in repository on active branch</div>
-                  </button>
-                </div>
-
-                {draft.worktreeMode === "isolated" && gitInfo?.is_git && (
-                  <div className="mt-2 space-y-1.5 rounded border border-gray-700/60 bg-gray-900/60 p-2">
-                    <span className="block text-[11px] text-gray-400">Worktree Branch Target</span>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <select
-                        value={draft.branchOption}
-                        onChange={(e) => {
-                          const opt = e.target.value as "auto" | "existing" | "new"
-                          setDraft({
-                            ...draft,
-                            branchOption: opt,
-                            selectedBranch:
-                              opt === "existing" && gitInfo.branches.length > 0
-                                ? draft.selectedBranch || gitInfo.current_branch || gitInfo.branches[0]
-                                : draft.selectedBranch,
-                          })
-                        }}
-                        className="rounded border border-gray-600 bg-gray-900 px-2 py-1 text-xs text-gray-200"
-                      >
-                        <option value="auto">Auto-generated branch (rdc/sess-...)</option>
-                        {gitInfo.branches && gitInfo.branches.length > 0 && (
-                          <option value="existing">Existing branch...</option>
-                        )}
-                        <option value="new">+ Create custom branch name...</option>
-                      </select>
-
-                      {draft.branchOption === "existing" && gitInfo.branches && (
-                        <select
-                          value={draft.selectedBranch || gitInfo.current_branch}
-                          onChange={(e) => setDraft({ ...draft, selectedBranch: e.target.value })}
-                          className="flex-1 min-w-[140px] rounded border border-gray-600 bg-gray-900 px-2 py-1 text-xs text-gray-200"
-                        >
-                          {gitInfo.branches.map((b) => (
-                            <option key={b} value={b}>
-                              {b} {b === gitInfo.current_branch ? "(current HEAD)" : ""}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-
-                      {draft.branchOption === "new" && (
-                        <input
-                          type="text"
-                          placeholder="e.g. fix/auth-token-backoff"
-                          value={draft.newBranchName}
-                          onChange={(e) => setDraft({ ...draft, newBranchName: e.target.value })}
-                          className="flex-1 min-w-[140px] rounded border border-gray-600 bg-gray-900 px-2 py-1 text-xs text-gray-200 placeholder:text-gray-500"
-                        />
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {draft.worktreeMode === "direct" && gitInfo?.is_git && (
-                  <div className="mt-1 text-[11px] text-amber-300/80">
-                    Agent will execute directly in <span className="font-mono text-white">{selectedProject}</span> on branch <span className="font-mono text-white">{gitInfo.current_branch || "HEAD"}</span>.
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <span className="mb-1 block text-[11px] text-gray-400">Acceptance Criteria (one per line)</span>
-                <textarea
-                  rows={2}
-                  value={draft.criteria}
-                  onChange={(e) => setDraft({ ...draft, criteria: e.target.value })}
-                  placeholder="pytest tests/test_auth.py passes&#10;Zero unhandled token refresh exceptions"
-                  className="w-full resize-y rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-200"
-                />
-              </div>
-
-              <div>
-                <span className="mb-1 block text-[11px] text-gray-400">Agent Provider</span>
-                <select
-                  value={draft.provider}
-                  onChange={(e) => setDraft({ ...draft, provider: e.target.value })}
-                  className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-200"
-                >
-                  <option value="orchestrated">Orchestrated (Server default)</option>
-                  {providerOptions.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          )}
-
-          {/* File attachments for the goal (Step 8) */}
-          <div className="space-y-1.5 rounded border border-gray-700/60 bg-gray-900/60 p-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-medium text-gray-300">Goal Evidence &amp; Media</span>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="text-xs text-blue-400 hover:text-blue-300"
-              >
-                + Attach Files
-              </button>
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                const files = Array.from(e.target.files || [])
-                if (files.length > 0) {
-                  setChosenFiles((prev) => [...prev, ...files])
-                }
-                e.target.value = ""
-              }}
-            />
-            {chosenFiles.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {chosenFiles.map((file, idx) => (
-                  <span
-                    key={`${file.name}-${idx}`}
-                    className="inline-flex items-center gap-1.5 rounded bg-gray-800 px-2 py-0.5 text-[11px] text-gray-200 border border-gray-700"
-                  >
-                    <span className="truncate max-w-[180px]">{file.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => setChosenFiles((prev) => prev.filter((_, i) => i !== idx))}
-                      className="text-gray-400 hover:text-red-400 font-bold ml-0.5"
-                      title="Remove file"
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="text-[10px] text-gray-500">Attach screenshots, logs, or specs to attach directly as session evidence.</p>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between pt-1">
-            <span className="text-[10px] text-gray-400">Target Project: {selectedProject || "None"}</span>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setShowCreate(false)}
-                className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={creating || !draft.goal.trim() || !selectedProject}
-                onClick={() => void handleCreate(true)}
-                className="rounded border border-purple-500/50 bg-purple-950/40 px-3 py-1.5 text-xs font-medium text-purple-300 hover:bg-purple-900/50 disabled:opacity-50"
-                title="Stage goal on board without immediately launching an agent"
-              >
-                ⚪ Stage Goal
-              </button>
-              <button
-                type="submit"
-                disabled={creating || !draft.goal.trim() || !selectedProject}
-                className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
-              >
-                {creating ? "Launching…" : "⚡ Start Session"}
-              </button>
-            </div>
-          </div>
-        </form>
       )}
 
       {/* ── Attention Board Rendering ── */}
@@ -1536,7 +1510,11 @@ function GoalCardItem({
             ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
             : "bg-blue-500/20 text-blue-300 border-blue-500/40"
 
-  const statusText = isVerifying
+  const loop = latest.loop
+  const blockedLabel = isVerifying ? loopStatusLabel(loop?.status) : null
+  const statusText = blockedLabel
+    ? blockedLabel
+    : isVerifying
     ? "Ready for Review"
     : isWaiting
       ? "Waiting for Input"
@@ -1558,6 +1536,42 @@ function GoalCardItem({
     agentChoices.push({ id: currentAgent, label: currentAgent })
   }
 
+  const loopRound = loop?.round || 1
+  const loopMax = loop?.max_rounds || 1
+  const loopBadge = loop
+    ? loop.status === "passed"
+      ? {
+          text: `✓ Verified (${loopRound}/${loopMax})`,
+          cls: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
+          title: loop.last_summary || "Verification command passed",
+        }
+      : loop.status === "stalled"
+        ? {
+            text: `⚠️ Stalled (${loopRound}/${loopMax})`,
+            cls: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+            title: loop.last_summary || "Same verification failure repeated twice",
+          }
+        : loop.status === "budget_exhausted"
+          ? {
+              text: `⏱ ${loopRound}/${loopMax} rounds`,
+              cls: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+              title: loop.last_summary || "Reached max autonomous loop rounds",
+            }
+          : loop.status === "unverified"
+            ? {
+                text: "Checks not run",
+                cls: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+                title: loop.last_summary || "Verification was not run in this session directory",
+              }
+          : loop.status === "retrying" || (latest.status === "running" && loopMax > 1)
+            ? {
+                text: `↻ Round ${loopRound}/${loopMax}`,
+                cls: "bg-blue-500/20 text-blue-300 border-blue-500/40",
+                title: loop.last_summary || `Autonomous verify-and-retry loop round ${loopRound} of ${loopMax}`,
+              }
+            : null
+    : null
+
   return (
     <div
       onClick={() => onOpenSession(latest.id)}
@@ -1565,10 +1579,10 @@ function GoalCardItem({
         isStream ? "p-3.5 space-y-2" : "p-2.5"
       }`}
     >
-      {/* Badges: Project, Channel, Status */}
+      {/* Badges: Project, Channel, Loop, Status */}
       <div className="flex items-start justify-between gap-1.5">
-        <div className="flex flex-wrap items-center gap-1.5 min-w-0 flex-1">
-          <span className="text-[10px] font-semibold text-gray-400 truncate max-w-[120px]">{card.project}</span>
+        <div className="flex flex-wrap items-center gap-1 min-w-0 flex-1">
+          <span className="text-[10px] font-semibold text-gray-400 truncate max-w-[110px]">{card.project}</span>
           {channelName && (
             <button
               type="button"
@@ -1578,7 +1592,7 @@ function GoalCardItem({
                   onSelectWorkstream(card.channel_id)
                 }
               }}
-              className="text-[9px] px-1.5 py-0.2 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 font-mono truncate max-w-[100px] transition-colors"
+              className="text-[9px] px-1.5 py-0.2 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 font-mono truncate max-w-[90px] transition-colors"
               title={`Switch to #${channelName}`}
             >
               #{channelName}
@@ -1586,7 +1600,7 @@ function GoalCardItem({
           )}
           {latest.worktree_branch ? (
             <span
-              className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-950/60 border border-indigo-800/40 text-indigo-300 font-mono truncate max-w-[140px]"
+              className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-950/60 border border-indigo-800/40 text-indigo-300 font-mono truncate max-w-[120px]"
               title={`Worktree branch: ${latest.worktree_branch}`}
             >
               ⎇ {latest.worktree_branch}
@@ -1596,8 +1610,16 @@ function GoalCardItem({
               📁 direct
             </span>
           ) : null}
+          {loopBadge && (
+            <span
+              className={`rounded border px-1.5 py-0.2 text-[9px] font-mono whitespace-nowrap ${loopBadge.cls}`}
+              title={loopBadge.title}
+            >
+              {loopBadge.text}
+            </span>
+          )}
         </div>
-        <span className={`rounded border px-1.5 py-0.5 text-[9px] font-medium leading-none flex-shrink-0 ${badgeStyle}`}>
+        <span className={`rounded border px-1.5 py-0.5 text-[9px] font-medium leading-none whitespace-nowrap flex-shrink-0 ${badgeStyle}`}>
           {statusText}
         </span>
       </div>
@@ -1669,7 +1691,7 @@ function GoalCardItem({
       )}
 
       {/* Quick Action Bar */}
-      <div className="mt-2.5 flex items-center justify-between border-t border-gray-800/80 pt-1.5">
+      <div className="mt-2.5 flex items-center justify-between gap-1.5 border-t border-gray-800/80 pt-1.5">
         {isProposed && onAssignProvider ? (
           <select
             aria-label="Agent"
@@ -1681,8 +1703,8 @@ function GoalCardItem({
               event.stopPropagation()
               onAssignProvider(latest.id, event.target.value)
             }}
-            className={`truncate rounded border border-gray-700 bg-gray-950 text-gray-200 ${
-              isStream ? "max-w-[12rem] px-1.5 py-1 text-xs" : "max-w-[9.5rem] px-1 py-0.5 text-[10px]"
+            className={`min-w-0 truncate rounded border border-gray-700 bg-gray-950 text-gray-200 ${
+              isStream ? "max-w-[12rem] px-1.5 py-1 text-xs" : "max-w-[8rem] px-1 py-0.5 text-[10px]"
             }`}
           >
             {agentChoices.map((option) => (
@@ -1690,18 +1712,18 @@ function GoalCardItem({
             ))}
           </select>
         ) : (
-          <span className="text-[10px] text-gray-400 font-mono">
+          <span className="min-w-0 truncate text-[10px] text-gray-400 font-mono">
             {latest.agent_provider ? `🤖 ${latest.agent_provider}` : "🤖 orchestrated"}
           </span>
         )}
 
-        <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-1 flex-shrink-0 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
           {isProposed && (
             <button
               type="button"
               disabled={isStarting}
               onClick={() => onStartSession(latest.id)}
-              className={`rounded bg-purple-600 font-semibold text-white hover:bg-purple-500 disabled:opacity-50 transition-colors ${
+              className={`rounded bg-purple-600 font-semibold text-white hover:bg-purple-500 disabled:opacity-50 whitespace-nowrap transition-colors ${
                 isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
               }`}
             >
@@ -1713,7 +1735,7 @@ function GoalCardItem({
             <button
               type="button"
               onClick={() => onOpenSession(latest.id)}
-              className={`rounded bg-amber-600 font-semibold text-white hover:bg-amber-500 transition-colors ${
+              className={`rounded bg-amber-600 font-semibold text-white hover:bg-amber-500 whitespace-nowrap transition-colors ${
                 isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
               }`}
             >
@@ -1731,7 +1753,7 @@ function GoalCardItem({
                   onOpenSession(latest.id)
                 }
               }}
-              className={`rounded bg-yellow-600 font-semibold text-white hover:bg-yellow-500 transition-colors ${
+              className={`rounded bg-yellow-600 font-semibold text-white hover:bg-yellow-500 whitespace-nowrap transition-colors ${
                 isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
               }`}
             >
@@ -1745,7 +1767,7 @@ function GoalCardItem({
                 type="button"
                 disabled={isStarting}
                 onClick={() => onStartSession(latest.id)}
-                className={`rounded bg-red-600 font-semibold text-white hover:bg-red-500 disabled:opacity-50 transition-colors ${
+                className={`rounded bg-red-600 font-semibold text-white hover:bg-red-500 disabled:opacity-50 whitespace-nowrap transition-colors ${
                   isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
                 }`}
               >
@@ -1755,7 +1777,7 @@ function GoalCardItem({
                 <button
                   type="button"
                   onClick={() => onNewRun(card)}
-                  className={`rounded border border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 transition-colors ${
+                  className={`rounded border border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 whitespace-nowrap transition-colors ${
                     isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
                   }`}
                   title="Launch follow-up run on this goal"
@@ -1770,12 +1792,12 @@ function GoalCardItem({
             <button
               type="button"
               onClick={() => onNewRun(card)}
-              className={`rounded border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/40 transition-colors ${
+              className={`rounded border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/40 whitespace-nowrap transition-colors ${
                 isStream ? "px-3 py-1 text-xs font-semibold min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
               }`}
               title="Launch follow-up run"
             >
-              + Follow-up
+              {isStream ? "+ Follow-up" : "+ Run"}
             </button>
           )}
 
@@ -1787,7 +1809,7 @@ function GoalCardItem({
                 if (onOpenTerminal) onOpenTerminal(tid)
                 else useTerminalStore.getState().setActiveTerminalId(tid)
               }}
-              className={`rounded border border-gray-700 bg-gray-800 font-mono text-gray-300 hover:bg-gray-700 transition-colors ${
+              className={`rounded border border-gray-700 bg-gray-800 font-mono text-gray-300 hover:bg-gray-700 whitespace-nowrap transition-colors ${
                 isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
               }`}
             >

@@ -608,19 +608,16 @@ class SessionManager:
             if not term:
                 # Terminal gone
                 self.log_event(session, "session.terminal_closed", {"terminal_id": terminal_id})
-                # If this was the last active terminal, check if session should complete
                 active_terms = [tid for tid in session.terminal_ids if tm.get(tid)]
                 if not active_terms and session.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
-                    summary = await self._generate_summary(session)
-                    end_status = self.successful_execution_status(session) if session.status == SessionStatus.RUNNING else SessionStatus.FAILED
-                    self.update_status(session.id, end_status, output_summary=summary)
-                    components: list[dict] = [
-                        {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
-                    ]
-                    if summary:
-                        components.append({"type": "text", "content": summary})
-                    cm.post_message(session.channel_id, role="system", content="Session completed." if end_status != SessionStatus.FAILED else "Session ended — terminal closed.",
-                        metadata={"type": "a2ui", "components": components})
+                    self._monitors.pop(f"{session.id}:{terminal_id}", None)
+                    code = 0 if session.status == SessionStatus.RUNNING else 1
+                    await self._finish_or_loop_turn(
+                        session,
+                        cm,
+                        exit_code=code,
+                        default_content="Session completed." if code == 0 else "Session ended — terminal closed.",
+                    )
                 break
 
             # Check terminal status
@@ -632,13 +629,13 @@ class SessionManager:
                     terminal_text = strip_ansi(bytes(term._output_buffer).decode("utf-8", errors="replace"))
                     exit_match = _EXIT_SIGNAL_RE.search(terminal_text)
                     exit_code = int(exit_match.group(1)) if exit_match else None
-                    summary = await self._generate_summary(session)
-                    end_status = self.successful_execution_status(session) if exit_code == 0 else SessionStatus.FAILED
-                    self.update_status(session.id, end_status, output_summary=summary)
-                    cm.post_message(session.channel_id, role="system", content=f"Session ended — terminal {term_status}.",
-                        metadata={"type": "a2ui", "components": [
-                            {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
-                        ]})
+                    self._monitors.pop(f"{session.id}:{terminal_id}", None)
+                    await self._finish_or_loop_turn(
+                        session,
+                        cm,
+                        exit_code=exit_code if exit_code is not None else 1,
+                        default_content=f"Session ended — terminal {term_status}.",
+                    )
                 break
 
             # Read new output
@@ -656,16 +653,13 @@ class SessionManager:
                             self.log_event(session, "session.agent_exited", {"terminal_id": terminal_id})
                             active_terms = [tid for tid in session.terminal_ids if tid != terminal_id and tm.get(tid)]
                             if not active_terms:
-                                summary = await self._generate_summary(session)
-                                end_status = self.successful_execution_status(session)
-                                self.update_status(session.id, end_status, output_summary=summary)
-                                components = [
-                                    {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
-                                ]
-                                if summary:
-                                    components.append({"type": "text", "content": summary})
-                                cm.post_message(session.channel_id, role="system", content="Session completed.",
-                                    metadata={"type": "a2ui", "components": components})
+                                self._monitors.pop(f"{session.id}:{terminal_id}", None)
+                                await self._finish_or_loop_turn(
+                                    session,
+                                    cm,
+                                    exit_code=0,
+                                    default_content="Session completed.",
+                                )
                             break
 
                     # Input waiting
@@ -684,20 +678,15 @@ class SessionManager:
                 exit_match = _EXIT_SIGNAL_RE.search(text)
                 if exit_match:
                     exit_code = int(exit_match.group(1))
-                    end_status = self.successful_execution_status(session) if exit_code == 0 else SessionStatus.FAILED
                     self.log_event(session, "session.agent_exited", {"terminal_id": terminal_id, "exit_code": exit_code})
-                    # Save log + generate summary
                     self._save_terminal_log(session)
-                    summary = await self._generate_summary(session)
-                    self.update_status(session.id, end_status, output_summary=summary)
-                    components: list[dict] = [
-                        {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
-                    ]
-                    if summary:
-                        components.append({"type": "text", "content": summary})
-                    cm.post_message(session.channel_id, role="system",
-                        content=f"Session {'completed' if exit_code == 0 else 'failed'} (exit {exit_code}).",
-                        metadata={"type": "a2ui", "components": components})
+                    self._monitors.pop(f"{session.id}:{terminal_id}", None)
+                    await self._finish_or_loop_turn(
+                        session,
+                        cm,
+                        exit_code=exit_code,
+                        default_content=f"Session {'completed' if exit_code == 0 else 'failed'} (exit {exit_code}).",
+                    )
                     break
 
                 # Check for input prompts in new output
@@ -721,6 +710,66 @@ class SessionManager:
         monitor_key = f"{session.id}:{terminal_id}"
         self._monitors.pop(monitor_key, None)
         self._last_output_pos.pop(pos_key, None)
+
+    async def _finish_or_loop_turn(
+        self,
+        session: Session,
+        cm,
+        *,
+        exit_code: int | None,
+        default_content: str,
+    ) -> None:
+        """Handle an agent turn finishing: run the autonomous verify loop or transition to review/failed."""
+        summary = await self._generate_summary(session)
+        try:
+            from .session_loop import handle_agent_turn_completed
+
+            loop_res = await handle_agent_turn_completed(
+                session,
+                summary,
+                agent_exit_code=exit_code,
+            )
+        except Exception:
+            logger.debug("Loop evaluation fallback for %s", session.id, exc_info=True)
+            end_status = self.successful_execution_status(session) if exit_code == 0 else SessionStatus.FAILED
+            loop_res = {
+                "action": "finish",
+                "end_status": end_status,
+                "summary": summary,
+            }
+
+        if loop_res.get("action") == "retry":
+            round_num = loop_res.get("round", 2)
+            max_rounds = loop_res.get("max_rounds", 3)
+            try:
+                cm.post_message(
+                    session.channel_id,
+                    role="system",
+                    content=f"Auto-verify loop: starting round {round_num}/{max_rounds} after verification check.",
+                )
+            except Exception:
+                pass
+            return
+
+        end_status = loop_res.get("end_status") or (
+            self.successful_execution_status(session) if exit_code == 0 else SessionStatus.FAILED
+        )
+        final_summary = loop_res.get("summary") or summary
+        self.update_status(session.id, end_status, output_summary=final_summary)
+        components: list[dict] = [
+            {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
+        ]
+        if final_summary:
+            components.append({"type": "text", "content": final_summary})
+        try:
+            cm.post_message(
+                session.channel_id,
+                role="system",
+                content=default_content,
+                metadata={"type": "a2ui", "components": components},
+            )
+        except Exception:
+            pass
 
     def _save_terminal_log(self, session: Session):
         """Save terminal output buffer to log file for post-session viewing."""
@@ -747,14 +796,20 @@ class SessionManager:
         try:
             log_file = get_rdc_home() / "sessions" / f"{session.id}.log"
             report = extract_agent_report(log_file.read_text(errors="replace"), session.agent_provider) if log_file.exists() else ""
-            repo = get_project_repo()
-            p = repo.get(session.project)
-            if not p or not p.path:
+            target_dir = None
+            if getattr(session, "worktree_path", None) and Path(session.worktree_path).is_dir():
+                target_dir = Path(session.worktree_path)
+            else:
+                repo = get_project_repo()
+                p = repo.get(session.project)
+                if p and p.path:
+                    target_dir = Path(p.path)
+            if not target_dir:
                 return report
 
             result = subprocess.run(
                 ["git", "diff", "--stat", "HEAD"],
-                capture_output=True, text=True, cwd=p.path, timeout=10,
+                capture_output=True, text=True, cwd=target_dir, timeout=10,
             )
             diff_stat = result.stdout.strip() if result.returncode == 0 else ""
 
