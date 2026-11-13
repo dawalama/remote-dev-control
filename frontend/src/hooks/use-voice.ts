@@ -16,16 +16,57 @@ interface UseVoiceOptions {
   onFinal?: (text: string) => void
   /** Called with interim transcript text */
   onInterim?: (text: string) => void
+  /** Called once when capture fails. Kiosk has no inline error line. */
+  onError?: (message: string) => void
   /** Channel context to attach to the shared voice runtime */
   channel?: "desktop" | "mobile"
 }
 
+/**
+ * Tesla's touchscreen sends a second click a few hundred milliseconds after
+ * one tap. A toggle treats that echo as "stop", so the mic flashes on and dies.
+ */
+export const MIC_TOGGLE_GUARD_MS = 500
+
+export function isEchoMicToggle(lastAt: number, now: number, guardMs = MIC_TOGGLE_GUARD_MS): boolean {
+  return lastAt > 0 && now - lastAt < guardMs
+}
+
+function createAudioContext(): AudioContext {
+  const Ctor = window.AudioContext
+    ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  if (!Ctor) throw new Error("This browser cannot capture microphone audio.")
+  return new Ctor()
+}
+
+function pcmBase64(samples: Int16Array): string {
+  const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength)
+  let binary = ""
+  const chunk = 0x2000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary)
+}
+
+export function micErrorMessage(err: unknown): string {
+  const name = err instanceof DOMException ? err.name : ""
+  const raw = err instanceof Error ? err.message : "Microphone access denied"
+  if (name === "NotAllowedError" || /permission|denied|not allowed/i.test(raw)) {
+    return "Microphone blocked. Allow mic access for this site and tap again."
+  }
+  if (name === "NotFoundError") return "No microphone is available in this browser."
+  if (name === "NotReadableError") return "Microphone is busy in another app."
+  if (name === "SecurityError") return "Voice needs a secure (HTTPS) page before the mic can start."
+  if (name === "OverconstrainedError") return "This browser rejected the microphone settings."
+  return raw || "Microphone access denied"
+}
+
 export function useVoice(options: UseVoiceOptions = {}) {
-  // Use refs for callbacks to avoid stale closures in the WebSocket handler
   const onFinalRef = useRef(options.onFinal)
   const onInterimRef = useRef(options.onInterim)
-  onFinalRef.current = options.onFinal
-  onInterimRef.current = options.onInterim
+  const onErrorRef = useRef(options.onError)
+
   const [state, setState] = useState<VoiceState>({
     listening: false,
     transcript: "",
@@ -37,14 +78,45 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const audioCtxRef = useRef<AudioContext | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const muteRef = useRef<GainNode | null>(null)
+  const oscRef = useRef<OscillatorNode | null>(null)
   const voiceSessionIdRef = useRef<string | null>(null)
   const listeningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Track whether the user intentionally wants to be listening (for auto-reconnect)
   const wantListeningRef = useRef(false)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const generationRef = useRef(0)
+  const reconnectsRef = useRef(0)
+  const lastToggleAtRef = useRef(0)
+  const lastErrorRef = useRef("")
+  const lastErrorAtRef = useRef(0)
+  const channelRef = useRef(options.channel)
+  const connectRef = useRef<(gen: number) => Promise<void>>(async () => {})
+
+  const releaseAudio = useCallback(() => {
+    try { oscRef.current?.stop() } catch { /* already stopped */ }
+    oscRef.current?.disconnect()
+    oscRef.current = null
+    sourceRef.current?.disconnect()
+    sourceRef.current = null
+    processorRef.current?.disconnect()
+    processorRef.current = null
+    muteRef.current?.disconnect()
+    muteRef.current = null
+    if (audioCtxRef.current) {
+      void audioCtxRef.current.close().catch(() => undefined)
+      audioCtxRef.current = null
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
+    }
+  }, [])
 
   const stop = useCallback(() => {
+    generationRef.current += 1
     wantListeningRef.current = false
+    reconnectsRef.current = 0
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
@@ -54,28 +126,17 @@ export function useVoice(options: UseVoiceOptions = {}) {
       listeningTimerRef.current = null
     }
 
-    // Close WS
-    if (wsRef.current) {
-      try {
-        wsRef.current.send(JSON.stringify({ type: "CloseStream" }))
-      } catch { /* ignore */ }
-      wsRef.current.close()
-      wsRef.current = null
+    const ws = wsRef.current
+    wsRef.current = null
+    if (ws) {
+      ws.onclose = null
+      ws.onerror = null
+      ws.onmessage = null
+      try { ws.send(JSON.stringify({ type: "CloseStream" })) } catch { /* ignore */ }
+      ws.close()
     }
 
-    // Stop audio
-    if (processorRef.current) {
-      processorRef.current.disconnect()
-      processorRef.current = null
-    }
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close()
-      audioCtxRef.current = null
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop())
-      streamRef.current = null
-    }
+    releaseAudio()
 
     if (voiceSessionIdRef.current) {
       const sessionId = voiceSessionIdRef.current
@@ -83,152 +144,256 @@ export function useVoice(options: UseVoiceOptions = {}) {
       void POST(`/voice/sessions/${sessionId}/end`).catch(() => undefined)
     }
 
-    setState((s) => ({ ...s, listening: false, interim: "" }))
-  }, [])
+    setState((s) => ({ ...s, listening: false, interim: "", error: null }))
+  }, [releaseAudio])
 
-  // Internal connect — sets up WS + audio. Separated from `start` so reconnect can reuse it.
-  const connect = useCallback(async () => {
-    // Request mic (reuse existing stream if still active)
-    let stream = streamRef.current
-    if (!stream || stream.getTracks().every((t) => t.readyState === "ended")) {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      })
-      streamRef.current = stream
+  const reportError = useCallback((message: string) => {
+    const now = performance.now()
+    const duplicate = lastErrorRef.current === message && now - lastErrorAtRef.current < 1000
+    lastErrorRef.current = message
+    lastErrorAtRef.current = now
+    if (wantListeningRef.current) stop()
+    setState((s) => ({ ...s, error: message, listening: false, interim: "" }))
+    if (!duplicate) onErrorRef.current?.(message)
+  }, [stop])
+
+  // Called synchronously from the tap, before any await. A context created
+  // after getUserMedia or the socket opens stays suspended on car browsers,
+  // so the button looks armed and never hears anything. The monitor path is
+  // silent: playing the mic out the speakers flips the car's audio source.
+  const ensureGraph = useCallback(() => {
+    const ctx = audioCtxRef.current
+    if (ctx && ctx.state !== "closed" && processorRef.current && muteRef.current) {
+      void ctx.resume().catch(() => undefined)
+      return ctx
+    }
+    if (ctx && ctx.state !== "closed") {
+      void ctx.close().catch(() => undefined)
+    }
+    const audioCtx = createAudioContext()
+    audioCtxRef.current = audioCtx
+    void audioCtx.resume().catch(() => undefined)
+    if (typeof audioCtx.createScriptProcessor !== "function") {
+      throw new Error("This browser cannot capture microphone audio.")
     }
 
-    // Connect WS to backend STT relay
+    const mute = audioCtx.createGain()
+    mute.gain.value = 0
+    mute.connect(audioCtx.destination)
+    muteRef.current = mute
+
+    const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+    processorRef.current = processor
+    const targetRate = 16000
+    processor.onaudioprocess = (e) => {
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      const f32 = e.inputBuffer.getChannelData(0)
+      const sourceRate = audioCtx.sampleRate || targetRate
+      const ratio = sourceRate / targetRate
+      const outLen = Math.max(1, Math.floor(f32.length / ratio))
+      const i16 = new Int16Array(outLen)
+      for (let i = 0; i < outLen; i++) {
+        const srcIdx = Math.min(f32.length - 1, Math.floor(i * ratio))
+        const sample = Math.max(-1, Math.min(1, f32[srcIdx] || 0))
+        i16[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
+      }
+      // Text frames, not binary. Some car browsers drop a binary socket
+      // payload and then close it, which turns the mic straight back off.
+      try {
+        ws.send(JSON.stringify({ type: "audio", audio: pcmBase64(i16) }))
+      } catch { /* socket closing */ }
+    }
+    processor.connect(mute)
+
+    const osc = audioCtx.createOscillator()
+    const oscMute = audioCtx.createGain()
+    oscMute.gain.value = 0
+    osc.connect(oscMute)
+    oscMute.connect(processor)
+    osc.start()
+    oscRef.current = osc
+    return audioCtx
+  }, [])
+
+  const connectMic = useCallback((stream: MediaStream) => {
+    const ctx = audioCtxRef.current
+    const processor = processorRef.current
+    if (!ctx || !processor) return
+    sourceRef.current?.disconnect()
+    const source = ctx.createMediaStreamSource(stream)
+    source.connect(processor)
+    sourceRef.current = source
+    try { oscRef.current?.stop() } catch { /* already stopped */ }
+    oscRef.current?.disconnect()
+    oscRef.current = null
+  }, [])
+
+  const connect = useCallback(async (gen: number) => {
+    let stream = streamRef.current
+    if (!stream || stream.getAudioTracks().every((t) => t.readyState === "ended")) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: { ideal: 1 },
+            echoCancellation: { ideal: true },
+            noiseSuppression: { ideal: true },
+          },
+        })
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "OverconstrainedError") {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        } else {
+          throw err
+        }
+      }
+      if (gen !== generationRef.current || !wantListeningRef.current) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
+      streamRef.current = stream
+    }
+    if (gen !== generationRef.current || !wantListeningRef.current) return
+
+    const track = stream.getAudioTracks()[0]
+    if (track) {
+      track.onended = () => {
+        if (wantListeningRef.current && gen === generationRef.current) {
+          reportError("The browser closed the microphone.")
+        }
+      }
+    }
+
     const ws = await createAuthenticatedWebSocket("/stt/stream")
+    if (gen !== generationRef.current || !wantListeningRef.current) {
+      ws.close()
+      return
+    }
+    const previous = wsRef.current
+    if (previous && previous !== ws) {
+      previous.onclose = null
+      previous.onmessage = null
+      previous.onerror = null
+      previous.close()
+    }
     wsRef.current = ws
 
+    let opened = false
     ws.onmessage = (event) => {
+      if (gen !== generationRef.current || wsRef.current !== ws) return
       try {
         const data = JSON.parse(event.data)
         if (data.error) {
-          setState((s) => ({
-            ...s,
-            error: typeof data.error === "string" ? data.error : "Voice service unavailable",
-          }))
-          stop()
+          reportError(typeof data.error === "string" ? data.error : "Voice service unavailable")
           return
         }
-        if (data.transcript) {
-          if (data.is_final) {
-            // New transcript supersedes any pending "listening" transition
-            if (listeningTimerRef.current) {
-              clearTimeout(listeningTimerRef.current)
-              listeningTimerRef.current = null
-            }
-            if (voiceSessionIdRef.current) {
-              void POST(`/voice/sessions/${voiceSessionIdRef.current}/event`, {
-                state: "processing",
-                transcript: data.transcript,
-                increment_turn: true,
-              }).catch(() => undefined)
-            }
-            setState((s) => ({
-              ...s,
-              transcript: data.transcript,
-              interim: "",
-            }))
-            onFinalRef.current?.(data.transcript)
-            const sessionId = voiceSessionIdRef.current
-            if (sessionId) {
-              listeningTimerRef.current = setTimeout(() => {
-                listeningTimerRef.current = null
-                if (voiceSessionIdRef.current === sessionId) {
-                  void POST(`/voice/sessions/${sessionId}/event`, {
-                    state: "listening",
-                  }).catch(() => undefined)
-                }
-              }, 1200)
-            }
-          } else {
-            setState((s) => ({ ...s, interim: data.transcript }))
-            onInterimRef.current?.(data.transcript)
+        if (!data.transcript) return
+        if (data.is_final) {
+          if (listeningTimerRef.current) {
+            clearTimeout(listeningTimerRef.current)
+            listeningTimerRef.current = null
           }
+          if (voiceSessionIdRef.current) {
+            void POST(`/voice/sessions/${voiceSessionIdRef.current}/event`, {
+              state: "processing",
+              transcript: data.transcript,
+              increment_turn: true,
+            }).catch(() => undefined)
+          }
+          setState((s) => ({
+            ...s,
+            transcript: data.transcript,
+            interim: "",
+          }))
+          onFinalRef.current?.(data.transcript)
+          const sessionId = voiceSessionIdRef.current
+          if (sessionId) {
+            listeningTimerRef.current = setTimeout(() => {
+              listeningTimerRef.current = null
+              if (voiceSessionIdRef.current === sessionId) {
+                void POST(`/voice/sessions/${sessionId}/event`, {
+                  state: "listening",
+                }).catch(() => undefined)
+              }
+            }, 1200)
+          }
+        } else {
+          setState((s) => ({ ...s, interim: data.transcript }))
+          onInterimRef.current?.(data.transcript)
         }
       } catch { /* ignore parse errors */ }
     }
 
     ws.onclose = () => {
-      // Clean up audio for this session
-      if (processorRef.current) {
-        processorRef.current.disconnect()
-        processorRef.current = null
+      if (wsRef.current === ws) wsRef.current = null
+      if (!opened) return
+      if (gen !== generationRef.current || !wantListeningRef.current) return
+      if (reconnectsRef.current >= 2) {
+        reportError("Voice connection failed")
+        return
       }
-      if (audioCtxRef.current) {
-        audioCtxRef.current.close()
-        audioCtxRef.current = null
-      }
-      wsRef.current = null
-
-      // Auto-reconnect if user still wants to be listening
-      if (wantListeningRef.current) {
-        setState((s) => ({ ...s, interim: "Reconnecting…" }))
-        reconnectTimerRef.current = setTimeout(() => {
-          if (wantListeningRef.current) {
-            connect().catch(() => {
-              stop()
-            })
+      reconnectsRef.current += 1
+      setState((s) => ({ ...s, interim: "Reconnecting…" }))
+      onInterimRef.current?.("Reconnecting…")
+      reconnectTimerRef.current = setTimeout(() => {
+        if (!wantListeningRef.current || gen !== generationRef.current) return
+        void connectRef.current(gen).catch((err) => {
+          if (gen === generationRef.current && wantListeningRef.current) {
+            reportError(micErrorMessage(err))
           }
-        }, 500)
-      } else {
-        setState((s) => ({ ...s, listening: false, interim: "" }))
-      }
+        })
+      }, 500)
     }
 
-    ws.onerror = () => {
-      setState((s) => ({ ...s, error: "Voice connection failed" }))
-      stop()
+    // Browsers fire error alongside close. Closing here used to cancel the
+    // session immediately, so a car browser's socket blip looked like a tap
+    // that flipped the mic off.
+    ws.onerror = () => undefined
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          opened = true
+          resolve()
+          return
+        }
+        const timer = setTimeout(() => {
+          ws.close()
+          reject(new Error("Voice connection timed out"))
+        }, 8000)
+        ws.addEventListener("open", () => {
+          opened = true
+          clearTimeout(timer)
+          resolve()
+        }, { once: true })
+        ws.addEventListener("error", () => {
+          clearTimeout(timer)
+          reject(new Error("Voice connection failed"))
+        }, { once: true })
+        ws.addEventListener("close", () => {
+          clearTimeout(timer)
+          if (!opened) reject(new Error("Voice connection failed"))
+        }, { once: true })
+      })
+    } catch (err) {
+      if (gen === generationRef.current && wantListeningRef.current) throw err
+      return
     }
+    if (gen !== generationRef.current || !wantListeningRef.current) return
 
-    // Wait for WS open
-    await new Promise<void>((resolve, reject) => {
-      ws.onopen = () => resolve()
-      const prevError = ws.onerror
-      ws.onerror = (e) => {
-        reject(e)
-        if (prevError) (prevError as (e: Event) => void)(e as Event)
-      }
-    })
-
-    // Set up audio processing
-    const audioCtx = new AudioContext()
-    audioCtxRef.current = audioCtx
-    const source = audioCtx.createMediaStreamSource(stream)
-    const processor = audioCtx.createScriptProcessor(4096, 1, 1)
-    processorRef.current = processor
-
-    const targetRate = 16000
-    const sourceRate = audioCtx.sampleRate
-
-    processor.onaudioprocess = (e) => {
-      if (ws.readyState !== WebSocket.OPEN) return
-
-      const f32 = e.inputBuffer.getChannelData(0)
-      const ratio = sourceRate / targetRate
-      const outLen = Math.floor(f32.length / ratio)
-      const i16 = new Int16Array(outLen)
-
-      for (let i = 0; i < outLen; i++) {
-        const srcIdx = Math.floor(i * ratio)
-        const sample = Math.max(-1, Math.min(1, f32[srcIdx] || 0))
-        i16[i] = sample < 0 ? sample * 32768 : sample * 32767
-      }
-
-      ws.send(i16.buffer)
+    const ctx = audioCtxRef.current
+    if (!ctx || ctx.state === "closed") {
+      throw new Error("This browser blocked audio capture. Tap the mic again.")
     }
-
-    source.connect(processor)
-    processor.connect(audioCtx.destination)
+    await ctx.resume()
+    if (ctx.state !== "running") {
+      throw new Error("This browser blocked audio capture. Tap the mic again.")
+    }
+    connectMic(stream)
 
     try {
       const project = useProjectStore.getState().currentProject
-      // external_id: stable per-client/channel so VoiceRuntime.begin_session
-      // auto-ends any prior session held by this client on WS reconnect.
-      // Without this, every reconnect leaks the previous session.
-      const channel = options.channel || "desktop"
+      const channel = channelRef.current || "desktop"
       const externalId = `browser-${channel}-${getClientId()}`
       const session = await POST<{ id: string }>("/voice/sessions", {
         transport: "browser",
@@ -238,59 +403,57 @@ export function useVoice(options: UseVoiceOptions = {}) {
         external_id: externalId,
         state: "listening",
       })
-      voiceSessionIdRef.current = session.id
+      if (gen === generationRef.current) voiceSessionIdRef.current = session.id
     } catch {
       voiceSessionIdRef.current = null
     }
+    if (gen !== generationRef.current || !wantListeningRef.current) return
 
+    reconnectsRef.current = 0
+    lastErrorRef.current = ""
+    onInterimRef.current?.("")
     setState({
       listening: true,
       transcript: "",
       interim: "",
       error: null,
     })
-  }, [stop, options.channel])
+  }, [connectMic, reportError])
 
   const start = useCallback(async () => {
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setState((s) => ({
-          ...s,
-          error: "Microphone is not supported in this browser",
-          listening: false,
-        }))
-        return
-      }
-
-      const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
-      if (!window.isSecureContext && !isLocalHost) {
-        setState((s) => ({
-          ...s,
-          error: "Voice input requires HTTPS",
-          listening: false,
-        }))
-        return
-      }
-
-      wantListeningRef.current = true
-      await connect()
-    } catch (err) {
-      setState((s) => ({
-        ...s,
-        error: err instanceof Error ? err.message : "Microphone access denied",
-        listening: false,
-      }))
-      stop()
+    onFinalRef.current = options.onFinal
+    onInterimRef.current = options.onInterim
+    onErrorRef.current = options.onError
+    channelRef.current = options.channel
+    connectRef.current = connect
+    if (wantListeningRef.current) return
+    if (!navigator.mediaDevices?.getUserMedia) {
+      reportError("Microphone is not supported in this browser")
+      return
     }
-  }, [stop, connect])
+    const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+    if (!window.isSecureContext && !isLocalHost) {
+      reportError("Voice needs a secure (HTTPS) page before the mic can start.")
+      return
+    }
+
+    const gen = ++generationRef.current
+    wantListeningRef.current = true
+    try {
+      ensureGraph()
+      await connect(gen)
+    } catch (err) {
+      if (gen === generationRef.current) reportError(micErrorMessage(err))
+    }
+  }, [connect, ensureGraph, options.channel, options.onError, options.onFinal, options.onInterim, reportError])
 
   const toggle = useCallback(() => {
-    if (state.listening) {
-      stop()
-    } else {
-      start()
-    }
-  }, [state.listening, start, stop])
+    const now = performance.now()
+    if (isEchoMicToggle(lastToggleAtRef.current, now)) return
+    lastToggleAtRef.current = now
+    if (wantListeningRef.current) stop()
+    else void start()
+  }, [start, stop])
 
   return {
     ...state,

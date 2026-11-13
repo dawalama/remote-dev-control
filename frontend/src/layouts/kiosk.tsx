@@ -132,11 +132,15 @@ export function KioskLayout() {
     useTerminalPresetsStore.getState().load()
     connect()
 
-    // Poll voice transcription indicator on animation frames
+    // Poll voice transcription indicator on animation frames.
+    // Keep the last shown value here. The state in this mount closure stays "".
+    let shown = ""
     let raf: number
     const poll = () => {
-      if (indicatorRef.current !== voiceIndicator) {
-        setVoiceIndicator(indicatorRef.current)
+      const next = indicatorRef.current
+      if (next !== shown) {
+        shown = next
+        setVoiceIndicator(next)
       }
       raf = requestAnimationFrame(poll)
     }
@@ -314,13 +318,14 @@ export function KioskLayout() {
         {/* Right: Status, Voice & Menu */}
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={voice.toggle}
-            className={`w-10 h-10 rounded-full flex items-center justify-center text-base transition-all ${
+            className={`touch-manipulation w-10 h-10 rounded-full flex items-center justify-center text-base transition-all ${
               voice.listening
                 ? "bg-red-600 text-white animate-pulse shadow-md"
                 : "bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700"
             }`}
-            title={voice.listening ? "Stop voice dictation" : "Start voice dictation"}
+            title={voice.error || (voice.listening ? "Stop voice dictation" : "Start voice dictation")}
             aria-label="Voice Dictation"
           >
             🎤
@@ -833,7 +838,7 @@ function KioskActionBar({
   onSpawnTerminal: () => void
   onOpenActivity: () => void
   onOpenMenu: () => void
-  voice: { listening: boolean; toggle: () => void }
+  voice: { listening: boolean; toggle: () => void; error?: string | null }
 }) {
   const phone = useStateStore((s) => s.phone)
   const toast = useUIStore((s) => s.toast)
@@ -877,13 +882,14 @@ function KioskActionBar({
 
           {/* Voice Dictation Button */}
           <button
-            className={`w-12 py-2 rounded-xl flex items-center justify-center text-lg flex-shrink-0 transition-all min-h-[46px] ${
+            type="button"
+            className={`touch-manipulation w-12 py-2 rounded-xl flex items-center justify-center text-lg flex-shrink-0 transition-all min-h-[46px] ${
               voice.listening
                 ? "bg-red-600 text-white animate-pulse shadow-md"
                 : "bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-750 border border-gray-700/60"
             }`}
             onClick={voice.toggle}
-            title={voice.listening ? "Stop voice dictation" : "Start voice dictation"}
+            title={voice.error || (voice.listening ? "Stop voice dictation" : "Start voice dictation")}
             aria-label="Voice Dictation"
           >
             🎤

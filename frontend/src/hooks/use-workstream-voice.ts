@@ -75,6 +75,10 @@ export function useWorkstreamVoice(opts: {
 
   const voice = useVoice({
     channel: opts.channel,
+    onError: (message) => {
+      indicatorRef.current = message
+      toast(message, "error")
+    },
     onFinal: (text) => {
       const isTerminalMode = useTerminalStore.getState().terminalFocused
 

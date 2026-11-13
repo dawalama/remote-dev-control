@@ -6279,6 +6279,32 @@ async def speech_to_text(request: Request):
         return {"transcript": transcript, "confidence": confidence}
 
 
+def parse_stt_client_text(text: str) -> tuple[str, bytes | None]:
+    """Classify a text frame from the browser speech socket.
+
+    Returns ("stop", None), ("audio", pcm), or ("ignore", None).
+    Car browsers drop binary websocket payloads, so the mic sends base64 PCM.
+    """
+    import base64
+
+    try:
+        msg = json.loads(text)
+    except json.JSONDecodeError:
+        return ("ignore", None)
+    if not isinstance(msg, dict):
+        return ("ignore", None)
+    kind = msg.get("type")
+    if kind in ("stop", "CloseStream"):
+        return ("stop", None)
+    audio = msg.get("audio")
+    if kind == "audio" and isinstance(audio, str) and audio and len(audio) <= 100_000:
+        try:
+            return ("audio", base64.b64decode(audio, validate=True))
+        except ValueError:
+            return ("ignore", None)
+    return ("ignore", None)
+
+
 @app.websocket("/stt/stream")
 async def stt_stream(websocket: WebSocket):
     """Stream audio to Deepgram and return real-time transcripts."""
@@ -6351,11 +6377,12 @@ async def stt_stream(websocket: WebSocket):
                         # Forward audio bytes to Deepgram
                         await deepgram_ws.send(data["bytes"])
                     elif "text" in data:
-                        msg = json.loads(data["text"])
-                        if msg.get("type") == "stop":
-                            # Send close message to Deepgram
+                        action, audio = parse_stt_client_text(data["text"])
+                        if action == "stop":
                             await deepgram_ws.send(json.dumps({"type": "CloseStream"}))
                             break
+                        if action == "audio" and audio:
+                            await deepgram_ws.send(audio)
             except WebSocketDisconnect:
                 logging.info("Client disconnected from STT stream")
             except Exception as e:

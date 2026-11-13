@@ -152,16 +152,27 @@ export function HomeBaseVoicePanel() {
     setOpen(false)
   }
 
+  // Arm after the open render. A car touchscreen delivers a follow-up click
+  // on whatever just appeared under the finger, which was closing this sheet
+  // before the mic button could be used.
+  const dismissGuardRef = useRef(0)
+  const wasOpenRef = useRef(false)
+  if (open && !wasOpenRef.current) dismissGuardRef.current = Date.now() + 700
+  wasOpenRef.current = open
+
   if (!open) return null
 
   return (
     <div
       className="fixed inset-0 z-[190] flex items-end justify-center bg-black/50 p-3 sm:items-center"
-      onMouseDown={closePanel}
+      onClick={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (Date.now() < dismissGuardRef.current) return
+        closePanel()
+      }}
     >
       <section
         className="w-full max-w-md overflow-hidden rounded-2xl border border-gray-600 bg-gray-900 shadow-2xl"
-        onMouseDown={(e) => e.stopPropagation()}
       >
         <header className="flex items-center gap-2 border-b border-gray-800 px-4 py-3">
           <div className="min-w-0 flex-1">
@@ -183,15 +194,13 @@ export function HomeBaseVoicePanel() {
             <button
               type="button"
               onClick={() => {
-                if (voice.listening) {
-                  voice.stop()
-                } else {
+                if (!voice.listening) {
                   stopSpeaking()
                   setSpeaking(false)
-                  void voice.start()
                 }
+                voice.toggle()
               }}
-              className={`flex h-20 w-20 items-center justify-center rounded-full text-3xl shadow-lg transition-all ${
+              className={`touch-manipulation flex h-20 w-20 items-center justify-center rounded-full text-3xl shadow-lg transition-all ${
                 voice.listening
                   ? "bg-red-600 text-white ring-4 ring-red-500/40 animate-pulse"
                   : speaking

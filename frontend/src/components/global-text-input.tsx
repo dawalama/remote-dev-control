@@ -49,6 +49,7 @@ export function GlobalTextInput() {
     }, 0)
   }, [])
   const voice = useVoice({ onFinal: onVoiceFinal })
+  const voiceHoldUntilRef = useRef(0)
 
   // ── Auto-intercept taps on inputs for kiosk / mobile ────────────────
   useEffect(() => {
@@ -127,8 +128,10 @@ export function GlobalTextInput() {
         el.style.height = "auto"
         el.style.height = el.scrollHeight + "px"
       }, 50)
-      // Auto-start voice if the toggle is on
+      // Auto-start voice if the toggle is on. Hold the bar open across the
+      // permission prompt — a blur here used to close the bar and stop the mic.
       if (autoVoice && !voice.listening) {
+        voiceHoldUntilRef.current = Date.now() + 1500
         setTimeout(() => voice.start(), 150)
       }
     }
@@ -179,11 +182,15 @@ export function GlobalTextInput() {
         barTapRef.current = false
         return
       }
+      // Kiosk browsers blur the field when the mic prompt or audio route
+      // changes. Closing on that blur stops capture immediately.
+      if (Date.now() < voiceHoldUntilRef.current) return
+      if (voice.listening) return
       fadeClose()
     }
     el.addEventListener("blur", onBlur)
     return () => el.removeEventListener("blur", onBlur)
-  }, [open, fading])
+  }, [open, fading, voice.listening])
 
   if (!open || !callback) return null
 
@@ -269,12 +276,14 @@ export function GlobalTextInput() {
         <div className="flex items-center gap-1.5 mt-1.5">
           {/* Mic toggle */}
           <button
-            className={`rounded flex items-center justify-center ${iconSz} ${
+            type="button"
+            className={`rounded flex items-center justify-center touch-manipulation ${iconSz} ${
               voice.listening
                 ? "bg-red-600 text-white animate-pulse"
                 : "bg-gray-700 text-gray-300"
             }`}
             onClick={() => {
+              voiceHoldUntilRef.current = Date.now() + 1500
               voice.toggle()
               setTimeout(() => inputRef.current?.focus(), 100)
             }}
