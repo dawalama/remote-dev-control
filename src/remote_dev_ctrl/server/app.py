@@ -8810,6 +8810,11 @@ class IngestKnowledgeNoteRequest(BaseModel):
     title: str
     text: str
     project: str | None = None
+    pillar: str | None = None
+    entity: str | None = None
+    stance: str | None = None
+    topic: str | None = None
+    scope: str = "project"
 
 
 @app.post("/collections/{collection_id}/knowledge/notes")
@@ -8843,6 +8848,11 @@ async def ingest_knowledge_note(collection_id: str, req: IngestKnowledgeNoteRequ
             text=req.text,
             project=req.project,
             project_id=proj_uuid,
+            pillar=req.pillar,
+            entity=req.entity,
+            stance=req.stance,
+            topic=req.topic,
+            scope=req.scope,
         )
     except KnowledgeDisabledError:
         raise HTTPException(status_code=400, detail="knowledge_disabled")
@@ -8850,6 +8860,117 @@ async def ingest_knowledge_note(collection_id: str, req: IngestKnowledgeNoteRequ
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {type(exc).__name__}")
+
+
+class CompileKnowledgeClaimRequest(BaseModel):
+    statement: str
+    pillar: str = "fact"
+    entity: str | None = None
+    stance: str | None = None
+    topic: str | None = None
+    scope: str = "project"
+    project: str | None = None
+    provenance: list[str] | None = None
+
+
+@app.post("/collections/{collection_id}/knowledge/compile")
+async def compile_knowledge_claim_endpoint(collection_id: str, req: CompileKnowledgeClaimRequest):
+    """Evaluate and compile a fact, operator view, stakeholder view, or agent hypothesis into collection state."""
+    from .db.repositories import get_collection_repo, get_project_repo
+    coll = get_collection_repo().get(collection_id)
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    proj_uuid = ""
+    if req.project:
+        p_rec = get_project_repo().get(req.project)
+        if p_rec:
+            proj_uuid = p_rec.id
+
+    from .knowledge_bridge import (
+        compile_knowledge_claim as bridge_compile,
+        KnowledgeDisabledError,
+        RejectedWrite,
+    )
+    try:
+        return bridge_compile(
+            collection_id,
+            statement=req.statement,
+            pillar=req.pillar,
+            entity=req.entity,
+            stance=req.stance,
+            topic=req.topic,
+            scope=req.scope,
+            project=req.project,
+            project_id=proj_uuid,
+            provenance=req.provenance,
+        )
+    except KnowledgeDisabledError:
+        raise HTTPException(status_code=400, detail="knowledge_disabled")
+    except RejectedWrite as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Compile claim failed: {type(exc).__name__}")
+
+
+@app.get("/collections/{collection_id}/knowledge/state")
+async def get_compiled_knowledge_state_endpoint(
+    collection_id: str,
+    project: str | None = None,
+    pillar: str | None = None,
+    entity: str | None = None,
+    include_commons: bool = True,
+):
+    """Retrieve the current compiled knowledge view (facts, operator views, stakeholder views, hypotheses)."""
+    from .db.repositories import get_collection_repo
+    coll = get_collection_repo().get(collection_id)
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    from .knowledge_bridge import (
+        get_compiled_knowledge_state as bridge_get_state,
+        KnowledgeDisabledError,
+    )
+    try:
+        return bridge_get_state(
+            collection_id,
+            project=project,
+            pillar=pillar,
+            entity=entity,
+            include_commons=include_commons,
+        )
+    except KnowledgeDisabledError:
+        raise HTTPException(status_code=400, detail="knowledge_disabled")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Read compiled state failed: {type(exc).__name__}")
+
+
+@app.get("/collections/{collection_id}/knowledge/digest")
+async def get_knowledge_digest_endpoint(
+    collection_id: str,
+    project: str | None = None,
+    include_commons: bool = True,
+):
+    """Retrieve a structured digest of Proven Patterns, Perspective Clashes, Dead Ends, and Open Hypotheses."""
+    from .db.repositories import get_collection_repo
+    coll = get_collection_repo().get(collection_id)
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    from .knowledge_bridge import (
+        get_knowledge_digest as bridge_get_digest,
+        KnowledgeDisabledError,
+    )
+    try:
+        return bridge_get_digest(
+            collection_id,
+            project=project,
+            include_commons=include_commons,
+        )
+    except KnowledgeDisabledError:
+        raise HTTPException(status_code=400, detail="knowledge_disabled")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Read knowledge digest failed: {type(exc).__name__}")
 
 
 class ProposeKnowledgeRuleRequest(BaseModel):

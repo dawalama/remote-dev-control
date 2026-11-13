@@ -593,7 +593,7 @@ wheels = [
 [[package]]
 name = "corpusnote"
 version = "0.1.0"
-source = { git = "https://github.com/dawalama/corpusnote.git#91f0fbb81ad221b7d259aeaa902adc2d17bdaf03" }
+source = { git = "https://github.com/dawalama/corpusnote.git#aaace1fd8c357cf33b864ad266ec4df426798191" }
 dependencies = [
     { name = "pyyaml" },
 ]

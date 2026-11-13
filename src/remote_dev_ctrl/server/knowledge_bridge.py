@@ -93,6 +93,17 @@ def _get_corpus_handle(corpus_id: str):
     )
 
 
+def _get_commons_corpus_if_present(active_corpus_id: str):
+    """Return the 'personal' corpus handle if state/commons.md exists and active corpus is not personal."""
+    if active_corpus_id == "personal":
+        return None
+    root = _get_knowledge_root()
+    commons_page = root / "corpora" / "personal" / "state" / "commons.md"
+    if not commons_page.is_file():
+        return None
+    return _get_corpus_handle("personal")
+
+
 def pack_for_session(session: Any, *, extra_secrets: tuple[str, ...] | None = None) -> Any:
     """Assemble budgeted knowledge pack for a supervised session start."""
     import corpusnote
@@ -130,6 +141,7 @@ def pack_for_session(session: Any, *, extra_secrets: tuple[str, ...] | None = No
 
     try:
         corpus = _get_corpus_handle(corpus_id)
+        commons = _get_commons_corpus_if_present(corpus_id)
         scrubbed_goal, _ = corpusnote.scrub_text(goal, secrets)
         req = corpusnote.PackRequest(
             goal=scrubbed_goal,
@@ -140,7 +152,7 @@ def pack_for_session(session: Any, *, extra_secrets: tuple[str, ...] | None = No
             include_hits=True,
             extra_secrets=secrets,
         )
-        return corpusnote.assemble_pack(corpus, req, repo_citations=citations)
+        return corpusnote.assemble_pack(corpus, req, repo_citations=citations, commons_corpus=commons)
     except Exception as exc:
         logger.warning("knowledge pack_for_session failed: %s", type(exc).__name__)
         return empty_pack
@@ -184,6 +196,7 @@ def pack_for_orchestrator(
 
     try:
         corpus = _get_corpus_handle(corpus_id)
+        commons = _get_commons_corpus_if_present(corpus_id)
         scrubbed_goal, _ = corpusnote.scrub_text(goal, secrets)
         req = corpusnote.PackRequest(
             goal=scrubbed_goal,
@@ -194,7 +207,7 @@ def pack_for_orchestrator(
             include_hits=include_hits,
             extra_secrets=secrets,
         )
-        return corpusnote.assemble_pack(corpus, req, repo_citations=citations)
+        return corpusnote.assemble_pack(corpus, req, repo_citations=citations, commons_corpus=commons)
     except Exception as exc:
         logger.warning("knowledge pack_for_orchestrator failed: %s", type(exc).__name__)
         return empty_pack
@@ -319,17 +332,21 @@ def capture_completed(session: Any) -> None:
     exit_code: int | None = None
     passed: bool | None = None
     try:
+        import json
         from .db.connection import get_db_manager
-        with get_db_manager().session("rdc") as db:
+        with get_db_manager().transaction("rdc") as db:
             row = db.execute(
-                """SELECT exit_code FROM session_evidence 
+                """SELECT data FROM session_evidence 
                    WHERE session_id = ? AND evidence_type = 'verification'
-                   ORDER BY created_at DESC LIMIT 1""",
+                   ORDER BY observed_at DESC, rowid DESC LIMIT 1""",
                 (session.id,),
             ).fetchone()
             if row:
-                exit_code = row["exit_code"]
-                passed = (exit_code == 0)
+                raw_data = row["data"]
+                parsed = json.loads(raw_data) if isinstance(raw_data, str) else (raw_data or {})
+                if isinstance(parsed, dict) and "exit_code" in parsed and parsed["exit_code"] is not None:
+                    exit_code = int(parsed["exit_code"])
+                    passed = (exit_code == 0)
     except Exception:
         pass
 
@@ -348,6 +365,24 @@ def capture_completed(session: Any) -> None:
         project_id=proj_uuid,
     )
     corpusnote.capture(corpus, item, extra_secrets=secrets)
+    try:
+        risks = getattr(session, "unresolved_risks", None) or getattr(session, "residual_risks", None)
+        meta = getattr(session, "metadata", None)
+        proven_pat = getattr(session, "proven_pattern", None) or (meta.get("proven_pattern") if isinstance(meta, dict) else None)
+        commons = _get_corpus_handle("personal") if corpus_id != "personal" else None
+        redact_terms = _collect_redact_terms(corpus_id, session.project)
+        corpusnote.compile_capture(
+            corpus,
+            item,
+            agent_provider=getattr(session, "agent_provider", None),
+            residual_risks=risks,
+            proven_pattern=proven_pat,
+            commons_corpus=commons,
+            redact_terms=redact_terms,
+            extra_secrets=secrets,
+        )
+    except Exception as exc:
+        logger.warning("knowledge compile_capture failed: %s", type(exc).__name__)
 
 
 def schedule_index_update(session: Any) -> None:
@@ -508,14 +543,36 @@ def quarantine_corpus(collection_id: str) -> None:
             pass
 
 
+def _collect_redact_terms(collection_id: str, project: str | None) -> tuple[str, ...]:
+    terms: list[str] = []
+    if collection_id and collection_id not in ("personal", "general"):
+        terms.append(collection_id)
+        try:
+            from .db.repositories import get_collection_repo
+            coll = get_collection_repo().get(collection_id)
+            if coll and coll.name:
+                terms.append(coll.name)
+        except Exception:
+            pass
+    if project:
+        terms.append(project)
+    return tuple(dict.fromkeys(t for t in terms if t and len(t.strip()) >= 3))
+
+
 def ingest_knowledge_note(
     collection_id: str,
     title: str,
     text: str,
     project: str | None = None,
     project_id: str | None = None,
+    *,
+    pillar: str | None = None,
+    entity: str | None = None,
+    stance: str | None = None,
+    topic: str | None = None,
+    scope: str = "project",
 ) -> dict[str, Any]:
-    """Ingest a note into collection corpus. Returns dict with relpath and title."""
+    """Ingest a note into collection corpus. Returns dict with relpath and title (and compiled result if requested)."""
     if not is_knowledge_enabled():
         raise KnowledgeDisabledError("knowledge_disabled")
 
@@ -531,9 +588,171 @@ def ingest_knowledge_note(
             project_id=project_id,
             extra_secrets=secrets,
         )
-        return {"success": True, "relpath": page.relpath, "title": page.frontmatter.get("title")}
+        result: dict[str, Any] = {
+            "success": True,
+            "relpath": page.relpath,
+            "title": page.frontmatter.get("title"),
+        }
+        if pillar or entity or stance:
+            comp = compile_knowledge_claim(
+                collection_id,
+                statement=f"{title}: {text}" if title and title.lower() not in text.lower() else text,
+                pillar=pillar or "operator_view",
+                entity=entity,
+                stance=stance,
+                topic=topic or title,
+                scope=scope,
+                project=project,
+                project_id=project_id,
+                provenance=[f"upload:{page.relpath}"],
+            )
+            result["compiled"] = comp
+        return result
     except corpusnote.RejectedWrite as exc:
         raise RejectedWrite(str(exc)) from exc
+
+
+def compile_knowledge_claim(
+    collection_id: str,
+    *,
+    statement: str,
+    pillar: str = "fact",
+    entity: str | None = None,
+    stance: str | None = None,
+    topic: str | None = None,
+    scope: str = "project",
+    project: str | None = None,
+    project_id: str | None = None,
+    provenance: list[str] | None = None,
+) -> dict[str, Any]:
+    """Evaluate and compile a claim into the collection's compiled state (and personal commons if scope=='general')."""
+    if not is_knowledge_enabled():
+        raise KnowledgeDisabledError("knowledge_disabled")
+
+    import corpusnote
+    from dataclasses import asdict
+
+    corpus = _get_corpus_handle(collection_id)
+    secrets = vault_extra_secrets()
+
+    resolved_project_id = project_id or ""
+    if project and not resolved_project_id:
+        p_rec = get_project_repo().get(project)
+        if p_rec:
+            resolved_project_id = p_rec.id
+
+    commons_corpus = None
+    redact_terms: tuple[str, ...] = ()
+    if scope == "general" and collection_id != "personal":
+        commons_corpus = _get_corpus_handle("personal")
+        redact_terms = _collect_redact_terms(collection_id, project)
+
+    try:
+        res = corpusnote.compile_claim(
+            corpus,
+            statement=statement,
+            pillar=pillar,
+            entity=entity,
+            stance=stance,
+            topic=topic,
+            scope=scope,
+            project=project,
+            project_id=resolved_project_id,
+            provenance=provenance,
+            commons_corpus=commons_corpus,
+            redact_terms=redact_terms,
+            extra_secrets=secrets,
+            is_commons=(collection_id == "personal" and scope == "general"),
+        )
+        return {
+            "action": res.action,
+            "state_relpath": res.state_relpath,
+            "claim": asdict(res.claim),
+            "resolved_ids": res.resolved_ids,
+            "promoted_general": asdict(res.promoted_general) if res.promoted_general else None,
+        }
+    except corpusnote.RejectedWrite as exc:
+        raise RejectedWrite(str(exc)) from exc
+
+
+def get_compiled_knowledge_state(
+    collection_id: str,
+    *,
+    project: str | None = None,
+    pillar: str | None = None,
+    entity: str | None = None,
+    include_commons: bool = True,
+) -> dict[str, Any]:
+    """Return structured compiled claims and rendered markdown for a collection/project."""
+    if not is_knowledge_enabled():
+        raise KnowledgeDisabledError("knowledge_disabled")
+
+    import corpusnote
+    from dataclasses import asdict
+
+    corpus = _get_corpus_handle(collection_id)
+    commons = _get_commons_corpus_if_present(collection_id) if include_commons else None
+
+    claims, pages, _ = corpusnote.get_compiled_view(
+        corpus,
+        project=project,
+        commons_corpus=commons,
+    )
+
+    if pillar:
+        claims = [c for c in claims if c.pillar == pillar]
+    if entity:
+        claims = [c for c in claims if c.entity.lower() == entity.lower()]
+
+    markdown = corpusnote.render_compiled_markdown(
+        claims,
+        title=f"Compiled State: {project or collection_id}",
+    )
+    return {
+        "collection_id": collection_id,
+        "project": project,
+        "pages": pages,
+        "claims": [asdict(c) for c in claims],
+        "markdown": markdown,
+    }
+
+
+def get_knowledge_digest(
+    collection_id: str,
+    *,
+    project: str | None = None,
+    include_commons: bool = True,
+) -> dict[str, Any]:
+    """Return a structured digest of Proven Patterns, Clashes, Dead Ends, and Open Hypotheses."""
+    if not is_knowledge_enabled():
+        raise KnowledgeDisabledError("knowledge_disabled")
+
+    import corpusnote
+    from dataclasses import asdict
+
+    corpus = _get_corpus_handle(collection_id)
+    commons = _get_commons_corpus_if_present(collection_id) if include_commons else None
+    digest = corpusnote.digest_compiled_state(
+        corpus,
+        project=project,
+        commons_corpus=commons,
+    )
+    return {
+        "collection_id": collection_id,
+        "project": project,
+        "patterns": [asdict(p) for p in digest.patterns],
+        "clashes": [
+            {
+                "topic": cl.topic,
+                "summary": cl.summary,
+                "claims": [asdict(c) for c in cl.claims],
+            }
+            for cl in digest.clashes
+        ],
+        "dead_ends": [asdict(d) for d in digest.dead_ends],
+        "open_hypotheses": [asdict(h) for h in digest.open_hypotheses],
+        "markdown": digest.markdown,
+    }
 
 
 def propose_knowledge_rule(

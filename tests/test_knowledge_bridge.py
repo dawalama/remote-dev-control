@@ -610,4 +610,226 @@ def test_move_session_only_channel_with_no_remaining_project_does_not_move_page(
     assert not (pers_dir / "workstreams" / f"{ch_sess_only.id}.md").exists()
 
 
+def test_compiled_state_and_entity_views_via_api_and_pack(clean_repos):
+    k_root, c_repo, p_repo, ch_mgr, s_mgr = clean_repos
+
+    from fastapi.testclient import TestClient
+    from remote_dev_ctrl.server.app import app
+    from remote_dev_ctrl.server.auth import Role, get_auth_manager
+
+    token, _ = get_auth_manager().create_token("test-admin-compile", Role.ADMIN)
+    client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
+
+    c_quill = c_repo.create(Collection(id="quillmeetings", name="QuillMeetings", role="client"))
+    c_other = c_repo.create(Collection(id="sugarwork", name="Sugarwork", role="client"))
+    c_pers = c_repo.create(Collection(id="personal", name="Personal", role="personal"))
+
+    p_quill = p_repo.create(Project(id="p-quill-1", name="quill-backend", path="/tmp/qb", collection_id=c_quill.id))
+    p_sugar = p_repo.create(Project(id="p-sugar-1", name="sugar-api", path="/tmp/sa", collection_id=c_other.id))
+
+    # 1. Stakeholder view vs Operator view on the same topic coexist
+    r_stake = client.post(
+        f"/collections/{c_quill.id}/knowledge/compile",
+        json={
+            "statement": "We want a multi-panel live transcript view on kiosk screens.",
+            "pillar": "stakeholder_view",
+            "entity": "stakeholder:quill-pm",
+            "stance": "priority",
+            "topic": "kiosk-layout",
+            "project": p_quill.name,
+            "provenance": ["meeting-01"],
+        },
+    )
+    assert r_stake.status_code == 200
+    assert r_stake.json()["action"] == "added"
+
+    r_op = client.post(
+        f"/collections/{c_quill.id}/knowledge/compile",
+        json={
+            "statement": "Default kiosk to single full-width terminal; make companion side panel toggleable.",
+            "pillar": "operator_view",
+            "entity": "dawa",
+            "stance": "mandate",
+            "topic": "kiosk-layout",
+            "project": p_quill.name,
+            "provenance": ["arch-review-01"],
+        },
+    )
+    assert r_op.status_code == 200
+    assert r_op.json()["action"] == "coexisting"
+
+    # 2. General craft knowledge promoted from client collection to personal commons (de-identified)
+    r_gen = client.post(
+        f"/collections/{c_quill.id}/knowledge/compile",
+        json={
+            "statement": "In QuillMeetings project quill-backend, Hatchling requires git URLs in [tool.uv.sources] instead of optional-dependencies.",
+            "pillar": "fact",
+            "entity": "dawa",
+            "stance": "verified",
+            "topic": "hatchling-git-sources",
+            "scope": "general",
+            "project": p_quill.name,
+            "provenance": ["sess-ci-fix"],
+        },
+    )
+    assert r_gen.status_code == 200
+    gen_data = r_gen.json()
+    assert gen_data["promoted_general"] is not None
+    assert "quillmeetings" not in gen_data["promoted_general"]["statement"].lower()
+    assert "quill-backend" not in gen_data["promoted_general"]["statement"].lower()
+    assert "Hatchling requires git URLs" in gen_data["promoted_general"]["statement"]
+
+    # 3. Query compiled state for QuillMeetings
+    state_res = client.get(f"/collections/{c_quill.id}/knowledge/state", params={"project": p_quill.name})
+    assert state_res.status_code == 200
+    state_json = state_res.json()
+    assert len(state_json["claims"]) == 3
+    assert "### Accepted Facts" in state_json["markdown"]
+    assert "### Operator View" in state_json["markdown"]
+    assert "### Stakeholder Views" in state_json["markdown"]
+
+    # 4. Sugarwork session pack gets the de-identified general commons knowledge, NOT Quill's proprietary views
+    ch_sugar = ch_mgr.create_channel(name="ch-sugar", type=ChannelType.PROJECT, collection_id=c_other.id, project_ids=[p_sugar.id])
+    sess_sugar = Session(
+        id="sess-sugar-1",
+        project=p_sugar.name,
+        channel_id=ch_sugar.id,
+        goal="Configure pyproject.toml dependencies",
+        status=SessionStatus.RUNNING,
+    )
+    sugar_pack = pack_for_session(sess_sugar)
+    assert "Hatchling requires git URLs" in sugar_pack.text
+    assert "live transcript view" not in sugar_pack.text
+    assert "stakeholder:quill-pm" not in sugar_pack.text
+
+
+def test_capture_completed_compiles_hypothesis_then_graduates_to_fact(clean_repos):
+    k_root, c_repo, p_repo, ch_mgr, s_mgr = clean_repos
+
+    c_client = c_repo.create(Collection(id="coll-grad", name="GradClient", role="client"))
+    p_app = p_repo.create(Project(id="p-grad-1", name="grad-app", path="/tmp/ga", collection_id=c_client.id))
+    ch = ch_mgr.create_channel(name="ch-grad", type=ChannelType.PROJECT, collection_id=c_client.id, project_ids=[p_app.id])
+
+    # 1. First session completes without passing verification -> compiled as agent_hypothesis
+    s1 = Session(
+        id="sess-grad-1",
+        project=p_app.name,
+        channel_id=ch.id,
+        goal="Fix mobile goal board column width",
+        output_summary="Suspect 4-column grid crushes cards on 390px viewports.",
+        agent_provider="codex",
+        unresolved_risks=["Tablet breakpoint at 768px still needs stream toggle check"],
+        status=SessionStatus.COMPLETED,
+    )
+    s_mgr._persist(s1)
+    with get_db_manager().transaction("rdc") as db:
+        db.execute(
+            """INSERT INTO session_evidence (id, session_id, evidence_type, title, data, source)
+               VALUES ('ev-g1', ?, 'verification', 'pytest', '{"exit_code": 1}', 'rdc')""",
+            (s1.id,),
+        )
+    capture_completed(s1)
+
+    state_file = k_root / "corpora" / c_client.id / "projects" / "grad-app" / "state.md"
+    assert state_file.is_file()
+    text1 = state_file.read_text(encoding="utf-8")
+    assert "### Open Agent Hypotheses & Local Hazards" in text1
+    assert "[agent:codex | dead_end]" in text1
+    assert "[agent:codex | risk]" in text1
+
+    # 2. Second session on same topic passes verification -> clears dead_end into Accepted Fact and Proven Pattern
+    s2 = Session(
+        id="sess-grad-2",
+        project=p_app.name,
+        channel_id=ch.id,
+        goal="Fix mobile goal board column width",
+        output_summary=(
+            "Replaced 4-column grid on mobile with single-column Stream View and lane filter pills.\n"
+            "Pattern: Use single-column Stream View with lane filter pills on viewports under 960px."
+        ),
+        agent_provider="codex",
+        status=SessionStatus.COMPLETED,
+    )
+    s_mgr._persist(s2)
+    with get_db_manager().transaction("rdc") as db:
+        db.execute(
+            """INSERT INTO session_evidence (id, session_id, evidence_type, title, data, source)
+               VALUES ('ev-g2', ?, 'verification', 'pytest', '{"exit_code": 0}', 'rdc')""",
+            (s2.id,),
+        )
+    capture_completed(s2)
+
+    text2 = state_file.read_text(encoding="utf-8")
+    assert "### Proven Patterns (The Line Ahead)" in text2
+    assert "### Accepted Facts" in text2
+    assert "Replaced 4-column grid on mobile with single-column Stream View" in text2
+    assert "Cleared dead-end (agent:codex)" in text2
+
+
+def test_knowledge_digest_endpoint_surfaces_patterns_and_clashes(clean_repos):
+    k_root, c_repo, p_repo, ch_mgr, s_mgr = clean_repos
+
+    from fastapi.testclient import TestClient
+    from remote_dev_ctrl.server.app import app
+    from remote_dev_ctrl.server.auth import Role, get_auth_manager
+
+    token, _ = get_auth_manager().create_token("test-admin-digest", Role.ADMIN)
+    client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
+
+    c_quill = c_repo.create(Collection(id="quill-digest", name="QuillDigest", role="client"))
+    p_quill = p_repo.create(Project(id="p-qd-1", name="quill-web", path="/tmp/qw", collection_id=c_quill.id))
+
+    # 1. Compile and reinforce a Proven Pattern ("The Line Ahead")
+    for sess_id in ("sess-p1", "sess-p2"):
+        res_pat = client.post(
+            f"/collections/{c_quill.id}/knowledge/compile",
+            json={
+                "statement": "Use derived state or useMountEffect instead of direct useEffect.",
+                "pillar": "pattern",
+                "entity": "dawa",
+                "stance": "proven",
+                "topic": "react-state-derivation",
+                "project": p_quill.name,
+                "provenance": [sess_id],
+            },
+        )
+        assert res_pat.status_code == 200
+
+    # 2. Record clashing operator and stakeholder views on the same topic
+    client.post(
+        f"/collections/{c_quill.id}/knowledge/compile",
+        json={
+            "statement": "Default kiosk to single-pane terminal with optional companion drawer.",
+            "pillar": "operator_view",
+            "entity": "dawa",
+            "stance": "mandate",
+            "topic": "kiosk-pane-layout",
+            "project": p_quill.name,
+        },
+    )
+    client.post(
+        f"/collections/{c_quill.id}/knowledge/compile",
+        json={
+            "statement": "Default kiosk to multi-pane dashboard showing all metrics.",
+            "pillar": "stakeholder_view",
+            "entity": "stakeholder:ops",
+            "stance": "priority",
+            "topic": "kiosk-pane-layout",
+            "project": p_quill.name,
+        },
+    )
+
+    # 3. Fetch digest
+    dig_res = client.get(f"/collections/{c_quill.id}/knowledge/digest", params={"project": p_quill.name})
+    assert dig_res.status_code == 200
+    dig = dig_res.json()
+    assert len(dig["patterns"]) == 1
+    assert dig["patterns"][0]["evidence_count"] == 2
+    assert len(dig["clashes"]) == 1
+    assert dig["clashes"][0]["topic"] == "kiosk-pane-layout"
+    assert "### Proven Patterns (The Line Ahead)" in dig["markdown"]
+    assert "### Perspective Clashes & Trade-offs" in dig["markdown"]
+
+
+
 
