@@ -132,9 +132,9 @@ def llm_generate(prompt: str, format_json: bool = False) -> str | dict | None:
                 try:
                     from .server.intent import load_nanobot_config
                     cfg = load_nanobot_config()
-                    model = cfg.get("model_fast", "google/gemini-2.0-flash-001" if openrouter_key else "gpt-4o-mini")
+                    model = cfg.get("model_fast", "google/gemini-2.5-flash" if openrouter_key else "gpt-4o-mini")
                 except Exception:
-                    model = "google/gemini-2.0-flash-001" if openrouter_key else "gpt-4o-mini"
+                    model = "google/gemini-2.5-flash" if openrouter_key else "gpt-4o-mini"
                     
                 kwargs = {
                     "model": model,

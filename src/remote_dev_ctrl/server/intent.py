@@ -1175,7 +1175,6 @@ def fuzzy_match_action(query: str, processes: list[dict]) -> Optional[str]:
 
 AVAILABLE_MODELS = [
     {"id": "google/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "tier": "fast"},
-    {"id": "google/gemini-2.0-flash-001", "name": "Gemini 2.0 Flash", "tier": "fast"},
     {"id": "anthropic/claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5", "tier": "fast"},
     {"id": "anthropic/claude-sonnet-4", "name": "Claude Sonnet 4", "tier": "mid"},
     {"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini", "tier": "fast"},
@@ -1183,7 +1182,7 @@ AVAILABLE_MODELS = [
 ]
 
 DEFAULT_NANOBOT_CONFIG = {
-    "model_fast": "google/gemini-2.0-flash-001",
+    "model_fast": "google/gemini-2.5-flash",
     "model_mid": "anthropic/claude-sonnet-4",
     "word_threshold": 12,  # Messages with <= this many words use fast model
     "max_tokens": 1000,
@@ -2209,7 +2208,7 @@ class IntentEngine:
         total_completion_tokens = 0
 
         # Fallback models when primary is rate-limited
-        _FALLBACK_MODELS = ["google/gemini-2.0-flash-001", "openai/gpt-4o-mini"]
+        _FALLBACK_MODELS = ["google/gemini-2.5-flash", "openai/gpt-4o-mini"]
 
         def _sanitize_messages(msgs: list[dict]) -> list[dict]:
             """Ensure every outgoing message has at least one 'part'.
