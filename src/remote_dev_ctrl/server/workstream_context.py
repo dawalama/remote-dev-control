@@ -267,9 +267,20 @@ def _build_recent_layer(
                 role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
                 content = (msg.content or "")[:300]
 
-                # Skip noise messages
-                if role == "system" and any(content.startswith(n) for n in _STATE_NOISE):
-                    continue
+                # Skip routine system activity logs (State layer already covers active goals/sessions)
+                meta = msg.metadata if isinstance(msg.metadata, dict) else {}
+                if role == "system":
+                    if (
+                        meta.get("activity") is True
+                        or meta.get("type") == "session_notify"
+                        or any(content.startswith(n) for n in _STATE_NOISE)
+                        or content.startswith(("Session started:", "Session completed", "Auto-verify loop:", "HomeBase session "))
+                    ):
+                        continue
+                    if meta.get("type") == "a2ui":
+                        comps = meta.get("components") or []
+                        if any(isinstance(c, dict) and c.get("type") == "task_card" for c in comps):
+                            continue
 
                 # Dedup identical consecutive messages
                 dedup_key = f"{role}:{content[:80]}"

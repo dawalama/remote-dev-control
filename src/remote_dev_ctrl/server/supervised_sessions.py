@@ -703,6 +703,7 @@ def start_supervised_session(
             content=f"Session started: {(s.goal or s.description)[:200]}",
             metadata={
                 "type": "a2ui",
+                "activity": True,
                 "components": [
                     {
                         "type": "task_card",

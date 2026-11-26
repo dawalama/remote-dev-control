@@ -7,6 +7,7 @@ smart layer that uses tool calling for reliable structured output.
 import json as _json_mod
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -1105,6 +1106,7 @@ class OrchestratorContext:
     workstreams: list[dict] = field(default_factory=list)
     active_workstream: Optional[str] = None
     active_workstream_id: Optional[str] = None
+    user_message: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -1175,15 +1177,19 @@ def fuzzy_match_action(query: str, processes: list[dict]) -> Optional[str]:
 
 AVAILABLE_MODELS = [
     {"id": "google/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "tier": "fast"},
-    {"id": "google/gemini-2.0-flash-001", "name": "Gemini 2.0 Flash", "tier": "fast"},
     {"id": "anthropic/claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5", "tier": "fast"},
     {"id": "anthropic/claude-sonnet-4", "name": "Claude Sonnet 4", "tier": "mid"},
     {"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini", "tier": "fast"},
     {"id": "openai/gpt-4o", "name": "GPT-4o", "tier": "mid"},
 ]
 
+_RETIRED_MODEL_MIGRATIONS = {
+    "google/gemini-2.0-flash-001": "google/gemini-2.5-flash",
+    "google/gemini-2.0-flash": "google/gemini-2.5-flash",
+}
+
 DEFAULT_NANOBOT_CONFIG = {
-    "model_fast": "google/gemini-2.0-flash-001",
+    "model_fast": "google/gemini-2.5-flash",
     "model_mid": "anthropic/claude-sonnet-4",
     "word_threshold": 12,  # Messages with <= this many words use fast model
     "max_tokens": 1000,
@@ -1197,13 +1203,19 @@ DEFAULT_NANOBOT_CONFIG = {
 }
 
 
+def _migrate_retired_model(model_id: Any) -> Any:
+    if isinstance(model_id, str):
+        return _RETIRED_MODEL_MIGRATIONS.get(model_id.strip(), model_id)
+    return model_id
+
+
 def _nanobot_config_path() -> Path:
     from .config import get_rdc_home
     return get_rdc_home() / "nanobot.json"
 
 
 def load_nanobot_config() -> dict:
-    """Load nanobot config from disk."""
+    """Load nanobot config from disk, auto-migrating any retired model IDs."""
     path = _nanobot_config_path()
     if path.exists():
         try:
@@ -1211,6 +1223,12 @@ def load_nanobot_config() -> dict:
                 stored = _json_mod.load(f)
             # Merge with defaults for any missing keys
             merged = {**DEFAULT_NANOBOT_CONFIG, **stored}
+            merged["model_fast"] = _migrate_retired_model(merged.get("model_fast"))
+            merged["model_mid"] = _migrate_retired_model(merged.get("model_mid"))
+            if isinstance(merged.get("model_overrides"), dict):
+                merged["model_overrides"] = {
+                    k: _migrate_retired_model(v) for k, v in merged["model_overrides"].items()
+                }
             return merged
         except Exception:
             pass
@@ -1276,9 +1294,10 @@ def log_nanobot_interaction(
         logger.exception("Failed to write nanobot log")
 
 
-def load_recent_history(n: int = 5) -> list[dict]:
-    """Load the last N nanobot interactions from today + yesterday."""
+def load_recent_history(n: int = 5, project: Optional[str] = None) -> list[dict]:
+    """Load the last N nanobot interactions from today + yesterday, scoped to `project` when given."""
     entries: list[dict] = []
+    target_proj = (project or "").strip().lower()
     for day in [date.today() - timedelta(days=1), date.today()]:
         path = _nanobot_log_path(day)
         if not path.exists():
@@ -1290,9 +1309,12 @@ def load_recent_history(n: int = 5) -> list[dict]:
                     if not line:
                         continue
                     try:
-                        entries.append(_json_mod.loads(line))
+                        entry = _json_mod.loads(line)
                     except (ValueError, TypeError):
                         continue
+                    if target_proj and str(entry.get("project") or "").strip().lower() != target_proj:
+                        continue
+                    entries.append(entry)
         except Exception:
             logger.exception("Failed to read nanobot log %s", path)
     return entries[-n:] if len(entries) > n else entries
@@ -1864,6 +1886,21 @@ def build_system_prompt(
     # === DYNAMIC CONTEXT (compressible) ===
     context_parts: list[str] = []
 
+    # Current state — AUTHORITATIVE (placed first so it anchors everything below).
+    truth_lines = ["## Current state (AUTHORITATIVE — do not contradict)"]
+    truth_lines.append(f"- Active workstream: {ctx.active_workstream or 'none'}")
+    truth_lines.append(f"- Active project: {ctx.project or 'none (no project selected)'}")
+    truth_lines.append(f"- Active collection: {ctx.collection or 'none'}")
+    if ctx.active_workstream_id and ctx.active_workstream_id != SYSTEM_CHANNEL_ID and ctx.project:
+        truth_lines.append(
+            f"- STRICT SCOPE: You are inside workstream #{ctx.active_workstream or ctx.project} "
+            f"(project `{ctx.project}`). For any question about 'the project', files, or git status, "
+            f"ALWAYS omit `project` or pass `{ctx.project}` — NEVER target another project unless "
+            f"the user explicitly names it."
+        )
+    context_parts.append("\n".join(truth_lines))
+    context_parts.append("")
+
     # Older conversation summary (compacted thread history)
     if thread_summary:
         context_parts.append("Previous conversation context:")
@@ -1905,23 +1942,24 @@ def build_system_prompt(
             context_parts.append(f"  {commit}")
         context_parts.append("")
 
-    # Current state — AUTHORITATIVE. These are live facts; the LLM must not
-    # contradict them based on chat history, which can contain past
-    # hallucinations about switches that never actually happened.
-    truth_lines = ["## Current state (AUTHORITATIVE — do not contradict)"]
-    truth_lines.append(f"- Active workstream: {ctx.active_workstream or 'none'}")
-    truth_lines.append(f"- Active project: {ctx.project or 'none (no project selected)'}")
-    truth_lines.append(f"- Active collection: {ctx.collection or 'none'}")
-    context_parts.append("\n".join(truth_lines))
-
     # Projects
     if ctx.project_details:
-        proj_lines = []
-        for p in ctx.project_details:
-            desc = f" — {p.description}" if p.description else ""
-            col = f" [{p.collection}]" if p.collection else ""
-            proj_lines.append(f"  {p.name}{col}{desc}")
-        context_parts.append("Projects:\n" + "\n".join(proj_lines))
+        if ctx.active_workstream_id and ctx.active_workstream_id != SYSTEM_CHANNEL_ID and ctx.project:
+            active_pd = [p for p in ctx.project_details if p.name == ctx.project]
+            other_names = [p.name for p in ctx.project_details if p.name != ctx.project]
+            if active_pd:
+                p = active_pd[0]
+                desc = f" — {p.description}" if p.description else ""
+                context_parts.append(f"Active project details:\n  {p.name}{desc}")
+            if other_names:
+                context_parts.append(f"Other projects on machine (only use if explicitly named): {', '.join(other_names)}")
+        else:
+            proj_lines = []
+            for p in ctx.project_details:
+                desc = f" — {p.description}" if p.description else ""
+                col = f" [{p.collection}]" if p.collection else ""
+                proj_lines.append(f"  {p.name}{col}{desc}")
+            context_parts.append("Projects:\n" + "\n".join(proj_lines))
     elif ctx.projects:
         context_parts.append(f"Projects: {', '.join(ctx.projects)}")
 
@@ -2077,27 +2115,66 @@ class IntentEngine:
         else:
             from .vault import get_secret
 
-            api_key = (
-                get_secret("OPENROUTER_API_KEY")
-                or get_secret("OPENAI_API_KEY")
-                or os.getenv("OPENROUTER_API_KEY")
-                or os.getenv("OPENAI_API_KEY")
-            )
-            if not api_key:
+            openrouter_key = get_secret("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+            openai_key = get_secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+            if openrouter_key:
+                self._client = OpenAI(
+                    api_key=openrouter_key,
+                    base_url="https://openrouter.ai/api/v1",
+                )
+                self._direct_openai = False
+            elif openai_key:
+                self._client = OpenAI(api_key=openai_key)
+                self._direct_openai = True
+            else:
                 raise RuntimeError("OPENROUTER_API_KEY or OPENAI_API_KEY not configured")
-
-            self._client = OpenAI(
-                api_key=api_key,
-                base_url="https://openrouter.ai/api/v1",
-            )
         self._provider = provider
         return self._client
 
-    async def process(self, message: str, ctx: OrchestratorContext, *, conversation_history: list[dict] | None = None) -> IntentResult:
+    async def process(
+        self,
+        message: str,
+        ctx: OrchestratorContext,
+        *,
+        conversation_history: list[dict] | None = None,
+        on_progress: Any | None = None,
+    ) -> IntentResult:
         """Understand intent and return response + actions."""
         import asyncio
 
         start_time = time.monotonic()
+        ctx.user_message = message or ""
+
+        async def _report(stage: str) -> None:
+            if not on_progress:
+                return
+            try:
+                res = on_progress(stage)
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception:
+                pass
+
+        def _tool_stage_label(name: str, params: dict) -> str:
+            if name == "run_command":
+                cmd = str(params.get("command") or "").strip().split()[:3]
+                return f"Running `{' '.join(cmd)}`…" if cmd else "Running command…"
+            if name == "read_file":
+                p = str(params.get("path") or "").strip().split("/")[-1]
+                return f"Reading {p}…" if p else "Reading file…"
+            if name in ("list_sessions", "session_status"):
+                return "Checking goals…"
+            if name == "brief_homebase":
+                return "Building brief…"
+            if name == "spawn_agent":
+                return "Starting goal…"
+            if name == "server_status":
+                return "Checking server status…"
+            if name == "list_workstreams":
+                return "Checking workstreams…"
+            return f"Running {name.replace('_', ' ')}…"
+
+        await _report("Thinking…")
 
         client = self._get_client()
         cfg = load_nanobot_config()
@@ -2114,7 +2191,12 @@ class IntentEngine:
         memory_n = 3 if is_local else 10
         turns_n = 5 if is_local else 20
 
-        recent_history = load_recent_history(n=history_n)
+        scoped_history_project = (
+            ctx.project
+            if (ctx.project and ctx.active_workstream_id and ctx.active_workstream_id != SYSTEM_CHANNEL_ID)
+            else None
+        )
+        recent_history = load_recent_history(n=history_n, project=scoped_history_project)
         proj_memory = load_project_memory(ctx.project, n=memory_n) if ctx.project else []
         project_path = _resolve_project_path(ctx.project)
         git_commits = fetch_git_activity(project_path) if (project_path and not is_local) else []
@@ -2208,22 +2290,21 @@ class IntentEngine:
         total_prompt_tokens = 0
         total_completion_tokens = 0
 
-        # Fallback models when primary is rate-limited
-        _FALLBACK_MODELS = ["google/gemini-2.0-flash-001", "openai/gpt-4o-mini"]
+        # Fallback models when primary is rate-limited, retired, or hits a provider error
+        _FALLBACK_MODELS = (
+            ["gpt-4o-mini", "gpt-4o"]
+            if getattr(self, "_direct_openai", False)
+            else ["google/gemini-2.5-flash", "openai/gpt-4o-mini"]
+        )
+        if getattr(self, "_direct_openai", False) and "/" in model:
+            model = model.split("/", 1)[1] if model.startswith("openai/") else "gpt-4o-mini"
 
         def _sanitize_messages(msgs: list[dict]) -> list[dict]:
-            """Ensure every outgoing message has at least one 'part'.
+            """Normalize outgoing messages so strict OpenAI-compatible providers accept them.
 
-            Gemini (via OpenRouter) rejects messages with neither text content
-            nor tool_calls/tool_call_id with:
-              400 "must include at least one parts field, which describes the
-              prompt input"
-            OpenAI is permissive here, so the bug only surfaces when routing
-            to Gemini. Normalize defensively:
-              - assistant turns with tool_calls but null content → content=""
-              - tool turns keep their content verbatim (callers already
-                provide non-empty ack strings like "Done.")
-              - user/assistant/system turns with empty content → dropped
+            - Gemini (via OpenRouter) rejects messages with neither text content nor tool_calls.
+            - Groq / strict providers reject extraneous SDK fields like `audio`, `refusal`,
+              `annotations`, or `function_call` dumped by Pydantic `model_dump()`.
             """
             out: list[dict] = []
             for m in msgs:
@@ -2231,23 +2312,41 @@ class IntentEngine:
                 content = m.get("content")
                 tool_calls = m.get("tool_calls")
                 if role == "tool":
-                    # Tool turns are valid as long as content isn't None/empty.
                     if content:
-                        out.append(m)
+                        out.append({
+                            "role": "tool",
+                            "tool_call_id": m.get("tool_call_id"),
+                            "content": content,
+                        })
                     continue
                 if role == "assistant" and tool_calls:
-                    # Tool-only assistant turns: content can be "" but must exist.
-                    m = {**m, "content": content if isinstance(content, str) else ""}
-                    out.append(m)
+                    clean_calls = []
+                    for tc in tool_calls:
+                        if isinstance(tc, dict):
+                            fn = tc.get("function") or {}
+                            clean_calls.append({
+                                "id": tc.get("id"),
+                                "type": "function",
+                                "function": {
+                                    "name": fn.get("name", ""),
+                                    "arguments": fn.get("arguments") or "{}",
+                                },
+                            })
+                    out.append({
+                        "role": "assistant",
+                        "content": content if isinstance(content, str) else "",
+                        "tool_calls": clean_calls,
+                    })
                     continue
-                # user / assistant / system turns: require non-empty string content.
                 if isinstance(content, str) and content.strip():
-                    out.append(m)
+                    out.append({"role": role, "content": content})
             return out
 
         # Multi-turn tool loop: LLM calls tools → execute → feed results back → LLM responds
         max_iterations = 5
         for _iteration in range(max_iterations):
+            if _iteration > 0:
+                await _report("Analyzing results…")
             def _call(msgs=messages, mdl=model):
                 return client.chat.completions.create(
                     model=mdl,
@@ -2259,15 +2358,31 @@ class IntentEngine:
             try:
                 response = await asyncio.to_thread(_call)
             except Exception as _llm_err:
-                # Rate limit or provider error — try fallback models
-                err_str = str(_llm_err)
-                if "429" in err_str or "rate" in err_str.lower():
+                # Rate limit, retired model (404), or upstream provider error — try fallback models
+                err_str = str(_llm_err).lower()
+                should_fallback = any(
+                    token in err_str
+                    for token in (
+                        "429", "rate", "404", "not found", "no longer available",
+                        "502", "503", "504", "provider returned error", "overloaded",
+                    )
+                )
+                if should_fallback:
                     fallback_response = None
                     for fb_model in _FALLBACK_MODELS:
+                        if fb_model == model:
+                            continue
                         try:
-                            logger.info("Rate limited on %s, falling back to %s", model, fb_model)
+                            logger.info("LLM call failed on %s (%s), falling back to %s", model, type(_llm_err).__name__, fb_model)
                             model = fb_model
-                            fallback_response = await asyncio.to_thread(lambda m=messages, mdl=fb_model: client.chat.completions.create(model=mdl, messages=_sanitize_messages(m), tools=tools, max_tokens=max_tokens))
+                            fallback_response = await asyncio.to_thread(
+                                lambda m=messages, mdl=fb_model: client.chat.completions.create(
+                                    model=mdl,
+                                    messages=_sanitize_messages(m),
+                                    tools=tools,
+                                    max_tokens=max_tokens,
+                                )
+                            )
                             break
                         except Exception:
                             continue
@@ -2287,16 +2402,24 @@ class IntentEngine:
             if not msg.tool_calls:
                 break
 
-            # Process tool calls
+            # Process tool calls — construct a clean OpenAI-compatible assistant message
+            # (never use msg.model_dump(), which includes unsupported fields like audio=None).
             has_output_tools = False
-            # Add assistant message with tool calls to conversation.
-            # Gemini (via OpenRouter) rejects assistant messages that have
-            # tool_calls but null content with "must include at least one
-            # parts field" — normalize to an empty string so every provider
-            # accepts the replay.
-            assistant_msg = msg.model_dump()
-            if assistant_msg.get("content") is None:
-                assistant_msg["content"] = ""
+            assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": msg.content if isinstance(msg.content, str) else "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments or "{}",
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ],
+            }
             messages.append(assistant_msg)
 
             for tc in msg.tool_calls:
@@ -2328,6 +2451,7 @@ class IntentEngine:
                 # Execute the tool and check if output should go back to LLM
                 if tc.function.name in TOOLS_WITH_OUTPUT:
                     has_output_tools = True
+                    await _report(_tool_stage_label(tc.function.name, params))
                     result = await executor.execute(action.name, action.params, ctx)
                     action.result = result if isinstance(result, dict) else {"output": str(result)}
                     result_text = _json_mod.dumps(result, default=str)[:3000]
@@ -2344,6 +2468,7 @@ class IntentEngine:
         response_text = msg.content or ""
         if not response_text and (all_actions or ui_components):
             # Try one more call with no tools to force text output
+            await _report("Summarizing…")
             try:
                 def _synth(msgs=messages, mdl=model):
                     return client.chat.completions.create(
@@ -2505,6 +2630,44 @@ def _auto_confirm(actions: list[ToolCall]) -> str:
 # ---------------------------------------------------------------------------
 # Action Executor
 # ---------------------------------------------------------------------------
+
+def _resolve_scoped_project(requested: Optional[str], ctx: OrchestratorContext) -> Optional[str]:
+    """Prevent an LLM inside a pinned workstream from silently running tools in a different project.
+
+    Allows targeting another project only when:
+    - We are in whole-HomeBase scope (no active workstream or `#system`), OR
+    - The requested project belongs to the active workstream, OR
+    - The user's message explicitly mentions the requested project.
+    """
+    req = (requested or "").strip()
+    if not req:
+        return ctx.project
+    if not ctx.project or not ctx.active_workstream_id or ctx.active_workstream_id == SYSTEM_CHANNEL_ID:
+        return req
+    if req.lower() == ctx.project.strip().lower():
+        return ctx.project
+
+    # Allow any project linked to the active workstream
+    for ws in ctx.workstreams:
+        if ws.get("id") == ctx.active_workstream_id:
+            ws_projects = [str(p).strip().lower() for p in (ws.get("project_names") or [])]
+            if req.lower() in ws_projects:
+                return req
+            break
+
+    # Allow if the user explicitly named this project in their prompt
+    msg_norm = re.sub(r"[\s_]+", "-", (ctx.user_message or "").lower())
+    req_norm = re.sub(r"[\s_]+", "-", req.lower())
+    if req_norm and (req_norm in msg_norm or req.lower() in (ctx.user_message or "").lower()):
+        return req
+
+    logger.warning(
+        "Clamped hallucinated tool project %r back to active workstream project %r",
+        req,
+        ctx.project,
+    )
+    return ctx.project
+
 
 class ActionExecutor:
     """Maps tool call results to actual system calls."""
@@ -3165,7 +3328,7 @@ class ActionExecutor:
                     _BLOCKED = {"rm -rf", "mkfs", "dd if=", "> /dev/", ":(){ :|:&", "shutdown", "reboot"}
                     if any(b in command.lower() for b in _BLOCKED):
                         return {"action": "run_command", "error": "Command blocked for safety", "success": False, "type": "server"}
-                    proj = params.get("project") or ctx.project
+                    proj = _resolve_scoped_project(params.get("project"), ctx)
                     cwd = None
                     if proj:
                         cwd = _resolve_project_path(proj)
@@ -3179,15 +3342,23 @@ class ActionExecutor:
                         )
                         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
                         output = stdout.decode("utf-8", errors="replace")[:4000]
-                        return {"action": "run_command", "command": command, "output": output, "exit_code": proc.returncode, "success": proc.returncode == 0, "type": "server"}
+                        return {
+                            "action": "run_command",
+                            "project": proj,
+                            "command": command,
+                            "output": output,
+                            "exit_code": proc.returncode,
+                            "success": proc.returncode == 0,
+                            "type": "server",
+                        }
                     except asyncio.TimeoutError:
-                        return {"action": "run_command", "command": command, "error": "Command timed out (30s)", "success": False, "type": "server"}
+                        return {"action": "run_command", "project": proj, "command": command, "error": "Command timed out (30s)", "success": False, "type": "server"}
 
                 case "read_file":
                     path = params.get("path", "")
                     if not path:
                         return {"action": "read_file", "error": "No path provided", "success": False, "type": "server"}
-                    proj = params.get("project") or ctx.project
+                    proj = _resolve_scoped_project(params.get("project"), ctx)
                     project_path = _resolve_project_path(proj) if proj else None
                     if not project_path:
                         return {"action": "read_file", "error": "No project selected", "success": False, "type": "server"}
@@ -3197,18 +3368,18 @@ class ActionExecutor:
                     try:
                         file_path = file_path.resolve()
                         if not str(file_path).startswith(str(_FP(project_path).resolve())):
-                            return {"action": "read_file", "error": "Path escapes project directory", "success": False, "type": "server"}
+                            return {"action": "read_file", "project": proj, "error": "Path escapes project directory", "success": False, "type": "server"}
                     except Exception:
-                        return {"action": "read_file", "error": "Invalid path", "success": False, "type": "server"}
+                        return {"action": "read_file", "project": proj, "error": "Invalid path", "success": False, "type": "server"}
                     if not file_path.exists():
-                        return {"action": "read_file", "error": f"File not found: {path}", "success": False, "type": "server"}
+                        return {"action": "read_file", "project": proj, "error": f"File not found: {path}", "success": False, "type": "server"}
                     max_lines = params.get("max_lines", 100)
                     try:
                         lines = file_path.read_text()[:8000].split("\n")[:max_lines]
                         content = "\n".join(lines)
-                        return {"action": "read_file", "path": path, "content": content, "lines": len(lines), "success": True, "type": "server"}
+                        return {"action": "read_file", "project": proj, "path": path, "content": content, "lines": len(lines), "success": True, "type": "server"}
                     except Exception as e:
-                        return {"action": "read_file", "error": str(e), "success": False, "type": "server"}
+                        return {"action": "read_file", "project": proj, "error": str(e), "success": False, "type": "server"}
 
                 case "fetch_url":
                     url = params.get("url", "")

@@ -836,6 +836,7 @@ class SessionManager:
                     session.channel_id,
                     role="system",
                     content=f"Auto-verify loop: starting round {round_num}/{max_rounds} after verification check.",
+                    metadata={"type": "session_activity", "activity": True, "session_id": session.id},
                 )
             except Exception:
                 pass
@@ -857,13 +858,16 @@ class SessionManager:
             {"type": "task_card", "title": session.description[:80], "status": end_status.value, "project": session.project},
         ]
         if final_summary:
-            components.append({"type": "text", "content": final_summary})
+            brief_preview = final_summary.strip()
+            if len(brief_preview) > 240:
+                brief_preview = brief_preview[:237].rstrip() + "…"
+            components.append({"type": "text", "content": brief_preview})
         try:
             cm.post_message(
                 session.channel_id,
                 role="system",
                 content=default_content,
-                metadata={"type": "a2ui", "components": components},
+                metadata={"type": "a2ui", "activity": True, "session_id": session.id, "components": components},
             )
         except Exception:
             pass

@@ -399,9 +399,14 @@ def build_homebase_brief(
 
     sessions = session_manager.list_active()
     channel_collections: dict[str, str] = {}
+    channel_names: dict[str, str] = {}
     try:
-        c_rows = session_manager._db().execute("SELECT id, collection_id FROM channels").fetchall()
+        c_rows = session_manager._db().execute("SELECT id, name, collection_id FROM channels").fetchall()
         channel_collections = {r["id"]: r["collection_id"] for r in c_rows}
+        for r in c_rows:
+            raw_name = (r["name"] or "").strip()
+            if raw_name:
+                channel_names[r["id"]] = raw_name if raw_name.startswith("#") else f"#{raw_name}"
     except Exception:
         pass
 
@@ -427,6 +432,8 @@ def build_homebase_brief(
         if cand:
             newest = max(cand, key=lambda s: s.updated_at or s.created_at)
             default_hint = newest.channel_id
+    if default_hint and default_hint in channel_names:
+        default_hint = channel_names[default_hint]
 
     return assemble_brief(
         BriefInput(
