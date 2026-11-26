@@ -82,8 +82,10 @@ def create_project(
     }
 
 
-def create_rdc_yaml(path: Path, name: str, config: dict) -> str:
-    """Create rdc.yml with dev process definitions based on the stack."""
+def create_rdc_yaml(path: Path, name: str, config: dict, *, centralized: bool = True) -> str:
+    """Create project process config YAML (centralized in ~/.rdc/projects/ by default)."""
+    from .server.config import project_config_path
+
     proj_type = config.get("type", "backend")
     stack = config.get("stack", {})
     backend = stack.get("backend", "fastapi")
@@ -134,19 +136,32 @@ def create_rdc_yaml(path: Path, name: str, config: dict) -> str:
         if proc.get("cwd"):
             lines.append(f"    cwd: {proc['cwd']}")
 
-    (path / "rdc.yaml").write_text("\n".join(lines) + "\n")
-    return "rdc.yaml"
+    target = project_config_path(name) if centralized else (path / "rdc.yaml")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines) + "\n")
+    return str(target) if centralized else "rdc.yaml"
 
 
-def create_imported_project_rdc_yaml(path: Path, name: str, config: dict) -> str:
-    """Create rdc.yaml for an existing project, including discovered actions."""
+def create_imported_project_rdc_yaml(
+    path: Path,
+    name: str,
+    config: dict,
+    *,
+    centralized: bool = True,
+) -> str:
+    """Create project YAML config for an existing project, including discovered actions.
+
+    Writes to ~/.rdc/projects/<name>.yaml by default so imported repos stay clean.
+    """
     import yaml
 
+    from .server.config import project_config_path
     from .server.process_discovery import discover_processes
 
     processes = discover_processes(name, str(path), use_llm=False)
     yaml_content = {
         "name": name,
+        "path": str(path),
         "description": config.get("description", ""),
         "type": config.get("type", "backend"),
         "stack": config.get("stack", {}),
@@ -166,8 +181,10 @@ def create_imported_project_rdc_yaml(path: Path, name: str, config: dict) -> str
             for proc in processes
         ]
 
-    (path / "rdc.yaml").write_text(yaml.safe_dump(yaml_content, sort_keys=False))
-    return "rdc.yaml"
+    target = project_config_path(name) if centralized else (path / "rdc.yaml")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(yaml.safe_dump(yaml_content, sort_keys=False))
+    return str(target) if centralized else "rdc.yaml"
 
 
 def _init_git(path: Path):

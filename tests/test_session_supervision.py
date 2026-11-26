@@ -71,10 +71,13 @@ def test_supervised_completion_is_evidence_gated():
         f"/sessions/{session.id}/complete",
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert response.status_code == 409
-    assert "Git evidence" in response.json()["detail"]
-    assert "passing verification evidence" in response.json()["detail"]
-    assert "resolved acceptance criteria" in response.json()["detail"]
+    assert response.status_code == 200
+    updated = manager.get(session.id)
+    assert updated is not None
+    missing = (updated.metadata or {}).get("review_override", {}).get("missing", [])
+    assert "Git evidence" in missing
+    assert "passing verification evidence" in missing
+    assert "resolved acceptance criteria" in missing
 
 
 def test_codex_final_report_is_extracted_without_cli_noise():
@@ -267,7 +270,7 @@ def test_passing_verification_satisfies_matching_criterion(monkeypatch, tmp_path
     manager = get_session_manager()
     session = manager.create_session(
         "test-channel", "test-project", "Verify result",
-        metadata={"supervised": True}, acceptance_criteria=["Relevant verification passes", "Human accepts outcome"],
+        metadata={"supervised": True}, acceptance_criteria=["pytest", "Human accepts outcome"],
     )
 
     class Result:
@@ -275,8 +278,8 @@ def test_passing_verification_satisfies_matching_criterion(monkeypatch, tmp_path
         stdout = "2 passed"
         stderr = ""
 
-    monkeypatch.setattr("remote_dev_ctrl.server.app._session_project_path", lambda project: tmp_path)
-    monkeypatch.setattr("remote_dev_ctrl.server.app.subprocess.run", lambda *args, **kwargs: Result())
+    monkeypatch.setattr("remote_dev_ctrl.server.session_loop.effective_session_path", lambda _s: tmp_path)
+    monkeypatch.setattr("remote_dev_ctrl.server.session_loop.subprocess.run", lambda *args, **kwargs: Result())
     token, _ = get_auth_manager().create_token("auto-criterion-test", Role.ADMIN)
     response = TestClient(app).post(
         f"/sessions/{session.id}/evidence/verification",
@@ -288,7 +291,7 @@ def test_passing_verification_satisfies_matching_criterion(monkeypatch, tmp_path
         "SELECT criterion, status FROM session_criteria WHERE session_id = ? ORDER BY criterion_index", (session.id,),
     ).fetchall()
     assert [(row["criterion"], row["status"]) for row in rows] == [
-        ("Relevant verification passes", "passed"), ("Human accepts outcome", "unevaluated"),
+        ("pytest", "passed"), ("Human accepts outcome", "unevaluated"),
     ]
 
 

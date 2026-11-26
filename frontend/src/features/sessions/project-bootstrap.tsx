@@ -426,7 +426,7 @@ export function ProjectBootstrap({
                   checked={scaffoldWithIntel}
                   onChange={(e) => setScaffoldWithIntel(e.target.checked)}
                 />
-                Generate starter files &amp; <code className="text-[11px] text-gray-400">rdc.yaml</code>
+                Generate starter files (config saved in <code className="text-[11px] text-gray-400">~/.rdc/projects/</code>)
               </label>
               <label className="flex items-center gap-2 text-gray-300 cursor-pointer">
                 <input

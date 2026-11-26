@@ -24,13 +24,22 @@ open http://localhost:8420
 
 ## Add Your Projects
 
+When you open `http://localhost:8420` for the first time with no projects, the **Welcome** screen detects your installed CLI agents and lets you browse or quick-connect existing folders (or create a new project) in 1 click.
+
+You can also register a repo from the CLI:
+
 ```bash
 rdc add ~/my-project --name my-project
 ```
 
+Project configs are stored centrally under `~/.rdc/projects/<name>.yaml` so your repos stay clean.
+
 ## Set Up API Keys (optional)
 
+If you already have a CLI agent signed in (`claude`, `codex`, `cursor-agent`, or `agy`), you can run Goals right away without raw API keys. Optional API keys for background briefs and summaries are stored in the encrypted vault:
+
 ```bash
+rdc config set-secret OPENROUTER_API_KEY sk-or-...
 rdc config set-secret ANTHROPIC_API_KEY sk-ant-...
 rdc config set-secret OPENAI_API_KEY sk-...
 ```

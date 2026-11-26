@@ -273,24 +273,21 @@ def add(
             tag_list = [inferred.get("type")] + inferred.get("features", [])
             tag_list = [t for t in tag_list if t]
     
-    # Always try to generate rdc.yaml if it doesn't exist (check both extensions)
-    rdc_yaml = path / "rdc.yaml"
-    rdc_yml = path / "rdc.yml"
-    if rdc_yml.exists() and not rdc_yaml.exists():
-        rdc_yaml = rdc_yml  # Use existing .yml instead of creating .yaml
-    if not rdc_yaml.exists():
+    # Store project config centrally in ~/.rdc/projects/<name>.yaml so the repo stays clean
+    from .server.config import project_config_path
+    central_cfg = project_config_path(project_name)
+    has_local_cfg = (path / "rdc.yaml").exists() or (path / "rdc.yml").exists()
+    if not central_cfg.exists() and not has_local_cfg:
         try:
-            # Re-infer if we didn't do it above
             if 'inferred' not in locals():
                 inferred = analyze_existing_project(path)
-            
-            create_imported_project_rdc_yaml(path, project_name, {
+            created_cfg = create_imported_project_rdc_yaml(path, project_name, {
                 **inferred,
                 "description": description,
-            })
-            rprint(f"[green]✓[/green] Generated {rdc_yaml.name}")
+            }, centralized=True)
+            rprint(f"[green]✓[/green] Saved config to {created_cfg}")
         except Exception as e:
-            rprint(f"[yellow]Could not generate rdc.yaml: {e}[/yellow]")
+            rprint(f"[yellow]Could not generate project config: {e}[/yellow]")
     
     ai_dir = path / ".ai"
     if not ai_dir.exists():

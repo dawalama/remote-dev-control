@@ -39,10 +39,24 @@ get_adt_home = get_rdc_home
 ensure_adt_home = None  # replaced below
 
 
+def get_project_configs_dir() -> Path:
+    """Centralized directory for per-project YAML configs (~/.rdc/projects/)."""
+    return get_rdc_home() / "projects"
+
+
+def project_config_path(project_name: str) -> Path:
+    """Return the centralized YAML config path for a project (~/.rdc/projects/<slug>.yaml)."""
+    import re
+
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", (project_name or "project").strip()).strip("-.") or "project"
+    return get_project_configs_dir() / f"{safe}.yaml"
+
+
 def ensure_rdc_home() -> Path:
     """Ensure RDC home directory exists with proper structure."""
     home = get_rdc_home()
     home.mkdir(parents=True, exist_ok=True)
+    get_project_configs_dir().mkdir(parents=True, exist_ok=True)
     (home / "data").mkdir(exist_ok=True)
     (home / "logs" / "agents").mkdir(parents=True, exist_ok=True)
     (home / "logs" / "processes").mkdir(parents=True, exist_ok=True)

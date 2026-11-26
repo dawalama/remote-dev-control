@@ -41,13 +41,6 @@ channels:
     enabled: false
     token: ${TELEGRAM_BOT_TOKEN}  # Env var substitution supported
     allowed_users: []             # Telegram user IDs (empty = all)
-  voice:
-    enabled: false
-    provider: twilio
-    # Twilio credentials from vault:
-    #   rdc config set-secret TWILIO_ACCOUNT_SID ...
-    #   rdc config set-secret TWILIO_AUTH_TOKEN ...
-    #   rdc config set-secret TWILIO_PHONE_NUMBER ...
   web:
     enabled: true
 
@@ -83,14 +76,26 @@ rdc config set-secret X_BEARER_TOKEN ...
 
 ## Per-Project Configuration
 
-Each registered project can have its own settings stored in the database:
+All per-project YAML configs are stored centrally under `~/.rdc/projects/<project-name>.yaml` so connecting an existing repository never leaves untracked files inside the repo:
+
+```text
+~/.rdc/
+  config.yml
+  projects/
+    my-app.yaml
+    api-service.yaml
+```
+
+If a repository explicitly commits an opt-in `rdc.yaml` / `rdc.yml`, RDC will still read it as a fallback when no centralized override exists.
+
+Each registered project also stores runtime settings in the database:
 
 - **Terminal command** — Default command when spawning terminals for this project
-- **Process configs** — Auto-discovered processes (dev servers, watchers, etc.)
-- **Agent settings** — Provider overrides per project
+- **Actions / Process configs** — Auto-discovered or YAML-defined dev servers and verification commands
+- **Agent settings & Routing Profile** — Provider overrides and multi-model tier routing (`balanced` / `max_quality` / `fast`)
 - **Stack profile** — Auto-detected language, framework, package manager
 
-Configure per-project settings via the dashboard (Project Settings page) or CLI.
+Configure per-project settings via the dashboard (Project Settings) or CLI.
 
 ## Authentication
 

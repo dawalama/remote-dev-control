@@ -73,17 +73,27 @@ def test_direct_dev_command_detection_prefers_next_script_over_vite_dependency(t
     assert detect_dev_command(str(tmp_path)) == ("npx next dev", 3000)
 
 
-def test_imported_project_rdc_yaml_includes_next_action(tmp_path):
-    write_next_project(tmp_path)
+def test_imported_project_rdc_yaml_includes_next_action(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    rdc_home = tmp_path / "rdc_home"
+    monkeypatch.setenv("RDC_HOME", str(rdc_home))
+    write_next_project(repo_dir)
 
-    create_imported_project_rdc_yaml(tmp_path, "website2.0", {
+    created_path = create_imported_project_rdc_yaml(repo_dir, "website2.0", {
         "description": "Website built with Next.js and Builder.io.",
         "type": "frontend",
         "stack": {"backend": "none", "frontend": "nextjs"},
         "features": ["admin"],
     })
 
-    config = yaml.safe_load((tmp_path / "rdc.yaml").read_text())
+    # Centralized by default: repo stays spotless with zero untracked rdc.yaml
+    assert not (repo_dir / "rdc.yaml").exists()
+    central_file = rdc_home / "projects" / "website2.0.yaml"
+    assert Path(created_path) == central_file
+    assert central_file.exists()
+
+    config = yaml.safe_load(central_file.read_text())
     assert config["stack"]["frontend"] == "nextjs"
     assert config["actions"] == [{
         "name": "app",
@@ -93,10 +103,28 @@ def test_imported_project_rdc_yaml_includes_next_action(tmp_path):
         "port": 3000,
     }]
 
-    loaded = load_adt_config(str(tmp_path))
+    loaded = load_adt_config(str(repo_dir), project_name="website2.0")
     assert loaded is not None
     assert loaded[0].command == "npm run dev"
     assert loaded[0].default_port == 3000
+
+
+def test_repo_local_rdc_yaml_still_supported_as_opt_in(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "portable-repo"
+    repo_dir.mkdir()
+    monkeypatch.setenv("RDC_HOME", str(tmp_path / "empty_rdc_home"))
+    write_next_project(repo_dir)
+
+    create_imported_project_rdc_yaml(
+        repo_dir,
+        "portable-repo",
+        {"description": "Opt-in portable", "type": "frontend", "stack": {"frontend": "nextjs"}},
+        centralized=False,
+    )
+    assert (repo_dir / "rdc.yaml").exists()
+    loaded = load_adt_config(str(repo_dir), project_name="portable-repo")
+    assert loaded is not None
+    assert loaded[0].command == "npm run dev"
 
 
 def test_existing_project_heuristic_fallback_detects_next(monkeypatch, tmp_path):

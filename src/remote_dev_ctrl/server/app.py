@@ -3264,9 +3264,9 @@ async def detect_project_processes(project: str, use_llm: bool = True, force_red
         for proc in list(process_manager.list(project=project)):
             process_manager.remove(proc.id)
 
-    # Priority 1: Always check rdc.yaml/adt.yaml first (user-defined, takes precedence over cache)
+    # Priority 1: Check centralized ~/.rdc/projects/<name>.yaml or repo-local rdc.yaml first
     from .process_discovery import load_adt_config as load_project_rdc_config
-    discovered = load_project_rdc_config(project_path) or []
+    discovered = load_project_rdc_config(project_path, project_name=project) or []
     from_cache = False
 
     if discovered:
@@ -8044,19 +8044,18 @@ async def create_project(req: CreateProjectRequest):
     if not description:
         description = f"Project {project_name}"
 
-    # Always try to generate rdc.yaml if it doesn't exist (check both extensions)
-    rdc_yaml = project_path / "rdc.yaml"
-    rdc_yml = project_path / "rdc.yml"
-    if rdc_yml.exists() and not rdc_yaml.exists():
-        rdc_yaml = rdc_yml  # Use existing .yml
-    if not rdc_yaml.exists():
+    # Generate centralized project config in ~/.rdc/projects/<name>.yaml (keeps repo clean)
+    from .config import project_config_path
+    central_cfg = project_config_path(project_name)
+    has_local_cfg = (project_path / "rdc.yaml").exists() or (project_path / "rdc.yml").exists()
+    if not central_cfg.exists() and not has_local_cfg:
         try:
             if not inferred and not is_nearly_empty:
                 inferred = analyze_existing_project(project_path)
             create_imported_project_rdc_yaml(project_path, project_name, {
                 **(inferred or {"type": "backend", "stack": {}, "features": []}),
                 "description": description,
-            })
+            }, centralized=True)
         except Exception:
             pass
 

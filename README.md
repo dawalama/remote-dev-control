@@ -15,13 +15,12 @@ Your development workstation acts as **HomeBase**; your phones, tablets, and rem
 
 ## Why RDC?
 
-- **Goal-First & Workstream-Driven**: Stop babysitting terminal prompts. Group projects into workstreams (`#web-app`, `#api-service`, `#system`), set outcomes and acceptance criteria, and let agents work autonomously within safe boundaries.
-- **Review & Acceptance with Proof Artifacts**: Inspect outcome summaries, Git diffs, independent verification command results (`npm run verify`, `pytest`), and visual media attachments before accepting or continuing.
-- **Mobile-First & Node Supervision**: Check agent progress from your phone or tablet. Three responsive layouts (Desktop split-view, Mobile card-based, Kiosk tablet), touch controls, and a dedicated mobile virtual terminal keyboard.
-- **Live Terminal Fallback**: When an agent gets stuck or needs human terminal input, drop straight into a live PTY session with persistent output buffers and waiting-for-input detection.
-- **Multi-Channel Control**: Telegram bot integration with inline interactive buttons (Approve commands, Accept review, Request changes) and daily HomeBase voice briefs ("What's running", "Needs you") powered by Deepgram Aura TTS.
-- **Model & Agent Agnostic**: Out-of-the-box support for Claude Code, OpenAI Codex CLI, Cursor Agent, OpenRouter model routing, and local Ollama models. Custom agent wrappers can self-register via CLI or Model Context Protocol (MCP).
-- **Shared Browser Automation**: Integrated Chrome with Chrome DevTools Protocol (CDP) live screencast viewer. You and your agent inspect and interact with the same page in real time.
+- **Goals & Resident Agents**: Two complementary modes in one workspace—**🎯 Goals** for bounded worktree execution with automated verify-retry loops and proof artifacts, and **🤖 Agents** for live, persistent terminal conversations you can promote into bounded Goals in 1 click.
+- **Structured Agent Streaming & Semantic Timeline**: Live NDJSON streaming for **Claude Code**, **Codex CLI**, and **Antigravity (`agy`)** renders tool calls, reasoning, file changes, token/cost metrics, and mid-flight operator steers as clean, responsive cards on desktop and mobile—with a live PTY terminal always 1 tap away as an escape hatch.
+- **Issue-Type Recipes**: Built-in problem-solving playbooks (`Auto`, `🐞 Bugfix`, `✨ Feature`, `🔧 Refactor`, `🗺 Plan / Spike`, `🔍 Code Review`, `🛡 Code Audit`) that enforce the right approach per task type—plus 1-click **Execute Plan** and **Cross-Model Review** transitions.
+- **Multi-Model Cost & Reasoning Routing**: Choose `⚖ Balanced` (reasoning tier plans, reviews, and auto-escalates on loop stall; coding tier implements), `🧠 Max Quality`, or `⚡ Fast` across your installed CLI agents.
+- **Zero-Clutter Centralized Config**: Project configs live centrally under `~/.rdc/projects/<name>.yaml` and HTML artifacts under `~/.rdc/sessions/` so RDC never dirties client or open-source repos (while still honoring opt-in repo-local `rdc.yaml` files).
+- **Mobile-First & Multi-Channel Control**: Three responsive layouts (Desktop, Mobile, Kiosk), browser Voice input/briefs, Telegram bot with inline approval buttons, and shared CDP browser automation.
 
 ---
 
@@ -111,22 +110,17 @@ cd ..
 ```
 
 ### 1. Workstreams & Channels
-Projects are organized into workstream channels (e.g. `#web-app`, `#api-service`, `#system`). Each workstream maintains its conversation history, active services, goal sessions, and terminal bindings.
+Projects are organized into workstream channels (e.g. `#web-app`, `#api-service`, `#system`). Each workstream has a unified bottom scope composer with an expandable history drawer (`⌘/`), active services, Goals, and Agents.
 
-### 2. Goal Sessions & Supervision Lifecycle
-Instead of typing raw terminal commands, create a **Goal Session**:
-1. **Pending**: Goal and optional acceptance criteria defined.
-2. **Working**: Agent executes using the configured wrapper (Codex, Claude Code, Cursor, or custom script).
-3. **Needs You (`waiting`)**: Agent encounters a permission boundary or interactive question. Review the command or question and approve via Web UI or Telegram.
-4. **Ready for Review (`verifying`)**: Agent finishes execution. RDC captures Git diffs and runs the project's independent verification check (`npm run verify`, `pytest`, `cargo test`).
-5. **Acceptance or Continuation**: Review the **Proof Artifact**, accept the outcome, or tell the agent what to do next while preserving context.
+### 2. Goals, Recipes & Multi-Model Supervision Lifecycle
+Instead of babysitting raw terminal prompts, create a **Goal** and pick a **Recipe** (`Auto`, `Bugfix`, `Feature`, `Refactor`, `Plan`, `Review`, `Audit`) and **Routing Profile** (`Balanced`, `Max Quality`, `Fast`):
+1. **Working (`Timeline`)**: Live structured tool calls, reasoning, and responses stream into a responsive Semantic Timeline. You can **Queue Steer** mid-flight to inject guidance into the next verify round without interrupting the agent.
+2. **Verify-and-Retry Loop**: After each turn, RDC runs the project’s verification command (`pytest`, `npm run build`, etc.). In `Balanced` mode, if a coding model stalls on the same failure twice, RDC automatically escalates to a reasoning-tier provider to break the stall.
+3. **Needs You (`waiting`)**: When an agent hits a permission or decision gate, approve or steer from Desktop, Mobile, or Telegram.
+4. **Ready for Review (`verifying`)**: Inspect the clean markdown outcome, Git diff, and test evidence, then **Accept & Commit** in 1 click, run a **🔍 Cross-Model Review** (using a different provider family than the author), or click **⚡ Execute Plan** on advisory spikes.
 
-### 3. Proof Artifacts & Evidence
-Every session captures durable evidence:
-- **Outcome & Summary**: Markdown summary of changes made.
-- **Git Diffs**: Detailed file changes and commit history.
-- **Verification Logs**: Exit code and full stdout/stderr of automated test suites.
-- **Media Attachments**: Screenshots and recordings of frontend changes.
+### 3. Centralized Configuration (`~/.rdc/projects/`)
+RDC keeps all per-project YAML configs in `~/.rdc/projects/<name>.yaml` and session artifacts in `~/.rdc/sessions/` so connecting existing repositories never creates untracked files or pollutes `git status`. Repo-local `rdc.yaml` files are still honored as an opt-in fallback when present.
 
 ---
 

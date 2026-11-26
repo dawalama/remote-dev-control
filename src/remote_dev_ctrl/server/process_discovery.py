@@ -57,18 +57,32 @@ def read_project_files(project_path: str) -> dict[str, str]:
     return files
 
 
-def load_adt_config(project_path: str) -> list[DiscoveredProcess] | None:
-    """Load processes/actions from rdc.yml/adt.yml config file if present.
+def load_adt_config(
+    project_path: str,
+    project_name: str | None = None,
+) -> list[DiscoveredProcess] | None:
+    """Load processes/actions from centralized ~/.rdc/projects/<name>.yaml or repo-local rdc.yaml.
+
+    Priority:
+      1. Centralized config: ~/.rdc/projects/<project_name>.yaml (keeps repos clean)
+      2. Repo-local opt-in config: rdc.yml / rdc.yaml / .rdc.yml / adt.yml inside project_path
 
     Supports three config formats:
     1. ``actions:`` array — new format with ``kind`` per entry (service/command)
     2. ``processes:`` array — legacy format, all entries become kind=service
     3. ``dev:`` flat section — single dev server shorthand
     """
-    path = Path(project_path)
+    from .config import project_config_path
 
+    path = Path(project_path)
+    candidate_paths: list[Path] = []
+    lookup_name = (project_name or path.name or "").strip()
+    if lookup_name:
+        candidate_paths.append(project_config_path(lookup_name))
     for config_name in ["rdc.yml", "rdc.yaml", ".rdc.yml", ".rdc.yaml", "adt.yml", "adt.yaml", ".adt.yml", ".adt.yaml"]:
-        config_path = path / config_name
+        candidate_paths.append(path / config_name)
+
+    for config_path in candidate_paths:
         if config_path.exists():
             try:
                 import yaml
@@ -535,8 +549,8 @@ def discover_processes(project_name: str, project_path: str, use_llm: bool = Tru
     Returns:
         List of discovered processes
     """
-    # First priority: check for explicit rdc.yml config
-    rdc_processes = load_adt_config(project_path)
+    # First priority: check for centralized ~/.rdc/projects/<name>.yaml or repo-local rdc.yml
+    rdc_processes = load_adt_config(project_path, project_name=project_name)
     if rdc_processes:
         return rdc_processes
     
