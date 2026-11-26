@@ -4919,7 +4919,7 @@ async def orchestrator_endpoint(
         "message": message[:200], "project": project, "channel": channel,
     })
 
-    async def _process_orchestrator():
+    async def _process_orchestrator(on_progress=None):
         """Core orchestrator logic — runs sync or as background task."""
         engine = get_intent_engine()
         executor = get_action_executor()
@@ -4936,10 +4936,18 @@ async def orchestrator_endpoint(
             for ws in ctx.workstreams:
                 if ws.get("id") == channel_id:
                     ctx.active_workstream = ws.get("name")
+                    ws_projects = [p for p in (ws.get("project_names") or []) if p]
+                    if ws_projects and (not ctx.project or ctx.project not in ws_projects):
+                        ctx.project = ws_projects[0]
                     break
 
         # Process intent via LLM, passing conversation history for multi-turn context
-        result = await engine.process(message, ctx, conversation_history=conversation_history)
+        result = await engine.process(
+            message,
+            ctx,
+            conversation_history=conversation_history,
+            on_progress=on_progress,
+        )
 
         # Execute actions (skip tools already executed in the LLM tool loop)
         from .intent import TOOLS_WITH_OUTPUT as _ALREADY_EXECUTED
@@ -5002,8 +5010,22 @@ async def orchestrator_endpoint(
     if mode == "async" and channel_id:
         async def _background():
             from .state_machine import get_state_machine as _gsm
+            ok = False
+
+            async def _emit_progress(stage: str):
+                try:
+                    await _gsm()._broadcast_event("orchestrator_status", {
+                        "channel_id": channel_id,
+                        "client_id": client_id,
+                        "status": "working",
+                        "stage": stage,
+                    })
+                except Exception:
+                    logger.debug("Failed to broadcast orchestrator_status", exc_info=True)
+
             try:
-                result = await _process_orchestrator()
+                await _emit_progress("Thinking…")
+                result = await _process_orchestrator(on_progress=_emit_progress)
                 from .intent import CLIENT_NAV_ACTIONS, CONTROL_INTENTS, SYSTEM_CHANNEL_ID
                 from .channel_manager import get_channel_manager
                 from .state_machine import get_state_machine
@@ -5122,12 +5144,27 @@ async def orchestrator_endpoint(
                     if result.get("usage"):
                         metadata["usage"] = result["usage"]
                     await _post_and_broadcast(channel_id, response_text, metadata)
-            except Exception:
+                ok = True
+            except Exception as exc:
                 logger.exception("Background orchestrator task failed")
                 try:
                     from .channel_manager import get_channel_manager
+                    from .scrubber import SecretScrubber
                     cm = get_channel_manager()
-                    cm.post_message(channel_id, role="system", content="Orchestrator error — please try again.")
+                    raw_reason = SecretScrubber().scrub(str(exc)).strip().splitlines()[0][:140]
+                    reason = f"{type(exc).__name__}: {raw_reason}" if raw_reason else type(exc).__name__
+                    err_msg = cm.post_message(
+                        channel_id,
+                        role="system",
+                        content=f"Orchestrator error ({reason}) — please try again.",
+                    )
+                    try:
+                        await _gsm()._broadcast_event("channel_message", {
+                            "channel_id": channel_id,
+                            "message_id": err_msg.id,
+                        })
+                    except Exception:
+                        logger.debug("Failed to broadcast error channel_message", exc_info=True)
                 except Exception:
                     pass
             finally:
@@ -5138,7 +5175,7 @@ async def orchestrator_endpoint(
                     try:
                         await _gsm().send_to_client(client_id, {
                             "type": "orchestrator_complete",
-                            "data": {"channel_id": channel_id, "client_id": client_id},
+                            "data": {"channel_id": channel_id, "client_id": client_id, "ok": ok},
                         })
                     except Exception:
                         logger.debug("Failed to send orchestrator_complete", exc_info=True)
@@ -9849,6 +9886,7 @@ def _session_response(session) -> dict:
         "recipe_category": metadata.get("recipe_category"),
         "recipe_icon": metadata.get("recipe_icon"),
         "routing_profile": metadata.get("routing_profile") or "balanced",
+        "archived_at": metadata.get("archived_at"),
         "pending_steers": [
             {
                 "id": str(item.get("id") or ""),
@@ -10982,17 +11020,11 @@ async def capture_session_git_evidence(session_id: str):
     return {"id": evidence_id, "evidence_type": "git", "data": data}
 
 
-def _default_commit_message_for_session(session) -> str:
-    raw = (session.goal or session.description or "Update project files").strip().splitlines()[0].strip()
-    raw = re.sub(r"\s+", " ", raw).rstrip(".")
-    if len(raw) > 68:
-        raw = raw[:65].rstrip() + "..."
-    lower = raw.lower()
-    if lower.startswith(("fix", "feat", "chore", "refactor", "docs", "test")):
-        return raw
-    if "bug" in lower or "fix" in lower or "issue" in lower:
-        return f"fix: {raw[0].lower() + raw[1:]}" if raw else "fix: resolve session issues"
-    return f"feat: {raw[0].lower() + raw[1:]}" if raw else "feat: apply session changes"
+def _default_commit_message_for_session(session, repo_path: Path | None = None) -> str:
+    from .commit_planner import fast_suggested_commit_message
+    if repo_path is not None and (repo_path / ".git").exists():
+        return fast_suggested_commit_message(session, repo_path)
+    return fast_suggested_commit_message(session, _session_effective_path(session))
 
 
 _GIT_SHA = re.compile(r"^[0-9a-f]{7,40}$")
@@ -11312,23 +11344,41 @@ async def get_session_git_status(session_id: str):
         },
     ])
 
+    suggested_commit_message = ""
+    cached_plan = None
+    if dirty:
+        from .commit_planner import collect_working_tree_changes, fast_suggested_commit_message
+        snapshot = await asyncio.to_thread(collect_working_tree_changes, path)
+        meta_plan = (session.metadata or {}).get("commit_plan")
+        if (
+            isinstance(meta_plan, dict)
+            and meta_plan.get("fingerprint") == snapshot.fingerprint
+            and meta_plan.get("commits")
+        ):
+            cached_plan = meta_plan
+            suggested_commit_message = str(meta_plan["commits"][0].get("message") or "")
+        if not suggested_commit_message:
+            suggested_commit_message = await asyncio.to_thread(fast_suggested_commit_message, session, path)
+
     return {
         **repo_state,
-        "suggested_commit_message": _default_commit_message_for_session(session),
+        "suggested_commit_message": suggested_commit_message,
+        "commit_plan": cached_plan,
         "detected_blocker": detected_blocker,
         "decision_triage": triage.get("results"),
         "suggested_next_steps": suggested_steps,
     }
 
 
-class SessionGitCommitRequest(BaseModel):
-    message: str | None = None
-    push: bool = False
+class CommitPlanRequest(BaseModel):
+    force: bool = False
+    use_llm: bool = True
 
 
-@app.post("/sessions/{session_id}/git-commit")
-async def commit_session_git_changes(session_id: str, body: SessionGitCommitRequest | None = None):
-    """Commit working tree changes for a session directly on the host and record Git evidence."""
+@app.post("/sessions/{session_id}/git-commit-plan")
+async def plan_session_git_commits(session_id: str, body: CommitPlanRequest | None = None):
+    """Analyze the actual diff and propose 1 or more logical commits with succinct messages."""
+    from .commit_planner import collect_working_tree_changes, generate_commit_plan
     from .session_manager import get_session_manager
 
     sm = get_session_manager()
@@ -11339,52 +11389,195 @@ async def commit_session_git_changes(session_id: str, body: SessionGitCommitRequ
     if not (path / ".git").exists():
         raise HTTPException(status_code=409, detail="Project is not a Git repository")
 
-    commit_msg = ((body.message if body else None) or "").strip() or _default_commit_message_for_session(session)
-    # Enforce no-coauthor-trailer rule
-    commit_msg = "\n".join(
-        line for line in commit_msg.splitlines() if not line.strip().lower().startswith("co-authored-by:")
-    ).strip()
+    force = bool(body and body.force)
+    use_llm = True if body is None else bool(body.use_llm)
+
+    if not force:
+        snapshot = await asyncio.to_thread(collect_working_tree_changes, path)
+        cached = (session.metadata or {}).get("commit_plan")
+        if (
+            isinstance(cached, dict)
+            and snapshot.fingerprint
+            and cached.get("fingerprint") == snapshot.fingerprint
+            and cached.get("commits")
+        ):
+            return {**cached, "cached": True}
+
+    plan = await asyncio.to_thread(generate_commit_plan, session, path, use_llm=use_llm)
+    if plan.get("commits"):
+        meta = dict(session.metadata or {})
+        meta["commit_plan"] = plan
+        session.metadata = meta
+        sm._persist(session)
+    return {**plan, "cached": False}
+
+
+class PlannedCommitItem(BaseModel):
+    message: str
+    files: list[str] = Field(default_factory=list)
+
+
+class SessionGitCommitRequest(BaseModel):
+    message: str | None = None
+    commits: list[PlannedCommitItem] | None = None
+    push: bool = False
+
+
+@app.post("/sessions/{session_id}/git-commit")
+async def commit_session_git_changes(session_id: str, body: SessionGitCommitRequest | None = None):
+    """Commit working tree changes (single or multi-commit logical plan) on the host and record Git evidence."""
+    from .commit_planner import (
+        collect_working_tree_changes,
+        fast_suggested_commit_message,
+        sanitize_commit_message,
+    )
+    from .session_manager import get_session_manager
+
+    sm = get_session_manager()
+    session = sm.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    path = _session_effective_path(session)
+    if not (path / ".git").exists():
+        raise HTTPException(status_code=409, detail="Project is not a Git repository")
+
+    planned_items = [item for item in ((body.commits if body else None) or []) if item.message.strip()]
     want_push = bool(body and body.push)
 
     def perform_commit() -> dict:
-        status_res = subprocess.run(
-            ["git", "status", "--short"], cwd=path, text=True, capture_output=True, timeout=15, check=False
-        )
-        changed_files = [
-            line.strip().split(None, 1)[1].strip()
-            for line in status_res.stdout.splitlines()
-            if len(line.strip().split(None, 1)) == 2
-            and line.strip().split(None, 1)[1].strip() != ".rdc"
-            and not line.strip().split(None, 1)[1].strip().startswith(".rdc/")
-        ]
-        if not changed_files:
+        snapshot = collect_working_tree_changes(path)
+        if not snapshot.files:
             raise ValueError("Working tree is already clean — nothing to commit")
 
-        diff_stat_res = subprocess.run(
+        file_map = {cf.path: cf for cf in snapshot.files}
+        all_changed_paths = [cf.path for cf in snapshot.files]
+        total_diff_stat_res = subprocess.run(
             ["git", "diff", "--stat", "HEAD"], cwd=path, text=True, capture_output=True, timeout=15, check=False
         )
+        total_diff_stat = total_diff_stat_res.stdout.strip()
 
-        add_res = subprocess.run(
-            ["git", "add", "-A"], cwd=path, text=True, capture_output=True, timeout=30, check=False
-        )
-        if add_res.returncode != 0:
-            raise RuntimeError(add_res.stderr.strip() or "git add failed")
-        subprocess.run(
-            ["git", "reset", "-q", "HEAD", "--", ".rdc"],
-            cwd=path, text=True, capture_output=True, timeout=15, check=False,
-        )
+        created_commits: list[dict] = []
 
-        commit_res = subprocess.run(
-            ["git", "commit", "-m", commit_msg],
-            cwd=path, text=True, capture_output=True, timeout=30, check=False,
-        )
-        if commit_res.returncode != 0:
-            raise RuntimeError(commit_res.stderr.strip() or commit_res.stdout.strip() or "git commit failed")
+        if planned_items:
+            # Start from an unstaged index so each logical commit stages strictly its own files
+            subprocess.run(["git", "reset", "-q"], cwd=path, text=True, capture_output=True, timeout=15, check=False)
+            for item in planned_items:
+                msg = sanitize_commit_message(item.message)
+                if not msg:
+                    continue
+                target_paths: list[str] = []
+                for raw_fp in item.files:
+                    fp = raw_fp.strip()
+                    if not fp or fp == ".rdc" or fp.startswith(".rdc/") or fp.startswith("/") or ".." in Path(fp).parts:
+                        continue
+                    cf = file_map.get(fp)
+                    if cf and cf.old_path:
+                        target_paths.append(cf.old_path)
+                    target_paths.append(fp)
 
-        head_res = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=path, text=True, capture_output=True, timeout=15, check=False
-        )
-        head_sha = head_res.stdout.strip()
+                if not target_paths:
+                    continue
+
+                add_res = subprocess.run(
+                    ["git", "add", "-A", "--", *dict.fromkeys(target_paths)],
+                    cwd=path,
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+                if add_res.returncode != 0:
+                    raise RuntimeError(add_res.stderr.strip() or "git add failed")
+                subprocess.run(
+                    ["git", "reset", "-q", "HEAD", "--", ".rdc"],
+                    cwd=path,
+                    text=True,
+                    capture_output=True,
+                    timeout=15,
+                    check=False,
+                )
+                staged_check = subprocess.run(
+                    ["git", "diff", "--cached", "--name-only"],
+                    cwd=path,
+                    text=True,
+                    capture_output=True,
+                    timeout=15,
+                    check=False,
+                )
+                staged_files = [ln.strip() for ln in staged_check.stdout.splitlines() if ln.strip()]
+                if not staged_files:
+                    continue
+
+                stat_res = subprocess.run(
+                    ["git", "diff", "--cached", "--stat"],
+                    cwd=path,
+                    text=True,
+                    capture_output=True,
+                    timeout=15,
+                    check=False,
+                )
+                commit_res = subprocess.run(
+                    ["git", "commit", "-m", msg],
+                    cwd=path,
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+                if commit_res.returncode != 0:
+                    raise RuntimeError(commit_res.stderr.strip() or commit_res.stdout.strip() or "git commit failed")
+
+                sha = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=path, text=True, capture_output=True, timeout=15, check=False
+                ).stdout.strip()
+                created_commits.append({
+                    "head": sha,
+                    "short_head": sha[:8],
+                    "message": msg,
+                    "files": staged_files,
+                    "diff_stat": stat_res.stdout.strip() or f"{len(staged_files)} files committed",
+                })
+
+            if not created_commits:
+                raise ValueError("No valid files were staged from the commit plan")
+        else:
+            raw_msg = ((body.message if body else None) or "").strip()
+            commit_msg = sanitize_commit_message(raw_msg) if raw_msg else fast_suggested_commit_message(session, path)
+            add_res = subprocess.run(
+                ["git", "add", "-A"], cwd=path, text=True, capture_output=True, timeout=30, check=False
+            )
+            if add_res.returncode != 0:
+                raise RuntimeError(add_res.stderr.strip() or "git add failed")
+            subprocess.run(
+                ["git", "reset", "-q", "HEAD", "--", ".rdc"],
+                cwd=path,
+                text=True,
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+            commit_res = subprocess.run(
+                ["git", "commit", "-m", commit_msg],
+                cwd=path,
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+            if commit_res.returncode != 0:
+                raise RuntimeError(commit_res.stderr.strip() or commit_res.stdout.strip() or "git commit failed")
+            sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=path, text=True, capture_output=True, timeout=15, check=False
+            ).stdout.strip()
+            created_commits.append({
+                "head": sha,
+                "short_head": sha[:8],
+                "message": commit_msg,
+                "files": all_changed_paths,
+                "diff_stat": total_diff_stat or f"{len(all_changed_paths)} files committed",
+            })
+
+        head_sha = created_commits[-1]["head"]
         branch_res = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=path, text=True, capture_output=True, timeout=15, check=False
         )
@@ -11402,7 +11595,11 @@ async def commit_session_git_changes(session_id: str, body: SessionGitCommitRequ
             else:
                 push_res = subprocess.run(
                     ["git", "push", remotes[0], branch],
-                    cwd=path, text=True, capture_output=True, timeout=60, check=False,
+                    cwd=path,
+                    text=True,
+                    capture_output=True,
+                    timeout=60,
+                    check=False,
                 )
                 if push_res.returncode == 0:
                     pushed = True
@@ -11410,14 +11607,21 @@ async def commit_session_git_changes(session_id: str, body: SessionGitCommitRequ
                 else:
                     push_detail = f"Committed locally, but push failed: {(push_res.stderr or push_res.stdout).strip()[:240]}"
 
+        committed_files = list(dict.fromkeys(fp for c in created_commits for fp in c["files"]))
+        summary_msg = (
+            created_commits[0]["message"]
+            if len(created_commits) == 1
+            else f"{len(created_commits)} commits ({'; '.join(c['message'].splitlines()[0] for c in created_commits)})"
+        )
         return {
             "head": head_sha,
             "short_head": head_sha[:8],
             "branch": branch,
-            "message": commit_msg,
-            "changed_files": changed_files,
-            "diff_stat": diff_stat_res.stdout.strip() or f"{len(changed_files)} files committed",
-            "status": f"Committed {head_sha[:8]}: {commit_msg}",
+            "message": summary_msg,
+            "commits": created_commits,
+            "changed_files": committed_files,
+            "diff_stat": total_diff_stat or f"{len(committed_files)} files committed",
+            "status": f"Committed {len(created_commits)} commit{'s' if len(created_commits) != 1 else ''} (HEAD {head_sha[:8]})",
             "pushed": pushed,
             "push_detail": push_detail,
         }
@@ -11432,6 +11636,12 @@ async def commit_session_git_changes(session_id: str, body: SessionGitCommitRequ
     # Automatically record Git evidence on the session
     evidence_id = secrets.token_hex(16)
     db = sm._db()
+    commit_count = len(result["commits"])
+    ev_title = (
+        f"Committed {result['short_head']} ({len(result['changed_files'])} files)"
+        if commit_count == 1
+        else f"Committed {commit_count} logical commits → {result['short_head']} ({len(result['changed_files'])} files)"
+    )
     db.execute(
         """INSERT INTO session_evidence
            (id, session_id, evidence_type, title, data, source)
@@ -11439,27 +11649,41 @@ async def commit_session_git_changes(session_id: str, body: SessionGitCommitRequ
         (
             evidence_id,
             session_id,
-            f"Committed {result['short_head']} ({len(result['changed_files'])} files)",
+            ev_title,
             json.dumps(result),
         ),
     )
     db.commit()
 
-    # Clear any stale .git write blocker from output_summary and record the commit note
+    # Clear any stale .git write blocker & cached commit plan, and record the commit note(s)
     if session.output_summary:
         cleaned_lines = [
             line for line in session.output_summary.splitlines()
             if not re.search(r"(?i)(commit and push are blocked|enable git write access)", line)
         ]
-        commit_note = f"✓ Host commit `{result['short_head']}` on `{result['branch']}`: {commit_msg}"
-        if result.get("push_detail"):
-            commit_note += f" ({result['push_detail']})"
         cleaned_lines.append("")
-        cleaned_lines.append(commit_note)
+        for c in result["commits"]:
+            first_line = c["message"].splitlines()[0]
+            note = f"✓ Host commit `{c['short_head']}` on `{result['branch']}`: {first_line}"
+            cleaned_lines.append(note)
+        if result.get("push_detail"):
+            cleaned_lines[-1] += f" ({result['push_detail']})"
         session.output_summary = "\n".join(cleaned_lines).strip()
+    meta = dict(session.metadata or {})
+    meta.pop("commit_plan", None)
+    session.metadata = meta
     session.blocker = None
     sm._persist(session)
-    sm.log_event(session, "session.git_committed", {"head": result["short_head"], "message": commit_msg, "pushed": result["pushed"]})
+    sm.log_event(
+        session,
+        "session.git_committed",
+        {
+            "head": result["short_head"],
+            "commits": [{"head": c["short_head"], "message": c["message"]} for c in result["commits"]],
+            "message": result["message"],
+            "pushed": result["pushed"],
+        },
+    )
 
     return {"success": True, "evidence_id": evidence_id, **result}
 
@@ -11719,9 +11943,12 @@ async def complete_session(session_id: str, body: CompleteSessionRequest | None 
         cm = get_channel_manager()
         components = [{"type": "task_card", "title": s.description[:80], "status": "done", "project": s.project}]
         if summary:
-            components.append({"type": "text", "content": summary})
+            preview = summary.strip()
+            if len(preview) > 240:
+                preview = preview[:237].rstrip() + "…"
+            components.append({"type": "text", "content": preview})
         cm.post_message(s.channel_id, role="system", content="Session completed.",
-            metadata={"type": "a2ui", "components": components})
+            metadata={"type": "a2ui", "activity": True, "session_id": s.id, "components": components})
     except Exception:
         pass
     return {"success": True, "session_id": session_id}
@@ -11754,6 +11981,68 @@ async def restore_session_review(session_id: str):
     manager.update_status(session.id, SessionStatus.VERIFYING, output_summary=session.output_summary)
     manager.log_event(session, "session.review_restored", {})
     return _session_response(manager.get(session_id))
+
+
+class ArchiveSessionRequest(BaseModel):
+    session_ids: list[str] = Field(default_factory=list)
+
+
+@app.post("/sessions/{session_id}/archive")
+async def archive_session(session_id: str, body: ArchiveSessionRequest | None = None):
+    """Archive a goal session (and any sibling runs passed in session_ids) to declutter the board."""
+    from .session_manager import SessionStatus, get_session_manager
+
+    sm = get_session_manager()
+    target_ids = list(dict.fromkeys([session_id, *((body.session_ids if body else []) or [])]))
+    primary = sm.get(session_id)
+    if not primary:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    now = datetime.now().isoformat()
+    archived: list[str] = []
+    for sid in target_ids:
+        sess = sm.get(sid)
+        if not sess:
+            continue
+        status_val = sess.status.value if isinstance(sess.status, SessionStatus) else str(sess.status)
+        if status_val in (SessionStatus.RUNNING.value, SessionStatus.WAITING.value):
+            if sid == session_id:
+                raise HTTPException(status_code=409, detail="Stop the running goal before archiving")
+            continue
+        meta = dict(sess.metadata or {})
+        meta["archived_at"] = now
+        sess.metadata = meta
+        sm._persist(sess)
+        sm.log_event(sess, "session.archived", {"archived_at": now})
+        archived.append(sid)
+
+    return {"archived": archived, "archived_at": now, "session": _session_response(sm.get(session_id) or primary)}
+
+
+@app.post("/sessions/{session_id}/unarchive")
+async def unarchive_session(session_id: str, body: ArchiveSessionRequest | None = None):
+    """Restore an archived goal session (and any sibling runs) back to the active board."""
+    from .session_manager import get_session_manager
+
+    sm = get_session_manager()
+    target_ids = list(dict.fromkeys([session_id, *((body.session_ids if body else []) or [])]))
+    primary = sm.get(session_id)
+    if not primary:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    restored: list[str] = []
+    for sid in target_ids:
+        sess = sm.get(sid)
+        if not sess:
+            continue
+        meta = dict(sess.metadata or {})
+        meta.pop("archived_at", None)
+        sess.metadata = meta
+        sm._persist(sess)
+        sm.log_event(sess, "session.unarchived", {})
+        restored.append(sid)
+
+    return {"restored": restored, "session": _session_response(sm.get(session_id) or primary)}
 
 
 @app.delete("/sessions/{session_id}")

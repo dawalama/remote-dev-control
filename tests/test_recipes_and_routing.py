@@ -190,3 +190,62 @@ def test_advisory_review_does_not_collide_with_verifying_parent_worktree(tmp_pat
     assert _checkout_blocker("test-project", wt, tmp_path, review.id, is_advisory=True) is None
     assert parent.id != review.id
 
+
+def test_archive_and_unarchive_goal_sessions():
+    token, _ = get_auth_manager().create_token("archive-api-test", Role.ADMIN)
+    headers = {"Authorization": f"Bearer {token}"}
+    client = TestClient(app)
+    sm = get_session_manager()
+
+    run1 = sm.create_session(
+        channel_id="test-channel",
+        project="test-project",
+        description="Declutter completed goals",
+        status=SessionStatus.FAILED,
+    )
+    run2 = sm.create_session(
+        channel_id="test-channel",
+        project="test-project",
+        description="Declutter completed goals",
+        status=SessionStatus.COMPLETED,
+    )
+    running = sm.create_session(
+        channel_id="test-channel",
+        project="test-project",
+        description="Active running goal",
+        status=SessionStatus.RUNNING,
+    )
+
+    # Cannot archive an actively running goal
+    blocked = client.post(f"/sessions/{running.id}/archive", headers=headers)
+    assert blocked.status_code == 409
+
+    # Archiving run2 along with sibling run1 marks both with archived_at
+    arch = client.post(
+        f"/sessions/{run2.id}/archive",
+        headers=headers,
+        json={"session_ids": [run1.id, run2.id]},
+    )
+    assert arch.status_code == 200
+    body = arch.json()
+    assert set(body["archived"]) == {run1.id, run2.id}
+    assert body["archived_at"]
+    assert body["session"]["archived_at"] == body["archived_at"]
+
+    # GET /sessions/{id} surfaces archived_at
+    detail = client.get(f"/sessions/{run1.id}", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["archived_at"] == body["archived_at"]
+
+    # Unarchiving clears archived_at on both runs
+    restored = client.post(
+        f"/sessions/{run2.id}/unarchive",
+        headers=headers,
+        json={"session_ids": [run1.id, run2.id]},
+    )
+    assert restored.status_code == 200
+    assert set(restored.json()["restored"]) == {run1.id, run2.id}
+    assert restored.json()["session"]["archived_at"] is None
+    assert client.get(f"/sessions/{run1.id}", headers=headers).json()["archived_at"] is None
+
+

@@ -97,6 +97,7 @@ export interface SessionInfo {
   recipe_name?: string | null
   recipe_icon?: string | null
   routing_profile?: string | null
+  archived_at?: string | null
 }
 
 const RECIPE_PILLS = [
@@ -274,8 +275,11 @@ export function SessionsCard({
   const [loading, setLoading] = useState(false)
   const [showOptions, setShowOptions] = useState(false)
   const [showClosed, setShowClosed] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
   const [creating, setCreating] = useState(false)
   const [startingSessionId, setStartingSessionId] = useState<string | null>(null)
+  const [archivingId, setArchivingId] = useState<string | null>(null)
+  const [archivingAll, setArchivingAll] = useState(false)
   const [chosenFiles, setChosenFiles] = useState<File[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -333,7 +337,9 @@ export function SessionsCard({
       const list = Array.isArray(data) ? data : []
       setSessions(list)
       const cards = groupSessionsIntoGoalCards(list)
-      const attnCount = cards.filter((c) => c.attention_state === "needs_attention").length
+      const attnCount = cards.filter(
+        (c) => !c.latestSession.archived_at && c.attention_state === "needs_attention"
+      ).length
       setNeedsAttentionCount(attnCount)
     } catch {
       /* ignore */
@@ -513,6 +519,57 @@ export function SessionsCard({
     }
   }
 
+  const handleArchiveCard = async (card: GoalCard) => {
+    setArchivingId(card.latestSession.id)
+    try {
+      await POST(`/sessions/${card.latestSession.id}/archive`, {
+        session_ids: card.sessions.map((s) => s.id),
+      })
+      toast("Goal archived", "success")
+      await load()
+    } catch {
+      toast("Could not archive goal", "error")
+    } finally {
+      setArchivingId(null)
+    }
+  }
+
+  const handleUnarchiveCard = async (card: GoalCard) => {
+    setArchivingId(card.latestSession.id)
+    try {
+      await POST(`/sessions/${card.latestSession.id}/unarchive`, {
+        session_ids: card.sessions.map((s) => s.id),
+      })
+      toast("Goal restored", "success")
+      await load()
+    } catch {
+      toast("Could not restore goal", "error")
+    } finally {
+      setArchivingId(null)
+    }
+  }
+
+  const handleArchiveAllAccepted = async (cards: GoalCard[]) => {
+    if (cards.length === 0) return
+    setArchivingAll(true)
+    try {
+      await Promise.all(
+        cards.map((card) =>
+          POST(`/sessions/${card.latestSession.id}/archive`, {
+            session_ids: card.sessions.map((s) => s.id),
+          })
+        )
+      )
+      toast(`Archived ${cards.length} accepted goal${cards.length === 1 ? "" : "s"}`, "success")
+      await load()
+    } catch {
+      toast("Could not archive all accepted goals", "error")
+      await load()
+    } finally {
+      setArchivingAll(false)
+    }
+  }
+
   // 1. Group all sessions into Goal Cards
   const allGoalCards = groupSessionsIntoGoalCards(sessions)
 
@@ -528,17 +585,20 @@ export function SessionsCard({
         ? allGoalCards.filter((card) => card.channel_id === activeChannel.id)
         : [])
 
-  // Attention buckets for Goal Cards
-  const needsAttention = filteredGoalCards.filter((c) => c.attention_state === "needs_attention")
-  const running = filteredGoalCards.filter((c) => c.attention_state === "running")
-  const staged = filteredGoalCards.filter((c) => c.attention_state === "staged")
-  const accepted = filteredGoalCards.filter((c) => c.attention_state === "accepted")
-  const closed = filteredGoalCards.filter((c) => c.attention_state === "closed")
+  const activeGoalCards = filteredGoalCards.filter((c) => !c.latestSession.archived_at)
+  const archivedGoalCards = filteredGoalCards.filter((c) => Boolean(c.latestSession.archived_at))
+
+  // Attention buckets for active Goal Cards
+  const needsAttention = activeGoalCards.filter((c) => c.attention_state === "needs_attention")
+  const running = activeGoalCards.filter((c) => c.attention_state === "running")
+  const staged = activeGoalCards.filter((c) => c.attention_state === "staged")
+  const accepted = activeGoalCards.filter((c) => c.attention_state === "accepted")
+  const closed = activeGoalCards.filter((c) => c.attention_state === "closed")
 
   // Client groups (for #system Overview Mode)
   const clientGroups = collections
     .map((c) => {
-      const clientCards = filteredGoalCards.filter((card) => (card.collection_id || "general") === c.id)
+      const clientCards = activeGoalCards.filter((card) => (card.collection_id || "general") === c.id)
       const collChannels = channels.filter(
         (ch) => (ch.collection_id || "general") === c.id && ch.id !== "ch-system"
       )
@@ -947,12 +1007,14 @@ export function SessionsCard({
 
       {!loading && projects.length === 0 && <WelcomeOnboarding />}
 
-      {!loading && projects.length > 0 && filteredGoalCards.length === 0 && (
+      {!loading && projects.length > 0 && activeGoalCards.length === 0 && (
         <div className="rounded-lg border border-dashed border-gray-800 p-6 text-center space-y-3">
           <p className="text-xs text-gray-400">
-            {isSystemWorkstream
-              ? "No goals yet across HomeBase. Pick a workstream on the left to start your first goal."
-              : `No goals yet in ${activeChannel?.name || "this workstream"}. Type a goal above or pick a starter:`}
+            {archivedGoalCards.length > 0
+              ? `All ${archivedGoalCards.length} goal${archivedGoalCards.length === 1 ? "" : "s"} here are archived. Expand Archived below to view or restore them.`
+              : isSystemWorkstream
+                ? "No goals yet across HomeBase. Pick a workstream on the left to start your first goal."
+                : `No goals yet in ${activeChannel?.name || "this workstream"}. Type a goal above or pick a starter:`}
           </p>
           {!isSystemWorkstream && (
             <div className="flex flex-wrap justify-center gap-1.5">
@@ -1061,6 +1123,10 @@ export function SessionsCard({
                             onSelectWorkstream={selectChannel}
                             startingSessionId={startingSessionId}
                             onOpenTerminal={onOpenTerminal}
+                            onArchiveCard={handleArchiveCard}
+                            onArchiveAllAccepted={handleArchiveAllAccepted}
+                            archivingId={archivingId}
+                            archivingAll={archivingAll}
                           />
                         ) : (
                           <p className="py-2 text-center text-[10px] text-gray-600">No active goals on this workstream</p>
@@ -1085,6 +1151,10 @@ export function SessionsCard({
                           onSelectWorkstream={selectChannel}
                           startingSessionId={startingSessionId}
                           onOpenTerminal={onOpenTerminal}
+                          onArchiveCard={handleArchiveCard}
+                          onArchiveAllAccepted={handleArchiveAllAccepted}
+                          archivingId={archivingId}
+                          archivingAll={archivingAll}
                         />
                       </div>
                     )}
@@ -1103,6 +1173,10 @@ export function SessionsCard({
                     onSelectWorkstream={selectChannel}
                     startingSessionId={startingSessionId}
                     onOpenTerminal={onOpenTerminal}
+                    onArchiveCard={handleArchiveCard}
+                    onArchiveAllAccepted={handleArchiveAllAccepted}
+                    archivingId={archivingId}
+                    archivingAll={archivingAll}
                   />
                 )}
               </div>
@@ -1112,7 +1186,7 @@ export function SessionsCard({
       )}
 
       {/* Flat Attention Board Grid (Used in Focused Workstream Mode OR Flat Overview Mode) */}
-      {(!isSystemWorkstream || groupBy === "none") && filteredGoalCards.length > 0 && (
+      {(!isSystemWorkstream || groupBy === "none") && activeGoalCards.length > 0 && (
         <AttentionColumnsGrid
           needsAttention={needsAttention}
           running={running}
@@ -1126,6 +1200,10 @@ export function SessionsCard({
           onSelectWorkstream={selectChannel}
           startingSessionId={startingSessionId}
           onOpenTerminal={onOpenTerminal}
+          onArchiveCard={handleArchiveCard}
+          onArchiveAllAccepted={handleArchiveAllAccepted}
+          archivingId={archivingId}
+          archivingAll={archivingAll}
         />
       )}
 
@@ -1153,6 +1231,41 @@ export function SessionsCard({
                   onNewRun={handleFollowupRun}
                   onSelectWorkstream={selectChannel}
                   startingSessionId={startingSessionId}
+                  onArchiveCard={handleArchiveCard}
+                  archivingId={archivingId}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Collapsed Archived Goals */}
+      {archivedGoalCards.length > 0 && (
+        <div className="border-t border-gray-800 pt-3">
+          <button
+            type="button"
+            onClick={() => setShowArchived((v) => !v)}
+            className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          >
+            <span>{showArchived ? "▾" : "▸"}</span>
+            <span>📦 Archived ({archivedGoalCards.length})</span>
+          </button>
+          {showArchived && (
+            <div className="mt-2 space-y-1.5">
+              {archivedGoalCards.map((card) => (
+                <GoalCardItem
+                  key={card.id}
+                  card={card}
+                  onOpenSession={openSessionFromHub}
+                  onStartSession={startSession}
+                  providerOptions={providerOptions}
+                  onAssignProvider={assignStagedAgent}
+                  onNewRun={handleFollowupRun}
+                  onSelectWorkstream={selectChannel}
+                  startingSessionId={startingSessionId}
+                  onUnarchiveCard={handleUnarchiveCard}
+                  archivingId={archivingId}
                 />
               ))}
             </div>
@@ -1176,6 +1289,10 @@ function AttentionColumnsGrid({
   onOpenTerminal,
   providerOptions = [],
   onAssignProvider,
+  onArchiveCard,
+  onArchiveAllAccepted,
+  archivingId,
+  archivingAll = false,
 }: {
   needsAttention: GoalCard[]
   running: GoalCard[]
@@ -1189,6 +1306,10 @@ function AttentionColumnsGrid({
   onOpenTerminal?: (terminalId: string) => void
   providerOptions?: Array<{ id: string; label: string; ready?: boolean }>
   onAssignProvider?: (sessionId: string, provider: string) => void
+  onArchiveCard?: (card: GoalCard) => void
+  onArchiveAllAccepted?: (cards: GoalCard[]) => void
+  archivingId?: string | null
+  archivingAll?: boolean
 }) {
   const layout = useUIStore((state) => state.layout)
   const isMobile = layout === "mobile"
@@ -1333,6 +1454,8 @@ function AttentionColumnsGrid({
                       onOpenTerminal={onOpenTerminal}
                       providerOptions={providerOptions}
                       onAssignProvider={onAssignProvider}
+                      onArchiveCard={onArchiveCard}
+                      archivingId={archivingId}
                       isStream
                     />
                   ))}
@@ -1370,6 +1493,8 @@ function AttentionColumnsGrid({
                       onOpenTerminal={onOpenTerminal}
                       providerOptions={providerOptions}
                       onAssignProvider={onAssignProvider}
+                      onArchiveCard={onArchiveCard}
+                      archivingId={archivingId}
                       isStream
                     />
                   ))}
@@ -1407,6 +1532,8 @@ function AttentionColumnsGrid({
                       onOpenTerminal={onOpenTerminal}
                       providerOptions={providerOptions}
                       onAssignProvider={onAssignProvider}
+                      onArchiveCard={onArchiveCard}
+                      archivingId={archivingId}
                       isStream
                     />
                   ))}
@@ -1429,7 +1556,20 @@ function AttentionColumnsGrid({
                     <span className="h-2 w-2 rounded-full bg-emerald-400" />
                     Accepted ({accepted.length})
                   </span>
-                  <span className="text-[10px] text-emerald-400/80">Completed and verified outcomes</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-emerald-400/80 hidden sm:inline">Completed and verified outcomes</span>
+                    {onArchiveAllAccepted && (
+                      <button
+                        type="button"
+                        disabled={archivingAll}
+                        onClick={() => onArchiveAllAccepted(accepted)}
+                        className="rounded border border-emerald-500/30 bg-emerald-950/30 px-2 py-0.5 text-[10px] text-emerald-300 hover:bg-emerald-900/40 disabled:opacity-50 transition-colors"
+                        title="Archive all accepted goals in this view"
+                      >
+                        {archivingAll ? "Archiving…" : "📦 Archive all"}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="space-y-2.5">
                   {accepted.map((card) => (
@@ -1444,6 +1584,8 @@ function AttentionColumnsGrid({
                       onOpenTerminal={onOpenTerminal}
                       providerOptions={providerOptions}
                       onAssignProvider={onAssignProvider}
+                      onArchiveCard={onArchiveCard}
+                      archivingId={archivingId}
                       isStream
                     />
                   ))}
@@ -1494,6 +1636,8 @@ function AttentionColumnsGrid({
                     onOpenTerminal={onOpenTerminal}
                     providerOptions={providerOptions}
                     onAssignProvider={onAssignProvider}
+                    onArchiveCard={onArchiveCard}
+                    archivingId={archivingId}
                   />
                 ))
               )}
@@ -1527,6 +1671,8 @@ function AttentionColumnsGrid({
                     onOpenTerminal={onOpenTerminal}
                     providerOptions={providerOptions}
                     onAssignProvider={onAssignProvider}
+                    onArchiveCard={onArchiveCard}
+                    archivingId={archivingId}
                   />
                 ))
               )}
@@ -1560,6 +1706,8 @@ function AttentionColumnsGrid({
                     onOpenTerminal={onOpenTerminal}
                     providerOptions={providerOptions}
                     onAssignProvider={onAssignProvider}
+                    onArchiveCard={onArchiveCard}
+                    archivingId={archivingId}
                   />
                 ))
               )}
@@ -1573,9 +1721,22 @@ function AttentionColumnsGrid({
                 <span className="h-2 w-2 rounded-full bg-emerald-400" />
                 Accepted
               </span>
-              <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.2 text-[10px] font-bold text-emerald-300">
-                {accepted.length}
-              </span>
+              <div className="flex items-center gap-1.5">
+                {accepted.length > 0 && onArchiveAllAccepted && (
+                  <button
+                    type="button"
+                    disabled={archivingAll}
+                    onClick={() => onArchiveAllAccepted(accepted)}
+                    className="rounded border border-emerald-500/30 bg-emerald-950/30 px-1.5 py-0.2 text-[9px] font-medium text-emerald-300 hover:bg-emerald-900/40 disabled:opacity-50 transition-colors"
+                    title="Archive all accepted goals in this column"
+                  >
+                    {archivingAll ? "…" : "Archive all"}
+                  </button>
+                )}
+                <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.2 text-[10px] font-bold text-emerald-300">
+                  {accepted.length}
+                </span>
+              </div>
             </div>
             <div className="flex-1 space-y-2 overflow-y-auto">
               {accepted.length === 0 ? (
@@ -1593,6 +1754,8 @@ function AttentionColumnsGrid({
                     onOpenTerminal={onOpenTerminal}
                     providerOptions={providerOptions}
                     onAssignProvider={onAssignProvider}
+                    onArchiveCard={onArchiveCard}
+                    archivingId={archivingId}
                   />
                 ))
               )}
@@ -1614,6 +1777,9 @@ function GoalCardItem({
   onOpenTerminal,
   providerOptions = [],
   onAssignProvider,
+  onArchiveCard,
+  onUnarchiveCard,
+  archivingId,
   isStream = false,
 }: {
   card: GoalCard
@@ -1625,6 +1791,9 @@ function GoalCardItem({
   onOpenTerminal?: (terminalId: string) => void
   providerOptions?: Array<{ id: string; label: string; ready?: boolean }>
   onAssignProvider?: (sessionId: string, provider: string) => void
+  onArchiveCard?: (card: GoalCard) => void
+  onUnarchiveCard?: (card: GoalCard) => void
+  archivingId?: string | null
   isStream?: boolean
 }) {
   const latest = card.latestSession
@@ -1634,6 +1803,9 @@ function GoalCardItem({
   const isFailed = latest.status === "failed"
   const isProposed = latest.status === "proposed"
   const isStarting = startingSessionId === latest.id
+  const isArchived = Boolean(latest.archived_at)
+  const isArchiving = archivingId === latest.id
+  const canArchive = !isArchived && card.attention_state !== "running" && !["running", "waiting"].includes(latest.status)
 
   const badgeStyle = isVerifying
     ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
@@ -1857,131 +2029,162 @@ function GoalCardItem({
         )}
 
         <div className="flex items-center gap-1 flex-shrink-0 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-          {isProposed && (
+          {isArchived && onUnarchiveCard ? (
             <button
               type="button"
-              disabled={isStarting}
-              onClick={() => onStartSession(latest.id)}
-              className={`rounded bg-purple-600 font-semibold text-white hover:bg-purple-500 disabled:opacity-50 whitespace-nowrap transition-colors ${
-                isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+              disabled={isArchiving}
+              onClick={() => onUnarchiveCard(card)}
+              className={`rounded border border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700 disabled:opacity-50 whitespace-nowrap transition-colors ${
+                isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
               }`}
+              title="Restore goal to active board"
             >
-              {isStarting ? "Starting…" : "▶ Start"}
+              {isArchiving ? "Restoring…" : "↩ Restore"}
             </button>
-          )}
-
-          {isVerifying && (
+          ) : (
             <>
-              {loop && loop.status !== "passed" && (
+              {isProposed && (
                 <button
                   type="button"
                   disabled={isStarting}
                   onClick={() => onStartSession(latest.id)}
-                  className={`rounded border border-blue-500/40 bg-blue-950/40 font-semibold text-blue-200 hover:bg-blue-900/50 disabled:opacity-50 whitespace-nowrap transition-colors ${
-                    isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+                  className={`rounded bg-purple-600 font-semibold text-white hover:bg-purple-500 disabled:opacity-50 whitespace-nowrap transition-colors ${
+                    isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
                   }`}
-                  title="Retry this goal session"
                 >
-                  ↺ Retry
+                  {isStarting ? "Starting…" : "▶ Start"}
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => onOpenSession(latest.id)}
-                className={`rounded bg-amber-600 font-semibold text-white hover:bg-amber-500 whitespace-nowrap transition-colors ${
-                  isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
-                }`}
-              >
-                🔍 Review
-              </button>
-            </>
-          )}
 
-          {isWaiting && (
-            <>
-              <button
-                type="button"
-                disabled={isStarting}
-                onClick={() => onStartSession(latest.id)}
-                className={`rounded border border-blue-500/40 bg-blue-950/40 font-semibold text-blue-200 hover:bg-blue-900/50 disabled:opacity-50 whitespace-nowrap transition-colors ${
-                  isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
-                }`}
-                title="Retry this goal session"
-              >
-                ↺ Retry
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (latest.terminal_ids?.[0] && onOpenTerminal) {
-                    onOpenTerminal(latest.terminal_ids[0])
-                  } else {
-                    onOpenSession(latest.id)
-                  }
-                }}
-                className={`rounded bg-yellow-600 font-semibold text-white hover:bg-yellow-500 whitespace-nowrap transition-colors ${
-                  isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
-                }`}
-              >
-                💬 Input
-              </button>
-            </>
-          )}
+              {isVerifying && (
+                <>
+                  {loop && loop.status !== "passed" && (
+                    <button
+                      type="button"
+                      disabled={isStarting}
+                      onClick={() => onStartSession(latest.id)}
+                      className={`rounded border border-blue-500/40 bg-blue-950/40 font-semibold text-blue-200 hover:bg-blue-900/50 disabled:opacity-50 whitespace-nowrap transition-colors ${
+                        isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+                      }`}
+                      title="Retry this goal session"
+                    >
+                      ↺ Retry
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onOpenSession(latest.id)}
+                    className={`rounded bg-amber-600 font-semibold text-white hover:bg-amber-500 whitespace-nowrap transition-colors ${
+                      isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+                    }`}
+                  >
+                    🔍 Review
+                  </button>
+                </>
+              )}
 
-          {isFailed && (
-            <>
-              <button
-                type="button"
-                disabled={isStarting}
-                onClick={() => onStartSession(latest.id)}
-                className={`rounded bg-red-600 font-semibold text-white hover:bg-red-500 disabled:opacity-50 whitespace-nowrap transition-colors ${
-                  isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
-                }`}
-              >
-                ↺ Retry
-              </button>
-              {onNewRun && (
+              {isWaiting && (
+                <>
+                  <button
+                    type="button"
+                    disabled={isStarting}
+                    onClick={() => onStartSession(latest.id)}
+                    className={`rounded border border-blue-500/40 bg-blue-950/40 font-semibold text-blue-200 hover:bg-blue-900/50 disabled:opacity-50 whitespace-nowrap transition-colors ${
+                      isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+                    }`}
+                    title="Retry this goal session"
+                  >
+                    ↺ Retry
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (latest.terminal_ids?.[0] && onOpenTerminal) {
+                        onOpenTerminal(latest.terminal_ids[0])
+                      } else {
+                        onOpenSession(latest.id)
+                      }
+                    }}
+                    className={`rounded bg-yellow-600 font-semibold text-white hover:bg-yellow-500 whitespace-nowrap transition-colors ${
+                      isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+                    }`}
+                  >
+                    💬 Input
+                  </button>
+                </>
+              )}
+
+              {isFailed && (
+                <>
+                  <button
+                    type="button"
+                    disabled={isStarting}
+                    onClick={() => onStartSession(latest.id)}
+                    className={`rounded bg-red-600 font-semibold text-white hover:bg-red-500 disabled:opacity-50 whitespace-nowrap transition-colors ${
+                      isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+                    }`}
+                  >
+                    ↺ Retry
+                  </button>
+                  {onNewRun && (
+                    <button
+                      type="button"
+                      onClick={() => onNewRun(card)}
+                      className={`rounded border border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 whitespace-nowrap transition-colors ${
+                        isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
+                      }`}
+                      title="Launch follow-up run on this goal"
+                    >
+                      + Run
+                    </button>
+                  )}
+                </>
+              )}
+
+              {latest.status === "completed" && onNewRun && (
                 <button
                   type="button"
                   onClick={() => onNewRun(card)}
-                  className={`rounded border border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 whitespace-nowrap transition-colors ${
+                  className={`rounded border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/40 whitespace-nowrap transition-colors ${
+                    isStream ? "px-3 py-1 text-xs font-semibold min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
+                  }`}
+                  title="Launch follow-up run"
+                >
+                  {isStream ? "+ Follow-up" : "+ Run"}
+                </button>
+              )}
+
+              {latest.status === "running" && latest.terminal_ids?.[0] && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const tid = latest.terminal_ids[0]
+                    if (onOpenTerminal) onOpenTerminal(tid)
+                    else useTerminalStore.getState().setActiveTerminalId(tid)
+                  }}
+                  className={`rounded border border-gray-700 bg-gray-800 font-mono text-gray-300 hover:bg-gray-700 whitespace-nowrap transition-colors ${
                     isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
                   }`}
-                  title="Launch follow-up run on this goal"
                 >
-                  + Run
+                  &gt;_ Term
+                </button>
+              )}
+
+              {canArchive && onArchiveCard && (
+                <button
+                  type="button"
+                  disabled={isArchiving}
+                  onClick={() => onArchiveCard(card)}
+                  className={`rounded border border-gray-700/80 bg-gray-800/80 text-gray-400 hover:border-gray-600 hover:bg-gray-700 hover:text-gray-200 disabled:opacity-50 whitespace-nowrap transition-colors ${
+                    isStream ? "px-2 py-1 text-xs min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
+                  }`}
+                  title="Archive goal"
+                  aria-label="Archive goal"
+                >
+                  {isArchiving ? "…" : "📦"}
                 </button>
               )}
             </>
-          )}
-
-          {latest.status === "completed" && onNewRun && (
-            <button
-              type="button"
-              onClick={() => onNewRun(card)}
-              className={`rounded border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/40 whitespace-nowrap transition-colors ${
-                isStream ? "px-3 py-1 text-xs font-semibold min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
-              }`}
-              title="Launch follow-up run"
-            >
-              {isStream ? "+ Follow-up" : "+ Run"}
-            </button>
-          )}
-
-          {latest.status === "running" && latest.terminal_ids?.[0] && (
-            <button
-              type="button"
-              onClick={() => {
-                const tid = latest.terminal_ids[0]
-                if (onOpenTerminal) onOpenTerminal(tid)
-                else useTerminalStore.getState().setActiveTerminalId(tid)
-              }}
-              className={`rounded border border-gray-700 bg-gray-800 font-mono text-gray-300 hover:bg-gray-700 whitespace-nowrap transition-colors ${
-                isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-1.5 py-0.5 text-[10px]"
-              }`}
-            >
-              &gt;_ Term
-            </button>
           )}
         </div>
       </div>

@@ -40,6 +40,7 @@ interface SessionData {
   recipe_category?: string | null
   recipe_icon?: string | null
   routing_profile?: string | null
+  archived_at?: string | null
   pending_steers?: Array<{ id: string; text: string; created_at?: string | null }>
 }
 
@@ -69,6 +70,20 @@ interface DecisionTriageResult {
   recommended_action?: { type: string; value: string; confidence: number; probabilities?: Record<string, number> }
 }
 
+interface PlannedCommit {
+  message: string
+  files: string[]
+  rationale?: string | null
+}
+
+interface CommitPlanResponse {
+  source: string
+  fingerprint: string
+  changed_files: string[]
+  commits: PlannedCommit[]
+  cached?: boolean
+}
+
 interface SessionGitStatus {
   has_git: boolean
   branch?: string
@@ -81,6 +96,7 @@ interface SessionGitStatus {
   remote_name?: string
   remote_url?: string
   suggested_commit_message?: string
+  commit_plan?: CommitPlanResponse | null
   detected_blocker?: string | null
   decision_triage?: DecisionTriageResult
   suggested_next_steps?: SuggestedNextStep[]
@@ -113,6 +129,9 @@ export function SessionViewer({
   const [gitStatus, setGitStatus] = useState<SessionGitStatus | null>(null)
   const [showCommitBox, setShowCommitBox] = useState(false)
   const [commitMessage, setCommitMessage] = useState("")
+  const [commitPlan, setCommitPlan] = useState<PlannedCommit[]>([])
+  const [commitPlanSource, setCommitPlanSource] = useState<string | null>(null)
+  const [planningCommits, setPlanningCommits] = useState(false)
   const [committingGit, setCommittingGit] = useState(false)
   const [showReviewTools, setShowReviewTools] = useState(false)
   const [showTerminal, setShowTerminal] = useState(false)
@@ -223,8 +242,52 @@ export function SessionViewer({
       if (data) {
         setGitStatus(data)
         setCommitMessage((prev) => prev || data.suggested_commit_message || "")
+        if (data.commit_plan?.commits?.length) {
+          setCommitPlan((prev) => (prev.length > 0 ? prev : data.commit_plan!.commits))
+          setCommitPlanSource((prev) => prev || data.commit_plan!.source)
+        }
       }
     } catch { /* ignore */ }
+  }
+
+  const fetchCommitPlan = async (force = false) => {
+    setPlanningCommits(true)
+    try {
+      const plan = await POST<CommitPlanResponse>(`/sessions/${sessionId}/git-commit-plan`, { force })
+      if (plan?.commits?.length) {
+        setCommitPlan(plan.commits)
+        setCommitPlanSource(plan.source || null)
+        setCommitMessage(plan.commits[0]?.message || "")
+      }
+    } catch (error) {
+      toast(apiErrorDetail(error, "Could not generate commit plan"), "error")
+    } finally {
+      setPlanningCommits(false)
+    }
+  }
+
+  const openCommitBox = () => {
+    setShowCommitBox(true)
+    if (commitPlan.length === 0 && !planningCommits) {
+      void fetchCommitPlan(false)
+    }
+  }
+
+  const updatePlannedCommitMessage = (idx: number, message: string) => {
+    setCommitPlan((prev) => prev.map((item, i) => (i === idx ? { ...item, message } : item)))
+  }
+
+  const squashCommitPlan = () => {
+    if (commitPlan.length <= 1) return
+    const allFiles = Array.from(new Set(commitPlan.flatMap((c) => c.files)))
+    const combinedMessage = commitPlan[0]?.message || commitMessage || gitStatus?.suggested_commit_message || ""
+    setCommitPlan([
+      {
+        message: combinedMessage,
+        files: allFiles,
+        rationale: `Squashed into 1 commit (${allFiles.length} files)`,
+      },
+    ])
   }
 
   const loadSupervision = async () => {
@@ -330,17 +393,34 @@ export function SessionViewer({
   const handleHostCommit = async (push = false) => {
     setCommittingGit(true)
     try {
-      const res = await POST<{ short_head: string; branch: string; pushed: boolean; push_detail?: string }>(
-        `/sessions/${sessionId}/git-commit`,
-        { message: commitMessage.trim() || gitStatus?.suggested_commit_message || undefined, push },
-      )
-      toast(
-        res?.push_detail
-          ? `Committed ${res.short_head} · ${res.push_detail}`
-          : `Committed ${res?.short_head || "changes"} on ${res?.branch || "branch"}`,
-        "success",
-      )
+      const activePlan = commitPlan.filter((c) => c.message.trim() && c.files.length > 0)
+      const payload =
+        activePlan.length > 0
+          ? {
+              commits: activePlan.map((c) => ({ message: c.message.trim(), files: c.files })),
+              push,
+            }
+          : {
+              message: commitMessage.trim() || gitStatus?.suggested_commit_message || undefined,
+              push,
+            }
+      const res = await POST<{
+        short_head: string
+        branch: string
+        pushed: boolean
+        push_detail?: string
+        commits?: Array<{ short_head: string; message: string }>
+      }>(`/sessions/${sessionId}/git-commit`, payload)
+      const count = res?.commits?.length ?? 1
+      const baseMsg =
+        count > 1
+          ? `Created ${count} commits (HEAD ${res?.short_head || "updated"})`
+          : `Committed ${res?.short_head || "changes"} on ${res?.branch || "branch"}`
+      toast(res?.push_detail ? `${baseMsg} · ${res.push_detail}` : baseMsg, "success")
       setShowCommitBox(false)
+      setCommitPlan([])
+      setCommitPlanSource(null)
+      setCommitMessage("")
       await Promise.all([loadSession(), loadSupervision(), loadArtifact(), loadGitStatus()])
     } catch (error) {
       toast(apiErrorDetail(error, "Host commit failed"), "error")
@@ -592,6 +672,11 @@ export function SessionViewer({
         }`}>
           {blockedLoopLabel ? blockedLoopLabel : activeBlocker && session.status === "verifying" ? "Needs action" : statusLabel(session.status)}
         </span>
+        {session.archived_at && (
+          <span className="rounded border border-gray-600 bg-gray-700/60 px-1.5 py-0.5 text-[10px] font-medium text-gray-300 flex-shrink-0">
+            📦 Archived
+          </span>
+        )}
         {session.loop && (
           <span
             className={`rounded border px-1.5 py-0.5 text-[10px] font-mono flex-shrink-0 ${
@@ -706,15 +791,48 @@ export function SessionViewer({
         <div className="relative">
           <button onClick={() => setShowMoreActions((value) => !value)} className="rounded px-2 py-1 text-sm text-gray-500 hover:bg-gray-700 hover:text-gray-200" aria-label="More session actions">•••</button>
           {showMoreActions && (
-            <div className="absolute right-0 top-full z-20 mt-1 min-w-36 rounded border border-gray-700 bg-gray-800 p-1 shadow-xl">
+            <div className="absolute right-0 top-full z-20 mt-1 min-w-40 rounded border border-gray-700 bg-gray-800 p-1 shadow-xl">
               {isOpen && (
                 <button onClick={() => { setShowMoreActions(false); setConfirmCancel(true) }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">
-                  {session.status === "pending" ? "Cancel session" : "Stop session"}
+                  {session.status === "pending" ? "Cancel goal" : "Stop goal"}
                 </button>
               )}
+              {session.archived_at ? (
+                <button
+                  onClick={async () => {
+                    setShowMoreActions(false)
+                    try {
+                      await POST(`/sessions/${sessionId}/unarchive`)
+                      toast("Goal restored from archive", "success")
+                      await loadSession()
+                    } catch {
+                      toast("Restore failed", "error")
+                    }
+                  }}
+                  className="w-full rounded px-2 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-700"
+                >
+                  ↩ Restore goal
+                </button>
+              ) : !["running", "waiting"].includes(session.status) ? (
+                <button
+                  onClick={async () => {
+                    setShowMoreActions(false)
+                    try {
+                      await POST(`/sessions/${sessionId}/archive`)
+                      toast("Goal archived", "success")
+                      onClose()
+                    } catch {
+                      toast("Archive failed", "error")
+                    }
+                  }}
+                  className="w-full rounded px-2 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-700"
+                >
+                  📦 Archive goal
+                </button>
+              ) : null}
               {!isOpen && (
-                <button onClick={async () => { try { await DELETE(`/sessions/${sessionId}`); toast("Session deleted", "success"); onClose() } catch { toast("Delete failed", "error") } }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">
-                  Delete session
+                <button onClick={async () => { try { await DELETE(`/sessions/${sessionId}`); toast("Goal deleted", "success"); onClose() } catch { toast("Delete failed", "error") } }} className="w-full rounded px-2 py-1.5 text-left text-xs text-red-400 hover:bg-gray-700">
+                  Delete goal
                 </button>
               )}
             </div>
@@ -875,7 +993,10 @@ export function SessionViewer({
               {/* 1-Click Host Commit Button */}
               {gitStatus?.dirty && (
                 <button
-                  onClick={() => setShowCommitBox((v) => !v)}
+                  onClick={() => {
+                    if (showCommitBox) setShowCommitBox(false)
+                    else openCommitBox()
+                  }}
                   className="rounded bg-blue-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-blue-500"
                 >
                   ✓ Commit Changes ({changedCount})
@@ -956,41 +1077,145 @@ export function SessionViewer({
             </div>
           </div>
 
-          {/* Inline 1-Click Host Commit Bar */}
+          {/* Inline Smart Host Commit Panel (1 or multiple logical commits from actual diff) */}
           {showCommitBox && gitStatus?.dirty && (
-            <div className="flex flex-wrap items-center gap-2 rounded border border-blue-800/60 bg-blue-950/20 p-2 text-xs">
-              <span className="text-[10px] font-medium uppercase tracking-wide text-blue-300">Commit message</span>
-              <input
-                autoFocus
-                value={commitMessage}
-                onChange={(e) => setCommitMessage(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !committingGit) {
-                    void handleHostCommit(false)
-                  }
-                }}
-                placeholder="feat: describe the changes..."
-                className="min-w-60 flex-1 rounded border border-gray-700 bg-gray-950 px-2.5 py-1 text-xs text-gray-100"
-              />
-              <button
-                disabled={committingGit}
-                onClick={() => { void handleHostCommit(false) }}
-                className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-              >
-                {committingGit ? "Committing…" : "Commit on Host"}
-              </button>
-              {gitStatus.has_remote ? (
-                <button
-                  disabled={committingGit}
-                  onClick={() => { void handleHostCommit(true) }}
-                  className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
-                >
-                  Commit &amp; Push
-                </button>
+            <div className="space-y-2 rounded border border-blue-800/60 bg-blue-950/20 p-2.5 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-blue-300">
+                    {commitPlan.length > 1 ? `Commit Plan (${commitPlan.length} logical commits)` : "Commit Plan"}
+                  </span>
+                  {commitPlanSource && (
+                    <span className="rounded border border-blue-500/30 bg-blue-950/50 px-1.5 py-0.5 text-[9px] text-blue-200/80">
+                      {commitPlanSource === "llm" || commitPlanSource === "cli" ? "✨ AI diff plan" : "Diff-derived"}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={planningCommits || committingGit}
+                    onClick={() => { void fetchCommitPlan(true) }}
+                    className="rounded border border-blue-700/60 bg-blue-950/40 px-2 py-0.5 text-[10px] text-blue-200 hover:bg-blue-900/50 disabled:opacity-50"
+                    title="Re-analyze working tree diff and regenerate commit plan"
+                  >
+                    {planningCommits ? "Analyzing diff…" : "✨ Re-analyze"}
+                  </button>
+                  {commitPlan.length > 1 && (
+                    <button
+                      type="button"
+                      disabled={committingGit}
+                      onClick={squashCommitPlan}
+                      className="rounded border border-gray-700 bg-gray-900 px-2 py-0.5 text-[10px] text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+                      title="Combine all planned commits into one commit"
+                    >
+                      Squash to 1
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowCommitBox(false)}
+                    className="px-1.5 text-[10px] text-gray-400 hover:text-gray-200"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+
+              {planningCommits && commitPlan.length === 0 ? (
+                <div className="flex items-center gap-2 py-2 text-[11px] text-blue-200/80">
+                  <span className="h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
+                  <span>Inspecting diff to craft succinct commit message(s)…</span>
+                </div>
+              ) : commitPlan.length > 0 ? (
+                <div className="space-y-2">
+                  {commitPlan.map((item, idx) => (
+                    <div
+                      key={`${idx}-${item.files[0] || "commit"}`}
+                      className="rounded border border-gray-800 bg-gray-950/80 p-2 space-y-1.5"
+                    >
+                      <div className="flex items-start gap-2">
+                        {commitPlan.length > 1 && (
+                          <span className="mt-1 rounded bg-blue-600/20 border border-blue-500/30 px-1.5 py-0.5 text-[10px] font-mono text-blue-300 flex-shrink-0">
+                            #{idx + 1}
+                          </span>
+                        )}
+                        <textarea
+                          rows={item.message.includes("\n") ? 3 : 1}
+                          value={item.message}
+                          onChange={(e) => updatePlannedCommitMessage(idx, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey && !item.message.includes("\n") && !committingGit) {
+                              e.preventDefault()
+                              void handleHostCommit(false)
+                            }
+                          }}
+                          placeholder="type(scope): succinct summary of changes"
+                          className="min-w-0 flex-1 resize-y rounded border border-gray-700 bg-gray-900 px-2.5 py-1 text-xs font-mono text-gray-100 focus:border-blue-500/60 focus:outline-none"
+                        />
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                        {item.rationale && (
+                          <span className="text-gray-400 mr-1">{item.rationale} ·</span>
+                        )}
+                        {item.files.slice(0, 6).map((fp) => (
+                          <span
+                            key={fp}
+                            className="rounded bg-gray-800/90 border border-gray-700/70 px-1.5 py-0.5 font-mono text-[9.5px] text-gray-300"
+                            title={fp}
+                          >
+                            {fp.split("/").slice(-2).join("/")}
+                          </span>
+                        ))}
+                        {item.files.length > 6 && (
+                          <span className="text-gray-500">+{item.files.length - 6} more</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               ) : (
-                <span className="text-[10px] text-gray-500">No remote configured (commits locally)</span>
+                <input
+                  autoFocus
+                  value={commitMessage}
+                  onChange={(e) => setCommitMessage(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !committingGit) {
+                      void handleHostCommit(false)
+                    }
+                  }}
+                  placeholder="type(scope): succinct summary of changes"
+                  className="w-full rounded border border-gray-700 bg-gray-950 px-2.5 py-1 text-xs text-gray-100"
+                />
               )}
-              <button onClick={() => setShowCommitBox(false)} className="px-1.5 text-[10px] text-gray-400 hover:text-gray-200">Cancel</button>
+
+              <div className="flex flex-wrap items-center justify-end gap-2 pt-0.5">
+                {!gitStatus.has_remote && (
+                  <span className="mr-auto text-[10px] text-gray-500">No remote configured (commits locally)</span>
+                )}
+                <button
+                  type="button"
+                  disabled={committingGit || planningCommits}
+                  onClick={() => { void handleHostCommit(false) }}
+                  className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                >
+                  {committingGit
+                    ? "Committing…"
+                    : commitPlan.length > 1
+                      ? `Commit All (${commitPlan.length})`
+                      : "Commit on Host"}
+                </button>
+                {gitStatus.has_remote && (
+                  <button
+                    type="button"
+                    disabled={committingGit || planningCommits}
+                    onClick={() => { void handleHostCommit(true) }}
+                    className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    {commitPlan.length > 1 ? `Commit All (${commitPlan.length}) & Push` : "Commit & Push"}
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -1136,7 +1361,7 @@ export function SessionViewer({
                   disabled={sendingInstruction || committingGit || verifyingEvidence}
                   onClick={() => {
                     if (step.kind === "host_commit") {
-                      setShowCommitBox(true)
+                      openCommitBox()
                     } else if (step.kind === "host_verify") {
                       void verify()
                     } else if (step.prompt) {
