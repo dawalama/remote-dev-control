@@ -7,6 +7,7 @@ import { useChannelSend } from "@/hooks/use-channel-send"
 import { useFileUpload } from "@/hooks/use-file-upload"
 import { useChannelStore } from "@/stores/channel-store"
 import { useProjectStore } from "@/stores/project-store"
+import { isActivityLogMessage } from "@/features/channels/message-filter"
 
 export function CommandBar() {
   const toast = useUIStore((s) => s.toast)
@@ -22,6 +23,7 @@ export function CommandBar() {
   const channels = useChannelStore((s) => s.channels)
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
   const messages = useChannelStore((s) => s.messages)
+  const chatMessageCount = messages.filter((m) => !isActivityLogMessage(m)).length
   const postMessage = useChannelStore((s) => s.postMessage)
   const activeChannel = channels.find((c) => c.id === activeChannelId)
   const currentProject = useProjectStore((s) => s.currentProject)
@@ -38,7 +40,7 @@ export function CommandBar() {
     onOpenTerminal: () => toggleBottomPanel(),
   })
 
-  const { handleSend: sendToChannel, sending } = useChannelSend({
+  const { handleSend: sendToChannel, sending, runStatus } = useChannelSend({
     activeChannelId,
     projectName,
     orchestrator,
@@ -142,7 +144,30 @@ export function CommandBar() {
             className="min-w-0 flex-1 bg-transparent text-xs text-gray-100 placeholder-gray-500 focus:outline-none"
           />
 
-          {quickInput.trim() ? (
+          {runStatus && (runStatus.status === "sending" || runStatus.status === "working") ? (
+            <button
+              type="button"
+              onClick={() => { if (!chatOpen) toggleChat() }}
+              className="ml-1.5 flex items-center gap-1.5 rounded-full border border-blue-500/40 bg-blue-950/60 px-2.5 py-0.5 text-[10px] font-medium text-blue-200 flex-shrink-0"
+              title="Orchestrator is actively working — click to view thread"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
+              <span className="max-w-[140px] truncate">{runStatus.stage || "Thinking…"}</span>
+            </button>
+          ) : runStatus && (runStatus.status === "stalled" || runStatus.status === "failed") ? (
+            <button
+              type="button"
+              onClick={() => { if (!chatOpen) toggleChat() }}
+              className={`ml-1.5 flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-medium flex-shrink-0 ${
+                runStatus.status === "failed"
+                  ? "border-red-500/40 bg-red-950/60 text-red-200"
+                  : "border-amber-500/40 bg-amber-950/60 text-amber-200"
+              }`}
+              title={runStatus.error || runStatus.stage}
+            >
+              <span>{runStatus.status === "failed" ? "⚠ Failed" : "⏱ Stalled"}</span>
+            </button>
+          ) : quickInput.trim() ? (
             <button
               type="button"
               disabled={sending}
@@ -153,7 +178,7 @@ export function CommandBar() {
               }}
               className="ml-1.5 rounded-full bg-blue-600 px-2.5 py-0.5 text-[10px] font-medium text-white hover:bg-blue-500 flex-shrink-0"
             >
-              {sending ? "…" : "Send"}
+              Send
             </button>
           ) : (
             <button
@@ -180,7 +205,7 @@ export function CommandBar() {
             }`}
           >
             <span>{chatOpen ? "⌄" : "⌃"}</span>
-            {messages.length > 0 && <span className="font-mono">{messages.length}</span>}
+            {chatMessageCount > 0 && <span className="font-mono">{chatMessageCount}</span>}
           </button>
         </div>
       </div>

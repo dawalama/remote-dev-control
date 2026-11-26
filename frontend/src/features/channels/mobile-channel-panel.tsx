@@ -4,6 +4,8 @@ import { useOrchestrator } from "@/hooks/use-orchestrator"
 import { useChannelSend } from "@/hooks/use-channel-send"
 import { useFileUpload } from "@/hooks/use-file-upload"
 import { MessageRenderer } from "./message-renderer"
+import { isActivityLogMessage } from "./message-filter"
+import { OrchestratorStatusBanner } from "./orchestrator-status-banner"
 import type { ChannelMessage } from "@/stores/channel-store"
 
 /**
@@ -61,7 +63,7 @@ export function MobileChannelPanel({
     onSystemSettings,
   })
 
-  const { handleSend: sendToChannel, handleRespond, sending } = useChannelSend({
+  const { handleSend: sendToChannel, handleRespond, sending, runStatus, retryLast, dismissStatus } = useChannelSend({
     activeChannelId,
     projectName,
     orchestrator,
@@ -70,10 +72,15 @@ export function MobileChannelPanel({
 
   const { uploadMultiple } = useFileUpload()
   const [input, setInput] = useState("")
+  const [showActivityLogs, setShowActivityLogs] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const fullscreenInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  const chatMessages = messages.filter((m) => !isActivityLogMessage(m))
+  const activityCount = messages.length - chatMessages.length
+  const visibleMessages = showActivityLogs ? messages : chatMessages
 
   const handleSend = async () => {
     if (!input.trim()) return
@@ -104,12 +111,25 @@ export function MobileChannelPanel({
             {channel?.auto_mode && (
               <span className="text-[10px] bg-yellow-600/30 text-yellow-400 px-2 py-0.5 rounded font-medium">Auto</span>
             )}
+            {activityCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowActivityLogs((v) => !v)}
+                className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                  showActivityLogs
+                    ? "border-blue-500/50 bg-blue-950/50 text-blue-200"
+                    : "border-gray-700 bg-gray-800 text-gray-400"
+                }`}
+              >
+                {showActivityLogs ? `Logs on (${activityCount})` : `Logs (${activityCount})`}
+              </button>
+            )}
           </div>
         )}
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-          {messages.length === 0 && (
+          {visibleMessages.length === 0 && (
             <div className="text-center py-12">
               <p className="text-gray-400 text-sm font-medium">Start a conversation with HomeBase</p>
               <p className="text-gray-500 text-xs mt-1 max-w-xs mx-auto">
@@ -117,20 +137,16 @@ export function MobileChannelPanel({
               </p>
             </div>
           )}
-          {messages.map((msg) => (
+          {visibleMessages.map((msg) => (
             <FullscreenMessage key={msg.id} message={msg} onRespond={handleRespond} />
           ))}
-          {sending && (
-            <div className="flex justify-start">
-              <div className="bg-gray-800 text-gray-300 px-4 py-2 rounded-2xl text-sm flex items-center gap-2 border border-gray-700/50">
-                <span className="flex gap-1">
-                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                </span>
-                <span className="text-xs text-gray-400">Agent thinking...</span>
-              </div>
-            </div>
+          {runStatus && (
+            <OrchestratorStatusBanner
+              key={runStatus.startedAt}
+              runStatus={runStatus}
+              onRetry={retryLast}
+              onDismiss={dismissStatus}
+            />
           )}
           <div ref={bottomRef} />
         </div>
@@ -203,11 +219,24 @@ export function MobileChannelPanel({
           {channel?.auto_mode && (
             <span className="text-[9px] bg-yellow-600/30 text-yellow-400 px-1.5 py-0.5 rounded">Auto</span>
           )}
+          {activityCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowActivityLogs((v) => !v)}
+              className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                showActivityLogs
+                  ? "border-blue-500/50 bg-blue-950/50 text-blue-200"
+                  : "border-gray-700 bg-gray-800 text-gray-400"
+              }`}
+            >
+              {showActivityLogs ? `Logs on (${activityCount})` : `Logs (${activityCount})`}
+            </button>
+          )}
         </div>
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-          {messages.length === 0 && (
+          {visibleMessages.length === 0 && (
             <div className="text-center py-12">
               <p className="text-gray-500 text-sm">Start a conversation</p>
               <p className="text-gray-600 text-xs mt-1">
@@ -215,20 +244,16 @@ export function MobileChannelPanel({
               </p>
             </div>
           )}
-          {messages.map((msg) => (
+          {visibleMessages.map((msg) => (
             <FullscreenMessage key={msg.id} message={msg} onRespond={handleRespond} />
           ))}
-          {sending && (
-            <div className="flex justify-start">
-              <div className="bg-gray-800 text-gray-400 px-4 py-2 rounded-2xl text-sm flex items-center gap-2">
-                <span className="flex gap-1">
-                  <span className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                  <span className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                  <span className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                </span>
-                <span className="text-xs text-gray-500">Thinking...</span>
-              </div>
-            </div>
+          {runStatus && (
+            <OrchestratorStatusBanner
+              key={runStatus.startedAt}
+              runStatus={runStatus}
+              onRetry={retryLast}
+              onDismiss={dismissStatus}
+            />
           )}
           <div ref={bottomRef} />
         </div>

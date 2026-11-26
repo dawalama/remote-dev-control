@@ -1,5 +1,6 @@
 import { useProjectStore } from "@/stores/project-store"
 import { useChannelStore } from "@/stores/channel-store"
+import { useStateStore } from "@/stores/state-store"
 import { useUIStore } from "@/stores/ui-store"
 import { POST } from "@/lib/api"
 import { Sheet } from "./sheet"
@@ -46,6 +47,8 @@ export function HamburgerSheet({
   const setTheme = useUIStore((s) => s.setTheme)
   const layout = useUIStore((s) => s.layout)
   const setLayout = useUIStore((s) => s.setLayout)
+  const serverVersion = useStateStore((s) => s.serverVersion)
+  const displayVersion = serverVersion || __APP_VERSION__
 
   const handleRestart = async () => {
     if (!confirm("Restart the server?")) return
@@ -56,7 +59,7 @@ export function HamburgerSheet({
   }
 
   return (
-    <Sheet onClose={onClose} title="Menu">
+    <Sheet onClose={onClose} title={`REMOTE CTRL v${displayVersion}`}>
       <div className="space-y-1">
         <MenuItem onClick={onAddProject}>Add Project</MenuItem>
         <MenuItem onClick={onCreateTask}>Create Task</MenuItem>

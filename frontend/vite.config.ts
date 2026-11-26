@@ -1,7 +1,11 @@
 import path from "path"
+import fs from "fs"
 import { defineConfig, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+
+const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "package.json"), "utf-8")) as { version?: string }
+const APP_VERSION = pkg.version || "0.0.0"
 
 const BACKEND = 'http://localhost:8420'
 
@@ -25,6 +29,9 @@ const wsProxyOpts: ProxyOptions = {
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

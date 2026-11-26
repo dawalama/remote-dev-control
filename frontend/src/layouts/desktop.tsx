@@ -6,7 +6,8 @@ import { useAuthStore } from "@/stores/auth-store"
 import { useUIStore } from "@/stores/ui-store"
 import { useTerminalStore } from "@/stores/terminal-store"
 import { getClientId, getClientName } from "@/lib/client-id"
-import { CommandPalette, AddProjectModal } from "@/components/project-bar"
+import { CommandPalette } from "@/components/project-bar"
+import { ProjectBootstrap } from "@/features/sessions/project-bootstrap"
 import { EmbeddedTerminal } from "@/features/terminal/embedded-terminal"
 import { RightTabs } from "@/features/right-tabs/right-tabs"
 import { CommandBar } from "@/features/command-bar/command-bar"
@@ -36,6 +37,9 @@ export function DesktopLayout() {
   const connect = useStateStore((s) => s.connect)
   const disconnect = useStateStore((s) => s.disconnect)
   const connected = useStateStore((s) => s.connected)
+  const serverVersion = useStateStore((s) => s.serverVersion)
+  const displayVersion = serverVersion || __APP_VERSION__
+  const versionMismatch = Boolean(serverVersion && serverVersion !== __APP_VERSION__)
   const toast = useUIStore((s) => s.toast)
   const toggleCommandPalette = useUIStore((s) => s.toggleCommandPalette)
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen)
@@ -53,7 +57,10 @@ export function DesktopLayout() {
   const workstreamSettingsOpen = useUIStore((s) => s.workstreamSettingsOpen)
   const setWorkstreamSettingsOpen = useUIStore((s) => s.setWorkstreamSettingsOpen)
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
+  const channels = useChannelStore((s) => s.channels)
+  const activeChannel = channels.find((c) => c.id === activeChannelId)
   const operatingMode = useUIStore((s) => s.operatingMode)
+  const setOperatingMode = useUIStore((s) => s.setOperatingMode)
   const [addProjectOpen, setAddProjectOpen] = useState(false)
   const [rightPanelOverride, setRightPanelOverride] = useState<boolean | null>(null)
   const showRightPanel =
@@ -146,6 +153,20 @@ export function DesktopLayout() {
           <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${connected ? "bg-green-500" : "bg-red-500"}`} />
           <h1 className="text-base font-bold tracking-tight">REMOTE CTRL</h1>
           <span
+            className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+              versionMismatch
+                ? "text-amber-300 bg-amber-500/10 border-amber-500/40"
+                : "text-gray-400 bg-gray-800/80 border-gray-700/80"
+            }`}
+            title={
+              versionMismatch
+                ? `UI v${__APP_VERSION__} · Server v${serverVersion} (restart server to sync)`
+                : `Remote Dev Control v${displayVersion}`
+            }
+          >
+            v{displayVersion}
+          </span>
+          <span
             className="text-[10px] uppercase tracking-wider text-blue-400 bg-blue-500/10 border border-blue-500/30 px-1.5 py-0.5 rounded"
             title={connected ? "This machine is HomeBase" : "HomeBase disconnected"}
           >
@@ -154,6 +175,40 @@ export function DesktopLayout() {
         </div>
         <div className="flex items-center gap-3">
           <SessionsNavButton />
+          {activeChannel?.type !== "system" && (
+            <div className="flex rounded-md border border-gray-700 bg-gray-950 p-0.5 flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setOperatingMode("sessions")
+                  setWorkspaceMode("goals")
+                }}
+                className={`rounded px-2 py-0.5 text-[11px] font-medium whitespace-nowrap transition-colors ${
+                  operatingMode === "sessions" && workspaceMode === "goals"
+                    ? "bg-blue-600 text-white shadow-sm"
+                    : "text-gray-400 hover:text-gray-200"
+                }`}
+                title="Goals: 1 bounded outcome per isolated worktree with auto-verify loop and proof artifact"
+              >
+                🎯 Goals
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOperatingMode("agents")
+                  setWorkspaceMode("goals")
+                }}
+                className={`rounded px-2 py-0.5 text-[11px] font-medium whitespace-nowrap transition-colors ${
+                  operatingMode === "agents" && workspaceMode === "goals"
+                    ? "bg-blue-600 text-white shadow-sm"
+                    : "text-gray-400 hover:text-gray-200"
+                }`}
+                title="Agent Mode: Chat with persistent resident agents that create and complete task cards on the board"
+              >
+                🤖 Agents
+              </button>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => setRightPanelOverride(!showRightPanel)}
@@ -293,15 +348,7 @@ export function DesktopLayout() {
         <ChannelSettings channelId={activeChannelId} onClose={() => setWorkstreamSettingsOpen(false)} />
       )}
       {addProjectOpen && (
-        <AddProjectModal
-          onClose={() => setAddProjectOpen(false)}
-          onCreated={() => {
-            setAddProjectOpen(false)
-            loadProjects()
-            useChannelStore.getState().loadChannels()
-          }}
-          scaffoldProject={useProjectStore.getState().scaffoldProject}
-        />
+        <ProjectBootstrap onClose={() => setAddProjectOpen(false)} />
       )}
       <GlobalTextInput />
     </div>

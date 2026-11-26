@@ -6,6 +6,8 @@ import { useChannelSend } from "@/hooks/use-channel-send"
 import { useFileUpload } from "@/hooks/use-file-upload"
 import { ChannelSettings, SettingsGear } from "./channel-settings"
 import { MessageRenderer } from "./message-renderer"
+import { isActivityLogMessage } from "./message-filter"
+import { OrchestratorStatusBanner } from "./orchestrator-status-banner"
 import { ChatScopeChip } from "@/components/chat-scope-chip"
 
 type PanelSize = "half" | "expanded"
@@ -50,7 +52,7 @@ export function FloatingChannelPanel({
     onSystemSettings,
   })
 
-  const { handleSend: sendToChannel, handleRespond, sending } = useChannelSend({
+  const { handleSend: sendToChannel, handleRespond, sending, runStatus, retryLast, dismissStatus } = useChannelSend({
     activeChannelId,
     projectName,
     orchestrator,
@@ -62,8 +64,13 @@ export function FloatingChannelPanel({
   const toggleChat = useUIStore((s) => s.toggleChat)
   const [size, setSize] = useState<PanelSize>("half")
   const [showSettings, setShowSettings] = useState(false)
+  const [showActivityLogs, setShowActivityLogs] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  const chatMessages = messages.filter((m) => !isActivityLogMessage(m))
+  const activityCount = messages.length - chatMessages.length
+  const visibleMessages = showActivityLogs ? messages : chatMessages
 
   if (!chatOpen) return null
 
@@ -117,6 +124,20 @@ export function FloatingChannelPanel({
           </span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
+          {activityCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowActivityLogs((v) => !v)}
+              className={`rounded-full border px-2 py-0.5 text-[10px] whitespace-nowrap transition-colors ${
+                showActivityLogs
+                  ? "border-blue-500/50 bg-blue-950/50 text-blue-200"
+                  : "border-gray-700 bg-gray-800/80 text-gray-400 hover:text-gray-200"
+              }`}
+              title={showActivityLogs ? "Hide background goal/system activity logs" : "Show background goal/system activity logs"}
+            >
+              {showActivityLogs ? `Logs on (${activityCount})` : `Logs (${activityCount})`}
+            </button>
+          )}
           <button
             disabled={sending}
             onClick={() => {
@@ -169,15 +190,24 @@ export function FloatingChannelPanel({
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2 min-h-0">
-        {messages.length === 0 && (
+        {visibleMessages.length === 0 && (
           <div className="text-center text-gray-500 text-xs py-8 space-y-1">
             <div className="font-medium text-gray-300">{scopeLabel}</div>
             <div className="text-[11px] text-gray-500">
-              Type in the bar below to ask for a brief, start a goal session, or coordinate across projects.
+              Type in the bar below to ask about this project, get a brief, or coordinate goals.
             </div>
+            {activityCount > 0 && !showActivityLogs && (
+              <button
+                type="button"
+                onClick={() => setShowActivityLogs(true)}
+                className="mt-1 text-[10px] text-gray-400 hover:text-gray-200 underline underline-offset-2"
+              >
+                Show {activityCount} background activity log{activityCount === 1 ? "" : "s"}
+              </button>
+            )}
           </div>
         )}
-        {messages.map((msg) => (
+        {visibleMessages.map((msg) => (
           <div key={msg.id} className="flex gap-2 text-xs">
             <span
               className={`font-medium flex-shrink-0 ${
@@ -195,15 +225,13 @@ export function FloatingChannelPanel({
             </div>
           </div>
         ))}
-        {sending && (
-          <div className="flex items-center gap-1.5 text-xs text-gray-500 py-1">
-            <span className="flex gap-0.5">
-              <span className="w-1 h-1 bg-gray-600 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-              <span className="w-1 h-1 bg-gray-600 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-              <span className="w-1 h-1 bg-gray-600 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-            </span>
-            Thinking...
-          </div>
+        {runStatus && (
+          <OrchestratorStatusBanner
+            key={runStatus.startedAt}
+            runStatus={runStatus}
+            onRetry={retryLast}
+            onDismiss={dismissStatus}
+          />
         )}
         <div
           ref={(el) => {

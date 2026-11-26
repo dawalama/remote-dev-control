@@ -31,6 +31,7 @@ export interface Terminal {
 
 interface StateSnapshot {
   server_state: string
+  server_version?: string
   tasks: Task[]
   actions: Action[]
   agents: Agent[]
@@ -47,6 +48,7 @@ interface StateSnapshot {
 interface StateStoreData {
   connected: boolean
   serverState: string
+  serverVersion: string | null
   actions: Action[]
   tasks: Task[]
   agents: Agent[]
@@ -204,6 +206,7 @@ function executePhoneAction(action: Record<string, unknown>) {
 export const useStateStore = create<StateStoreData>((set) => ({
   connected: false,
   serverState: "unknown",
+  serverVersion: null,
   actions: [],
   tasks: [],
   agents: [],
@@ -236,6 +239,7 @@ export const useStateStore = create<StateStoreData>((set) => ({
       const s = msg.data
       set({
         serverState: s.server_state,
+        serverVersion: s.server_version || null,
         actions: s.actions || [],
         tasks: s.tasks,
         agents: s.agents,
@@ -294,13 +298,35 @@ export const useStateStore = create<StateStoreData>((set) => ({
       }
     })
 
+    ws.on("orchestrator_status", (raw) => {
+      const msg = raw as {
+        type: "orchestrator_status"
+        data?: { channel_id?: string; client_id?: string; status?: "working"; stage?: string }
+      }
+      const channelId = msg.data?.channel_id
+      if (!channelId) return
+      useChannelStore.getState().setOrchestratorStatus(channelId, {
+        status: "working",
+        stage: msg.data?.stage || "Working…",
+        lastHeartbeatAt: Date.now(),
+      })
+    })
+
     ws.on("orchestrator_complete", (raw) => {
       const msg = raw as {
         type: "orchestrator_complete"
-        data?: { channel_id?: string; client_id?: string }
+        data?: { channel_id?: string; client_id?: string; ok?: boolean }
       }
       const targetId = msg.data?.client_id
       if (targetId && targetId !== clientId) return
+      const chId = msg.data?.channel_id
+      if (chId) {
+        const chStore = useChannelStore.getState()
+        chStore.clearOrchestratorStatus(chId)
+        if (chStore.activeChannelId === chId) {
+          void chStore.loadMessages(chId)
+        }
+      }
       for (const handler of orchestratorCompleteHandlers) {
         try {
           handler(msg.data || {})

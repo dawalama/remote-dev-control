@@ -26,10 +26,20 @@ export interface ChannelMessage {
   created_at: string
 }
 
+export interface OrchestratorRunStatus {
+  status: "sending" | "working" | "stalled" | "failed"
+  stage: string
+  startedAt: number
+  lastHeartbeatAt: number
+  prompt?: string
+  error?: string
+}
+
 interface ChannelState {
   channels: Channel[]
   activeChannelId: string | null
   messages: ChannelMessage[] // messages for active channel
+  orchestratorStatus: Record<string, OrchestratorRunStatus | undefined>
   loading: boolean
 
   loadChannels: () => Promise<void>
@@ -41,6 +51,8 @@ interface ChannelState {
   loadMessages: (channelId: string) => Promise<void>
   postMessage: (channelId: string, content: string, role?: string, metadata?: Record<string, unknown>) => Promise<ChannelMessage | null>
   toggleAutoMode: (channelId: string) => Promise<void>
+  setOrchestratorStatus: (channelId: string, status: Partial<OrchestratorRunStatus> & { status: OrchestratorRunStatus["status"]; stage: string }) => void
+  clearOrchestratorStatus: (channelId: string) => void
 }
 
 const ACTIVE_CHANNEL_KEY = "rdc_active_channel_id"
@@ -49,6 +61,7 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
   channels: [],
   activeChannelId: localStorage.getItem(ACTIVE_CHANNEL_KEY),
   messages: [],
+  orchestratorStatus: {},
   loading: false,
 
   loadChannels: async () => {
@@ -185,5 +198,34 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
     } catch {
       // ignore
     }
+  },
+
+  setOrchestratorStatus: (channelId, next) => {
+    const now = Date.now()
+    set((s) => {
+      const prev = s.orchestratorStatus[channelId]
+      return {
+        orchestratorStatus: {
+          ...s.orchestratorStatus,
+          [channelId]: {
+            status: next.status,
+            stage: next.stage,
+            startedAt: next.startedAt ?? prev?.startedAt ?? now,
+            lastHeartbeatAt: next.lastHeartbeatAt ?? now,
+            prompt: next.prompt ?? prev?.prompt,
+            error: next.error,
+          },
+        },
+      }
+    })
+  },
+
+  clearOrchestratorStatus: (channelId) => {
+    set((s) => {
+      if (!s.orchestratorStatus[channelId]) return s
+      const next = { ...s.orchestratorStatus }
+      delete next[channelId]
+      return { orchestratorStatus: next }
+    })
   },
 }))

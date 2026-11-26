@@ -104,6 +104,7 @@ class MachineEvent(BaseModel):
 class StateSnapshot(BaseModel):
     """A snapshot of the current state for syncing to clients."""
     server_state: str
+    server_version: str = ""
     tasks: list[dict]
     processes: list[dict]
     actions: list[dict] = []
@@ -928,8 +929,11 @@ class ServerStateMachine:
         except Exception:
             pass
 
+        from .. import __version__
+
         return StateSnapshot(
             server_state=self.state,
+            server_version=__version__,
             tasks=tasks,
             processes=all_actions,
             actions=all_actions,

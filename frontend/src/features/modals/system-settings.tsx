@@ -4,6 +4,7 @@ import { GET, POST, PATCH, DELETE } from "@/lib/api"
 import { useUIStore } from "@/stores/ui-store"
 import { useTerminalPresetsStore, type TerminalPreset } from "@/stores/terminal-presets-store"
 import { useModels, fetchModels, ModelSelector } from "@/features/tasks/create-task-form"
+import { ProviderSetup } from "@/features/sessions/provider-setup"
 
 interface TTSConfig {
   provider: string
@@ -48,15 +49,16 @@ interface PairedSession {
   last_used_at: string | null
 }
 
-type Section = "voice" | "terminal" | "nanobot" | "recipes" | "email" | "caddy" | "keys" | "sessions" | "info"
+type Section = "voice" | "terminal" | "nanobot" | "providers" | "recipes" | "email" | "caddy" | "keys" | "sessions" | "info"
 
 const SECTION_GROUPS: { label: string; sections: { id: Section; label: string }[] }[] = [
   {
     label: "Assistant",
     sections: [
-      { id: "voice", label: "Voice" },
+      { id: "providers", label: "Agent CLIs" },
       { id: "nanobot", label: "Orchestrator" },
       { id: "keys", label: "API Keys" },
+      { id: "voice", label: "Voice" },
       { id: "recipes", label: "Task recipes" },
     ],
   },
@@ -247,6 +249,14 @@ export function SystemSettingsModal({ onClose }: { onClose: () => void }) {
             )}
             {section === "terminal" && (
               <TerminalSectionGlobal />
+            )}
+            {section === "providers" && (
+              <div className="space-y-3">
+                <p className="text-xs text-gray-400">
+                  Configure the local coding agents (Claude Code, Codex, Cursor, Antigravity, or custom wrappers) that run Goals.
+                </p>
+                <ProviderSetup />
+              </div>
             )}
             {section === "nanobot" && (
               <NanobotSection

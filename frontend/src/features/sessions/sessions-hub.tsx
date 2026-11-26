@@ -1,62 +1,30 @@
-import { useState } from "react"
 import { useUIStore } from "@/stores/ui-store"
 import { useChannelStore } from "@/stores/channel-store"
-import { useProjectStore } from "@/stores/project-store"
 import { useStateStore } from "@/stores/state-store"
-import { briefWorkstreamFilter } from "@/stores/chat-scope-store"
 import { SessionsCard } from "./sessions-card"
 import { AgentModeWorkspace } from "./agent-mode-workspace"
-import { ProviderSetup } from "./provider-setup"
-import { ProjectBootstrap } from "./project-bootstrap"
-import { EvidenceSetup } from "./evidence-setup"
 import { SessionViewer } from "./session-viewer"
-import { GET } from "@/lib/api"
 
 export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () => void } = {}) {
+  const layout = useUIStore((state) => state.layout)
   const operatingMode = useUIStore((state) => state.operatingMode)
   const setOperatingMode = useUIStore((state) => state.setOperatingMode)
-  const [showProjectBootstrap, setShowProjectBootstrap] = useState(false)
-  const [showSetupCards, setShowSetupCards] = useState(false)
-  const [briefing, setBriefing] = useState(false)
-  const [briefText, setBriefText] = useState<string | null>(null)
-  const toast = useUIStore((state) => state.toast)
   const setVoicePanelOpen = useUIStore((state) => state.setVoicePanelOpen)
   const viewingSessionId = useUIStore((state) => state.viewingSessionId)
   const setViewingSessionId = useUIStore((state) => state.setViewingSessionId)
   const channels = useChannelStore((state) => state.channels)
   const activeChannelId = useChannelStore((state) => state.activeChannelId)
   const activeChannel = channels.find((c) => c.id === activeChannelId)
-  const collections = useProjectStore((state) => state.collections)
-  const activeChannelClient = activeChannel
-    ? collections.find((c) => c.id === activeChannel.collection_id)
-    : null
   const allActions = useStateStore((state) => state.actions)
   const workstreamProjects = activeChannel?.project_names ?? []
-  const runningActions = allActions.filter(
-    (a) => a.status === "running" && workstreamProjects.includes(a.project)
+  const previewActions = allActions.filter(
+    (a) =>
+      a.status === "running" &&
+      workstreamProjects.includes(a.project) &&
+      Boolean(a.preview_url || a.port)
   )
-
-  const runBrief = async () => {
-    setBriefing(true)
-    setBriefText(null)
-    try {
-      const filter = briefWorkstreamFilter()
-      const currentCollection = useProjectStore.getState().currentCollection
-      const collectionId = !filter && activeChannelId === "ch-system" ? currentCollection : null
-      const params = new URLSearchParams()
-      if (filter) params.set("workstream_id", filter)
-      else if (collectionId) params.set("collection_id", collectionId)
-      const qs = params.toString() ? `?${params.toString()}` : ""
-      const brief = await GET<{ spoken_summary?: string }>(`/homebase/brief${qs}`)
-      const text = brief.spoken_summary || "No brief available."
-      setBriefText(text)
-      toast(text.slice(0, 140), "info")
-    } catch {
-      toast("Failed to load HomeBase brief", "error")
-    } finally {
-      setBriefing(false)
-    }
-  }
+  const isCompactView = layout !== "desktop" || Boolean(onCloseModal)
+  const showHeader = isCompactView || previewActions.length > 0
 
   if (viewingSessionId && !onCloseModal) {
     return (
@@ -72,114 +40,76 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
 
   return (
     <section className="flex-1 flex flex-col min-h-0 overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
-      <header className="flex items-center justify-between gap-2 border-b border-gray-800 px-3 py-2 bg-gray-900/95 overflow-x-auto no-scrollbar">
-        <div className="min-w-0 flex items-center gap-2 flex-shrink-0">
-          {activeChannel?.type !== "system" ? (
-            <div className="flex rounded-md border border-gray-700 bg-gray-950 p-0.5 flex-shrink-0">
-              <button
-                type="button"
-                onClick={() => setOperatingMode("sessions")}
-                className={`rounded px-2.5 py-0.5 text-xs font-medium whitespace-nowrap transition-colors ${
-                  operatingMode === "sessions"
-                    ? "bg-blue-600 text-white shadow-sm"
-                    : "text-gray-400 hover:text-gray-200"
-                }`}
-                title="Goals: 1 bounded outcome per isolated worktree with auto-verify loop and proof artifact"
-              >
-                🎯 Goals
-              </button>
-              <button
-                type="button"
-                onClick={() => setOperatingMode("agents")}
-                className={`rounded px-2.5 py-0.5 text-xs font-medium whitespace-nowrap transition-colors ${
-                  operatingMode === "agents"
-                    ? "bg-blue-600 text-white shadow-sm"
-                    : "text-gray-400 hover:text-gray-200"
-                }`}
-                title="Agent Mode: Chat with persistent resident agents that create and complete task cards on the board"
-              >
-                🤖 Agents
-              </button>
-            </div>
-          ) : (
-            <span className="text-sm font-semibold text-gray-100 whitespace-nowrap">HomeBase</span>
-          )}
-
-          {activeChannel && (
-            <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-mono font-medium truncate max-w-[160px]">
-              #{activeChannel.name.replace(/^#+/, "")}
-            </span>
-          )}
-          {activeChannelClient && (
-            <span className="hidden md:inline-block rounded border border-purple-500/30 bg-purple-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-purple-300 whitespace-nowrap">
-              {activeChannelClient.name}
-            </span>
-          )}
-          {workstreamProjects.length > 0 && (
-            <span className="hidden lg:inline-block text-[10px] text-gray-500 font-mono whitespace-nowrap">
-              [{workstreamProjects.join(", ")}]
-            </span>
-          )}
-          {runningActions.length > 0 && (
-            <div className="hidden sm:flex items-center gap-1.5 pl-2 border-l border-gray-800">
-              {runningActions.map((action) => {
-                const url = action.preview_url || (action.port ? `http://localhost:${action.port}` : null)
-                if (!url) return null
-                return (
-                  <a
-                    key={action.id}
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300 hover:bg-emerald-500/20 hover:text-emerald-200 transition-colors"
-                    title={`Open ${action.name || action.id} (${url}) in new tab`}
+      {showHeader && (
+        <header className="flex items-center justify-between gap-2 border-b border-gray-800 px-3 py-1.5 bg-gray-900/95 overflow-x-auto no-scrollbar">
+          <div className="min-w-0 flex items-center gap-2 flex-shrink-0">
+            {isCompactView && (
+              activeChannel?.type === "system" ? (
+                <span className="text-sm font-semibold text-gray-100 whitespace-nowrap">HomeBase</span>
+              ) : (
+                <div className="flex rounded-md border border-gray-700 bg-gray-950 p-0.5 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setOperatingMode("sessions")}
+                    className={`rounded px-2.5 py-0.5 text-xs font-medium whitespace-nowrap transition-colors ${
+                      operatingMode === "sessions"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-gray-400 hover:text-gray-200"
+                    }`}
+                    title="Goals: 1 bounded outcome per isolated worktree with auto-verify loop and proof artifact"
                   >
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
-                    <span className="truncate max-w-[120px]">{action.name || action.id}</span>
-                    <span className="text-[10px] text-emerald-400/70 font-mono flex-shrink-0">
-                      {action.preview_url ? action.preview_url.replace(/^https?:\/\//, "") : `:${action.port}`}
-                    </span>
-                    <span className="text-[10px] flex-shrink-0">↗</span>
-                  </a>
-                )
-              })}
-            </div>
-          )}
-        </div>
+                    🎯 Goals
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOperatingMode("agents")}
+                    className={`rounded px-2.5 py-0.5 text-xs font-medium whitespace-nowrap transition-colors ${
+                      operatingMode === "agents"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-gray-400 hover:text-gray-200"
+                    }`}
+                    title="Agent Mode: Chat with persistent resident agents that create and complete task cards on the board"
+                  >
+                    🤖 Agents
+                  </button>
+                </div>
+              )
+            )}
 
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <button
-            type="button"
-            disabled={briefing}
-            onClick={() => { void runBrief() }}
-            className="rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-[11px] font-medium text-blue-200 hover:bg-blue-500/20 disabled:opacity-50 whitespace-nowrap"
-            title="Whole HomeBase status (all projects)"
-          >
-            {briefing ? "Briefing…" : "🎙️ Brief"}
-          </button>
+            {isCompactView && activeChannel && (
+              <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-mono font-medium truncate max-w-[160px]">
+                #{activeChannel.name.replace(/^#+/, "")}
+              </span>
+            )}
 
-          <button
-            type="button"
-            onClick={() => setShowSetupCards((v) => !v)}
-            className={`rounded border px-2 py-1 text-[11px] whitespace-nowrap transition-colors ${
-              showSetupCards
-                ? "border-gray-600 bg-gray-800 text-white"
-                : "border-gray-700 text-gray-400 hover:text-gray-200"
-            }`}
-            title="Configure Agent Providers & Verification Evidence"
-          >
-            ⚙️ Setup
-          </button>
-
-          <button
-            onClick={() => setShowProjectBootstrap(true)}
-            className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-[11px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
-          >
-            + Project
-          </button>
+            {previewActions.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                {previewActions.map((action) => {
+                  const url = action.preview_url || `http://localhost:${action.port}`
+                  return (
+                    <a
+                      key={action.id}
+                      href={url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300 hover:bg-emerald-500/20 hover:text-emerald-200 transition-colors"
+                      title={`Open ${action.name || action.id} (${url}) in new tab`}
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+                      <span className="truncate max-w-[120px]">{action.name || action.id}</span>
+                      <span className="text-[10px] text-emerald-400/70 font-mono flex-shrink-0">
+                        {action.preview_url ? action.preview_url.replace(/^https?:\/\//, "") : `:${action.port}`}
+                      </span>
+                      <span className="text-[10px] flex-shrink-0">↗</span>
+                    </a>
+                  )
+                })}
+              </div>
+            )}
+          </div>
 
           {onCloseModal && (
-            <>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
               <button
                 type="button"
                 onClick={() => setVoicePanelOpen(true)}
@@ -193,19 +123,9 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
               >
                 Close
               </button>
-            </>
+            </div>
           )}
-        </div>
-      </header>
-
-      {briefText && (
-        <div className="flex items-center justify-between border-b border-gray-800 bg-blue-950/30 px-4 py-2 text-xs text-gray-200">
-          <div>
-            <span className="mr-2 font-semibold text-blue-300">HomeBase Brief:</span>
-            {briefText}
-          </div>
-          <button onClick={() => setBriefText(null)} className="ml-3 text-gray-500 hover:text-gray-300">✕</button>
-        </div>
+        </header>
       )}
 
       <div
@@ -215,20 +135,12 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
             : "flex-1 overflow-y-auto p-4 space-y-4"
         }
       >
-        {showSetupCards && (
-          <div className="grid gap-3 lg:grid-cols-2 flex-shrink-0">
-            <ProviderSetup />
-            <EvidenceSetup />
-          </div>
-        )}
         {operatingMode === "agents" && activeChannel?.type !== "system" ? (
           <AgentModeWorkspace />
         ) : (
           <SessionsCard />
         )}
       </div>
-
-      {showProjectBootstrap && <ProjectBootstrap onClose={() => setShowProjectBootstrap(false)} />}
     </section>
   )
 }
