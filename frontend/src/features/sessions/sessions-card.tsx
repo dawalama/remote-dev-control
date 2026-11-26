@@ -9,6 +9,7 @@ import { useMountEffect } from "@/hooks/use-mount-effect"
 import type { Action } from "@/types"
 import { isCollectionVisible } from "@/components/collection-picker"
 import { loopStatusLabel, type SessionLoopState } from "./loop-status"
+import { WelcomeOnboarding } from "./welcome-onboarding"
 
 export type { SessionLoopState }
 
@@ -944,11 +945,40 @@ export function SessionsCard({
         <p className="py-8 text-center text-xs text-gray-500">Loading Attention Board…</p>
       )}
 
-      {!loading && filteredGoalCards.length === 0 && (
-        <div className="rounded-lg border border-dashed border-gray-800 p-8 text-center text-xs text-gray-500">
-          {isSystemWorkstream
-            ? "No goal cards found across HomeBase. Select a workstream or click \"+ New Goal\"."
-            : `No goals found for ${activeChannel?.name || "this workstream"}. Click "+ New Goal" to stage or start a goal.`}
+      {!loading && projects.length === 0 && <WelcomeOnboarding />}
+
+      {!loading && projects.length > 0 && filteredGoalCards.length === 0 && (
+        <div className="rounded-lg border border-dashed border-gray-800 p-6 text-center space-y-3">
+          <p className="text-xs text-gray-400">
+            {isSystemWorkstream
+              ? "No goals yet across HomeBase. Pick a workstream on the left to start your first goal."
+              : `No goals yet in ${activeChannel?.name || "this workstream"}. Type a goal above or pick a starter:`}
+          </p>
+          {!isSystemWorkstream && (
+            <div className="flex flex-wrap justify-center gap-1.5">
+              {[
+                { label: "🗺 Plan architecture", recipeId: "design-plan", goal: "Review the current architecture and recommend the highest-leverage next improvements" },
+                { label: "🔍 Review recent changes", recipeId: "code-review", goal: "Review recent git changes for bugs, edge cases, and security issues" },
+                { label: "🐞 Audit for bugs", recipeId: "code-audit", goal: "Audit this codebase for reliability, security, and edge-case bugs" },
+              ].map((starter) => (
+                <button
+                  key={starter.label}
+                  type="button"
+                  onClick={() =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      goal: starter.goal,
+                      recipeId: starter.recipeId,
+                      maxRounds: 1,
+                    }))
+                  }
+                  className="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-[11px] text-gray-300 hover:border-blue-500/50 hover:text-blue-200"
+                >
+                  {starter.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

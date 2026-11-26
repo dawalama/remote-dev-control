@@ -897,16 +897,17 @@ def worker_list():
 def setup():
     """Interactive guided setup for new RDC installations.
 
-    Walks through: config initialization, API keys, terminal presets,
-    and optional remote access. Safe to re-run — skips already-configured steps.
+    Walks through: config initialization, detected CLI agents, optional API keys,
+    optional first project registration, and optional remote access.
+    Safe to re-run — skips already-configured steps.
     """
-    from .server.config import get_rdc_home, get_default_config_template, ensure_rdc_home
+    from .server.config import get_default_config_template, ensure_rdc_home
     from .server.vault import get_vault
 
     rprint(Panel.fit(
         "[bold]Welcome to RDC Setup[/bold]\n"
-        "This will walk you through configuring your installation.\n"
-        "Press Enter to accept defaults, or type a value to customize.",
+        "This will check your installed CLI agents and configure RDC.\n"
+        "Press Enter to accept defaults or skip optional steps.",
         title="Remote Dev Ctrl",
         border_style="blue",
     ))
@@ -922,24 +923,48 @@ def setup():
         config_path.write_text(get_default_config_template())
         rprint(f"  [green]Created config at {config_path}[/green]")
 
-    # Step 2: API Keys
-    rprint("\n[bold]Step 2: API Keys (optional)[/bold]")
-    rprint("  AI features require at least one LLM provider API key.")
-    rprint("  Keys are stored encrypted in the RDC vault, not in config files.\n")
+    # Step 2: Auto-detect installed CLI agents
+    rprint("\n[bold]Step 2: Installed CLI Agents[/bold]")
+    ready_count = 0
+    try:
+        from .server.session_manager import list_agent_provider_readiness
+
+        providers = [
+            p for p in list_agent_provider_readiness()
+            if p.get("id") not in ("diagnostic", "shell")
+        ]
+        for p in providers:
+            label = p.get("label") or p.get("id")
+            if p.get("ready"):
+                ready_count += 1
+                rprint(f"  [green]✓ {label}[/green] [dim](ready)[/dim]")
+            else:
+                setup_cmd = p.get("setup_command")
+                hint = f" — run `{setup_cmd}`" if setup_cmd else ""
+                rprint(f"  [dim]○ {label}{hint}[/dim]")
+        if ready_count > 0:
+            rprint(f"  [green]{ready_count} CLI agent(s) ready — raw API keys below are optional.[/green]")
+        else:
+            rprint("  [yellow]No authenticated CLI agents found yet. Sign in to Claude Code, Codex, Cursor, or agy to run goals.[/yellow]")
+    except Exception:
+        rprint("  [dim]Could not scan CLI agents automatically.[/dim]")
+
+    # Step 3: Optional API Keys (for background summaries / briefs)
+    rprint("\n[bold]Step 3: API Keys (optional — for briefs & summaries)[/bold]")
+    rprint("  Stored encrypted in the RDC vault, never in config files.\n")
 
     vault = get_vault()
 
     api_keys = [
-        ("ANTHROPIC_API_KEY", "Anthropic (Claude)", "sk-ant-..."),
+        ("OPENROUTER_API_KEY", "OpenRouter", "sk-or-..."),
+        ("ANTHROPIC_API_KEY", "Anthropic", "sk-ant-..."),
         ("OPENAI_API_KEY", "OpenAI", "sk-..."),
-        ("GEMINI_API_KEY", "Google Gemini", "AI..."),
     ]
 
     for key_name, label, example in api_keys:
         existing = vault.get(key_name) or os.environ.get(key_name)
         if existing:
-            masked = existing[:8] + "..." + existing[-4:] if len(existing) > 12 else "***"
-            rprint(f"  [green]{label}:[/green] configured ({masked})")
+            rprint(f"  [green]{label}:[/green] configured")
         else:
             value = console.input(f"  {label} key [{example}] (Enter to skip): ").strip()
             if value:
@@ -948,26 +973,42 @@ def setup():
             else:
                 rprint(f"  [dim]Skipped {label}[/dim]")
 
-    # Step 3: Terminal presets
-    rprint("\n[bold]Step 3: Terminal Presets[/bold]")
-    presets_path = home / "terminal_presets.json"
-    if presets_path.exists():
-        rprint(f"  [green]Terminal presets already configured[/green]")
-    else:
-        rprint("  Default presets: Claude Code, Cursor, Shell")
-        customize = console.input("  Customize terminal presets? [y/N]: ").strip().lower()
-        if customize == "y":
-            rprint("  [dim]Edit presets later: rdc config edit-presets[/dim]")
-            rprint("  [dim]Or manually edit: ~/.rdc/terminal_presets.json[/dim]")
-        else:
-            rprint("  [green]Using default presets[/green]")
+    # Step 4: Register first project (optional)
+    rprint("\n[bold]Step 4: Register Your First Project (optional)[/bold]")
+    try:
+        from .server.db.models import Project
+        from .server.db.repositories import ProjectRepository
 
-    # Step 4: Server port
-    rprint("\n[bold]Step 4: Server[/bold]")
-    rprint("  Default: http://localhost:8420")
-    custom_port = console.input("  Custom port? [8420]: ").strip()
-    if custom_port and custom_port != "8420":
-        rprint(f"  [dim]Edit port in {config_path}[/dim]")
+        existing_projects = ProjectRepository().list()
+        if existing_projects:
+            rprint(f"  [green]{len(existing_projects)} project(s) already registered.[/green]")
+        else:
+            raw_path = console.input("  Path to an existing repo (e.g. ~/my-app, or Enter to add in UI): ").strip()
+            if raw_path:
+                proj_path = Path(raw_path).expanduser().resolve()
+                if proj_path.is_dir():
+                    proj_name = proj_path.name
+                    repo = ProjectRepository()
+                    if not repo.get(proj_name):
+                        db_proj = repo.create(Project(
+                            name=proj_name,
+                            path=str(proj_path),
+                            description=f"Project {proj_name}",
+                            tags=[],
+                            collection_id="general",
+                        ))
+                        try:
+                            from .server.channel_manager import get_channel_manager
+                            get_channel_manager().ensure_project_channel(db_proj.id, proj_name)
+                        except Exception:
+                            pass
+                        rprint(f"  [green]✓ Registered {proj_name} ({proj_path})[/green]")
+                else:
+                    rprint(f"  [yellow]Folder not found: {proj_path} (you can add projects in the dashboard)[/yellow]")
+            else:
+                rprint("  [dim]Skipped — you can browse & add folders right in the dashboard.[/dim]")
+    except Exception:
+        rprint("  [dim]Skipped — you can add projects in the dashboard.[/dim]")
 
     # Step 5: Remote access (optional)
     rprint("\n[bold]Step 5: Remote Access (optional)[/bold]")
@@ -983,18 +1024,17 @@ def setup():
         domain = console.input("  Your domain (e.g. example.com): ").strip()
         if domain:
             rprint(f"\n  Add to {config_path}:")
-            rprint(f"  [bold]caddy:[/bold]")
-            rprint(f"    enabled: true")
+            rprint("  [bold]caddy:[/bold]")
+            rprint("    enabled: true")
             rprint(f"    base_domain: {domain}")
             rprint(f"    rdc_domain: rdc.{domain}")
-            rprint(f"    listen_port: 8888")
+            rprint("    listen_port: 8888")
 
-            # Generate a secret key for auth
             import secrets
             secret_key = secrets.token_hex(32)
             vault.set("RDC_SECRET_KEY", secret_key)
-            rprint(f"\n  [green]Generated and stored RDC_SECRET_KEY for authentication[/green]")
-            rprint(f"  Add to config: server.secret_key: ${{RDC_SECRET_KEY}}")
+            rprint("\n  [green]Generated and stored RDC_SECRET_KEY for authentication[/green]")
+            rprint("  Add to config: server.secret_key: ${RDC_SECRET_KEY}")
     else:
         rprint("  [dim]Skipped — you can set this up later[/dim]")
 
@@ -1004,7 +1044,7 @@ def setup():
         "[bold]Next steps:[/bold]\n"
         "  rdc server start              # Start the server\n"
         "  open http://localhost:8420     # Open the dashboard\n"
-        "  rdc add ~/my-project          # Register a project",
+        "  rdc add ~/my-project          # Or register a repo from CLI",
         border_style="green",
     ))
 

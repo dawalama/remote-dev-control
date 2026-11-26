@@ -201,23 +201,27 @@ else
   ok "Config already exists at $RDC_HOME/config.yml"
 fi
 
-# ── Verify installation ─────────────────────────────────────────────────────
+# ── Verify installation & link CLI into ~/.local/bin ────────────────────────
 step "Verifying installation"
 
 cd "$RDC_DIR"
+
+# Auto-link rdc and rdc-mcp into ~/.local/bin so `rdc` works out of the box
+if [ -f "$RDC_DIR/.venv/bin/rdc" ]; then
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$RDC_DIR/.venv/bin/rdc" "$HOME/.local/bin/rdc"
+  if [ -f "$RDC_DIR/.venv/bin/rdc-mcp" ]; then
+    ln -sf "$RDC_DIR/.venv/bin/rdc-mcp" "$HOME/.local/bin/rdc-mcp"
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
+  ok "Linked rdc CLI to $HOME/.local/bin/rdc"
+fi
 
 # Check rdc CLI
 if command_exists rdc; then
   ok "rdc CLI available: $(which rdc)"
 else
-  # Try to find it in the venv
-  if [ -f "$RDC_DIR/.venv/bin/rdc" ]; then
-    info "rdc found in virtualenv. Add to your PATH:"
-    echo "  export PATH=\"$RDC_DIR/.venv/bin:\$PATH\""
-    warn "Or activate the venv: source $RDC_DIR/.venv/bin/activate"
-  else
-    warn "rdc command not found in PATH. You may need to restart your shell."
-  fi
+  warn "rdc command not found in PATH. Add ~/.local/bin to your shell profile."
 fi
 
 # Check frontend build
