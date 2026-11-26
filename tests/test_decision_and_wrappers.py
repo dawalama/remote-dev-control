@@ -6,6 +6,7 @@ from starlette.testclient import TestClient
 
 from remote_dev_ctrl.server.agent_registry import (
     AgentWrapperSpec,
+    _path_known_agents,
     build_agent_command,
     discover_model_providers,
     get_model_tier_matrix,
@@ -244,3 +245,30 @@ def test_api_endpoints_for_models_and_decision():
     dec_data = dec_resp.json()
     assert "results" in dec_data
     assert "safe" in dec_data["results"]
+
+
+def test_known_cli_off_path_is_found_in_user_bin(tmp_path):
+    """agy lives in ~/.local/bin. A service PATH that only has Homebrew still finds it."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    agy = bin_dir / "agy"
+    agy.write_text("#!/bin/sh\nexit 0\n")
+    agy.chmod(0o755)
+    grok = bin_dir / "grok"
+    grok.write_text("#!/bin/sh\nexit 0\n")
+    grok.chmod(0o755)
+
+    def which(name: str) -> str | None:
+        if name == "grok":
+            return "/opt/homebrew/bin/grok"
+        return None
+
+    specs = _path_known_agents(set(), set(), which_fn=which, extra_dirs=[bin_dir])
+    by_id = {spec.id: spec for spec in specs}
+    assert by_id["grok"].executable == "/opt/homebrew/bin/grok"
+    assert by_id["agy"].executable == str(agy)
+    assert by_id["agy"].terminal_command == str(agy)
+    assert by_id["agy"].driver == "agy"
+
+    skipped = _path_known_agents(set(), {"agy"}, which_fn=which, extra_dirs=[bin_dir])
+    assert "agy" not in {spec.id for spec in skipped}

@@ -46,6 +46,24 @@ export function getSessionAttentionState(status: string): AttentionState {
 
 
 
+export interface AgentWorkerInfo {
+  id: string
+  name: string
+  channel_id: string
+  project: string
+  provider: string
+  status: "idle" | "working" | "waiting" | "stopped"
+  current_session_id?: string | null
+  last_session_id?: string | null
+  terminal_id?: string | null
+  worktree_path?: string | null
+  worktree_branch?: string | null
+  context_mode: "warm" | "fresh"
+  auto_drain: boolean
+  sessions_completed: number
+  turns_completed: number
+}
+
 export interface SessionInfo {
   id: string
   channel_id: string
@@ -61,6 +79,8 @@ export interface SessionInfo {
   collection_role?: "unsorted" | "own" | "client"
   collection_name?: string
   agent_provider: string | null
+  agent_id?: string | null
+  agent_name?: string | null
   created_at: string
   updated_at: string
   completed_at: string | null
@@ -72,6 +92,37 @@ export interface SessionInfo {
   discovered_from?: string | null
   handoff_brief?: string | null
   loop?: SessionLoopState | null
+  recipe_id?: string | null
+  recipe_name?: string | null
+  recipe_icon?: string | null
+  routing_profile?: string | null
+}
+
+const RECIPE_PILLS = [
+  { id: "auto", label: "Auto", icon: "✦", hint: "Auto-pick approach from your goal" },
+  { id: "bugfix", label: "Bugfix", icon: "🐞", hint: "Reproduce first → isolate root cause → regression test → minimal fix" },
+  { id: "feature", label: "Feature", icon: "✨", hint: "Plan contract & boundaries → implement → verify" },
+  { id: "refactor", label: "Refactor", icon: "🔧", hint: "Lock behavior with tests → incremental cleanup → verify zero drift" },
+  { id: "design-plan", label: "Plan", icon: "🗺", hint: "Read-only architecture & tradeoff plan (1-click Execute Plan after)" },
+  { id: "code-review", label: "Review", icon: "🔍", hint: "Paranoid diff review for bugs, races, edge cases & security" },
+  { id: "code-audit", label: "Audit", icon: "🛡", hint: "Full 5-category scored security & reliability audit" },
+] as const
+
+const ROUTING_PROFILES = [
+  { id: "balanced", label: "⚖ Balanced", title: "Balanced routing: reasoning plans/escalates/reviews, coding implements" },
+  { id: "max_quality", label: "🧠 Max Quality", title: "Reasoning tier across all phases" },
+  { id: "fast", label: "⚡ Fast", title: "Fast/local tier for quick low-cost tasks" },
+] as const
+
+function guessRecipeLabel(goal: string): string {
+  const text = goal.trim()
+  if (!text) return "Feature"
+  if (/\b(security audit|code audit|pentest|vulnerability scan)\b/i.test(text)) return "Audit"
+  if (/\b(review|audit diff|check pr|inspect diff)\b/i.test(text)) return "Review"
+  if (/\b(plan|design|architect|spike|tradeoff|trade-off|how should we|approach|assumptions)\b/i.test(text)) return "Plan"
+  if (/\b(fix|bug|broken|crash|error|exception|failing|regression|flaky|timeout|debug)\b/i.test(text)) return "Bugfix"
+  if (/\b(refactor|clean ?up|simplify|extract|deduplicate|rename|decouple|migrate)\b/i.test(text)) return "Refactor"
+  return "Feature"
 }
 
 export interface GoalCard {
@@ -239,6 +290,8 @@ export function SessionsCard({
     newBranchName: "",
     maxRounds: 3 as 1 | 3 | 5,
     verificationCommand: "",
+    recipeId: "auto" as string,
+    routingProfile: "balanced" as "balanced" | "max_quality" | "fast",
   })
   const [providerOptions, setProviderOptions] = useState<Array<{ id: string; label: string; ready?: boolean }>>([
     { id: "codex", label: "Codex CLI" },
@@ -276,7 +329,7 @@ export function SessionsCard({
     setLoading(true)
     try {
       const data = await GET<SessionInfo[]>("/sessions")
-      const list = data ?? []
+      const list = Array.isArray(data) ? data : []
       setSessions(list)
       const cards = groupSessionsIntoGoalCards(list)
       const attnCount = cards.filter((c) => c.attention_state === "needs_attention").length
@@ -375,6 +428,8 @@ export function SessionsCard({
             : undefined,
         max_rounds: draft.maxRounds,
         verification_command: draft.verificationCommand.trim() || undefined,
+        recipe_id: draft.recipeId || undefined,
+        routing_profile: draft.routingProfile,
       })
 
       // Step 8: Upload each chosen file as evidence on the session before starting
@@ -402,7 +457,7 @@ export function SessionsCard({
           /* start error handled in poll */
         }
       }
-      toast(asStaged ? "Goal staged on board" : "Session started", "success")
+      toast(asStaged ? "Goal staged on board" : "Goal started", "success")
       await load()
       if (!asStaged) openSessionFromHub(created.id)
     } catch (err) {
@@ -429,6 +484,8 @@ export function SessionsCard({
         provider: card.latestSession.agent_provider || undefined,
         worktree_mode: card.latestSession.worktree_mode === "isolated" || card.latestSession.worktree_path ? "reuse" : "direct",
         worktree_branch: card.latestSession.worktree_branch || undefined,
+        max_rounds: card.latestSession.loop?.max_rounds ?? draft.maxRounds,
+        verification_command: card.latestSession.loop?.verification_command || undefined,
       })
       if (files.length > 0) {
         for (const file of files) {
@@ -523,6 +580,17 @@ export function SessionsCard({
     setDraft((prev) => ({ ...prev, maxRounds: next }))
   }
 
+  const cycleRoutingProfile = () => {
+    const order: Array<"balanced" | "max_quality" | "fast"> = ["balanced", "max_quality", "fast"]
+    const idx = order.indexOf(draft.routingProfile)
+    const next = order[(idx + 1) % order.length]
+    setDraft((prev) => ({ ...prev, routingProfile: next }))
+  }
+
+  const activeRoutingMeta =
+    ROUTING_PROFILES.find((p) => p.id === draft.routingProfile) ?? ROUTING_PROFILES[0]
+  const autoGuess = draft.recipeId === "auto" && draft.goal.trim() ? guessRecipeLabel(draft.goal) : null
+
   return (
     <div className="space-y-3">
       {/* ── MODE A: Always-Ready Inline Quick Goal Composer ── */}
@@ -594,6 +662,45 @@ export function SessionsCard({
                 {creating ? "Starting…" : "⚡ Run"}
               </button>
             </div>
+          </div>
+
+          {/* Compact Issue-Type Recipe + Multi-Model Routing Strip */}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1 border-t border-gray-800/70 pt-1.5">
+            {RECIPE_PILLS.map((r) => {
+              const selected = draft.recipeId === r.id
+              return (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => {
+                    const advisory = r.id === "design-plan" || r.id === "code-review" || r.id === "code-audit"
+                    setDraft((prev) => ({
+                      ...prev,
+                      recipeId: r.id,
+                      maxRounds: advisory ? 1 : prev.maxRounds === 1 ? 3 : prev.maxRounds,
+                    }))
+                  }}
+                  title={r.hint}
+                  className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors whitespace-nowrap ${
+                    selected
+                      ? "border-blue-500/60 bg-blue-950/60 text-blue-200 font-medium"
+                      : "border-gray-800 bg-gray-950/60 text-gray-400 hover:border-gray-700 hover:text-gray-200"
+                  }`}
+                >
+                  {r.icon} {r.label}
+                  {r.id === "auto" && autoGuess ? ` → ${autoGuess}` : ""}
+                </button>
+              )
+            })}
+
+            <button
+              type="button"
+              onClick={cycleRoutingProfile}
+              title={activeRoutingMeta.title}
+              className="ml-auto rounded-full border border-indigo-700/50 bg-indigo-950/40 px-2 py-0.5 text-[10px] font-medium text-indigo-200 hover:bg-indigo-900/50 whitespace-nowrap"
+            >
+              {activeRoutingMeta.label}
+            </button>
           </div>
 
           {showOptions && (
@@ -1713,7 +1820,9 @@ function GoalCardItem({
           </select>
         ) : (
           <span className="min-w-0 truncate text-[10px] text-gray-400 font-mono">
-            {latest.agent_provider ? `🤖 ${latest.agent_provider}` : "🤖 orchestrated"}
+            {latest.agent_name || latest.agent_provider
+              ? `🤖 ${latest.agent_name || latest.agent_provider}`
+              : "🤖 orchestrated"}
           </span>
         )}
 
@@ -1732,33 +1841,61 @@ function GoalCardItem({
           )}
 
           {isVerifying && (
-            <button
-              type="button"
-              onClick={() => onOpenSession(latest.id)}
-              className={`rounded bg-amber-600 font-semibold text-white hover:bg-amber-500 whitespace-nowrap transition-colors ${
-                isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
-              }`}
-            >
-              🔍 Review
-            </button>
+            <>
+              {loop && loop.status !== "passed" && (
+                <button
+                  type="button"
+                  disabled={isStarting}
+                  onClick={() => onStartSession(latest.id)}
+                  className={`rounded border border-blue-500/40 bg-blue-950/40 font-semibold text-blue-200 hover:bg-blue-900/50 disabled:opacity-50 whitespace-nowrap transition-colors ${
+                    isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+                  }`}
+                  title="Retry this goal session"
+                >
+                  ↺ Retry
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => onOpenSession(latest.id)}
+                className={`rounded bg-amber-600 font-semibold text-white hover:bg-amber-500 whitespace-nowrap transition-colors ${
+                  isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+                }`}
+              >
+                🔍 Review
+              </button>
+            </>
           )}
 
           {isWaiting && (
-            <button
-              type="button"
-              onClick={() => {
-                if (latest.terminal_ids?.[0] && onOpenTerminal) {
-                  onOpenTerminal(latest.terminal_ids[0])
-                } else {
-                  onOpenSession(latest.id)
-                }
-              }}
-              className={`rounded bg-yellow-600 font-semibold text-white hover:bg-yellow-500 whitespace-nowrap transition-colors ${
-                isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
-              }`}
-            >
-              💬 Input
-            </button>
+            <>
+              <button
+                type="button"
+                disabled={isStarting}
+                onClick={() => onStartSession(latest.id)}
+                className={`rounded border border-blue-500/40 bg-blue-950/40 font-semibold text-blue-200 hover:bg-blue-900/50 disabled:opacity-50 whitespace-nowrap transition-colors ${
+                  isStream ? "px-2.5 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+                }`}
+                title="Retry this goal session"
+              >
+                ↺ Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (latest.terminal_ids?.[0] && onOpenTerminal) {
+                    onOpenTerminal(latest.terminal_ids[0])
+                  } else {
+                    onOpenSession(latest.id)
+                  }
+                }}
+                className={`rounded bg-yellow-600 font-semibold text-white hover:bg-yellow-500 whitespace-nowrap transition-colors ${
+                  isStream ? "px-3 py-1 text-xs min-h-[30px]" : "px-2 py-0.5 text-[10px]"
+                }`}
+              >
+                💬 Input
+              </button>
+            </>
           )}
 
           {isFailed && (

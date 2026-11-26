@@ -6,6 +6,7 @@ import { useUIStore } from "@/stores/ui-store"
 import { TerminalView, TerminalToolbar } from "@/features/terminal/terminal-view"
 import { useMountEffect } from "@/hooks/use-mount-effect"
 import { loopBlocksAcceptance, loopStatusLabel, type SessionLoopState } from "./loop-status"
+import { SemanticTimeline } from "./semantic-timeline"
 
 type SessionStatusValue = "pending" | "proposed" | "running" | "waiting" | "verifying" | "done" | "completed" | "failed" | "cancelled"
 
@@ -24,6 +25,7 @@ interface SessionData {
   goal: string
   acceptance_criteria: string[]
   control_owner: "agent" | "human" | "none"
+  current_step?: string | null
   blocker: string | null
   review_mode: "advisory" | "implementation"
   parent_session_id: string | null
@@ -33,6 +35,12 @@ interface SessionData {
   worktree_path?: string | null
   worktree_branch?: string | null
   loop?: SessionLoopState | null
+  recipe_id?: string | null
+  recipe_name?: string | null
+  recipe_category?: string | null
+  recipe_icon?: string | null
+  routing_profile?: string | null
+  pending_steers?: Array<{ id: string; text: string; created_at?: string | null }>
 }
 
 interface SessionDiffFile {
@@ -97,7 +105,10 @@ export function SessionViewer({
   onClose: () => void
 }) {
   const [session, setSession] = useState<SessionData | null>(null)
-  const [tab, setTab] = useState<"artifact" | "summary" | "timeline" | "log">("artifact")
+  const [selectedTab, setSelectedTab] = useState<"artifact" | "summary" | "timeline" | "log" | null>(null)
+  const tab: "artifact" | "summary" | "timeline" | "log" =
+    selectedTab ?? (session && ["running", "waiting", "pending"].includes(session.status) ? "timeline" : "artifact")
+  const setTab = (next: "artifact" | "summary" | "timeline" | "log") => setSelectedTab(next)
   const [artifact, setArtifact] = useState<{ source: string; html: string } | null>(null)
   const [gitStatus, setGitStatus] = useState<SessionGitStatus | null>(null)
   const [showCommitBox, setShowCommitBox] = useState(false)
@@ -139,6 +150,9 @@ export function SessionViewer({
   const [continuation, setContinuation] = useState<SessionData | null>(null)
   const [nextInstruction, setNextInstruction] = useState("")
   const [sendingInstruction, setSendingInstruction] = useState(false)
+  const [steerText, setSteerText] = useState("")
+  const [sendingSteer, setSendingSteer] = useState(false)
+  const [spawningChild, setSpawningChild] = useState<"review" | "plan" | null>(null)
   const [pinnedRun, setPinnedRun] = useState<number | null>(null)
   const [runDiff, setRunDiff] = useState<SessionDiffFile[] | null>(null)
   const pinnedRunRef = useRef<number | null>(null)
@@ -153,6 +167,7 @@ export function SessionViewer({
     void loadSupervision()
     void loadArtifact()
     void loadGitStatus()
+    void loadEvents()
     void loadRunDiff()
     void GET<{ providers: Array<{ id: string; label: string; ready: boolean }> }>("/settings/agent-providers")
       .then((res) => {
@@ -171,7 +186,7 @@ export function SessionViewer({
       void loadEvents()
       void loadLog()
       void loadRunDiff()
-    }, 5000)
+    }, 3000)
     return () => window.clearInterval(interval)
   })
 
@@ -246,6 +261,70 @@ export function SessionViewer({
       const data = await GET<{ log: string | null }>(`/sessions/${sessionId}/log?tail=500`)
       setLog(data?.log || "No log available.")
     } catch { setLog("Failed to load log.") }
+  }
+
+  const submitSteer = async () => {
+    const text = steerText.trim()
+    if (!text || sendingSteer) return
+    setSendingSteer(true)
+    try {
+      const res = await POST<{ mode?: "queued" | "applied" }>(`/sessions/${sessionId}/steer`, { guidance: text })
+      setSteerText("")
+      toast(
+        res?.mode === "queued"
+          ? "Steering queued for next loop round"
+          : "Resumed session with your steering",
+        "success",
+      )
+      await Promise.all([loadSession(), loadEvents()])
+    } catch (error) {
+      toast(apiErrorDetail(error, "Could not send steering"), "error")
+    } finally {
+      setSendingSteer(false)
+    }
+  }
+
+  const handleRunCrossModelReview = async () => {
+    if (spawningChild) return
+    setSpawningChild("review")
+    try {
+      const res = await POST<{ session: { id: string }; reviewer_provider?: string }>(
+        `/sessions/${sessionId}/review`,
+        {},
+      )
+      if (res?.session?.id) {
+        toast(
+          res.reviewer_provider
+            ? `Cross-model review started with ${res.reviewer_provider}`
+            : "Cross-model review started",
+          "success",
+        )
+        useUIStore.getState().setViewingSessionId(res.session.id)
+      }
+    } catch (error) {
+      toast(apiErrorDetail(error, "Could not start cross-model review"), "error")
+    } finally {
+      setSpawningChild(null)
+    }
+  }
+
+  const handleExecutePlan = async () => {
+    if (spawningChild) return
+    setSpawningChild("plan")
+    try {
+      const res = await POST<{ session: { id: string } }>(
+        `/sessions/${sessionId}/execute-plan`,
+        {},
+      )
+      if (res?.session?.id) {
+        toast("Plan promoted to coding session", "success")
+        useUIStore.getState().setViewingSessionId(res.session.id)
+      }
+    } catch (error) {
+      toast(apiErrorDetail(error, "Could not execute plan"), "error")
+    } finally {
+      setSpawningChild(null)
+    }
   }
 
   const handleHostCommit = async (push = false) => {
@@ -503,11 +582,11 @@ export function SessionViewer({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 rounded-lg overflow-hidden bg-gray-950">
-      {/* 1. Compact Session Header Bar */}
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 border-b border-gray-700 flex-shrink-0">
-        <button onClick={onClose} className="text-xs text-blue-400 hover:text-blue-300 flex-shrink-0">← Sessions</button>
+      {/* 1. Compact Session Header Bar (wraps cleanly on mobile so title & actions stay visible) */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2 bg-gray-800 border-b border-gray-700 flex-shrink-0">
+        <button onClick={onClose} className="text-xs text-blue-400 hover:text-blue-300 flex-shrink-0 py-0.5">← Goals</button>
         <span className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor}`} />
-        <span className="text-xs font-medium text-gray-100 truncate flex-1" title={session.description}>{shortDesc}</span>
+        <span className="text-xs font-medium text-gray-100 truncate flex-1 min-w-[140px]" title={session.description}>{shortDesc}</span>
         <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium flex-shrink-0 ${
           activeBlocker ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" : "bg-gray-700 text-gray-300"
         }`}>
@@ -536,6 +615,14 @@ export function SessionViewer({
           </span>
         )}
         <span className="text-[10px] text-gray-400 flex-shrink-0">{session.project}</span>
+        {session.recipe_name && (
+          <span
+            className="rounded border border-blue-800/50 bg-blue-950/50 px-1.5 py-0.5 text-[10px] text-blue-200 flex-shrink-0"
+            title={`Recipe: ${session.recipe_name} · Routing: ${session.routing_profile || "balanced"}`}
+          >
+            {session.recipe_icon || "⚡"} {session.recipe_name}
+          </span>
+        )}
         {session.worktree_branch ? (
           <span
             className="rounded border border-indigo-800/50 bg-indigo-950/50 px-1.5 py-0.5 text-[10px] font-mono text-indigo-300 flex-shrink-0"
@@ -601,7 +688,7 @@ export function SessionViewer({
             </button>
           </>
         )}
-        {["failed", "cancelled"].includes(session.status) && (
+        {(["failed", "cancelled", "waiting"].includes(session.status) || (session.status === "verifying" && (activeBlocker || (session.loop && session.loop.status !== "passed")))) && (
           canRestoreReview ? (
             <button onClick={restoreReview} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Restore review</button>
           ) : (
@@ -612,7 +699,7 @@ export function SessionViewer({
                   <option key={p.id} value={p.id}>{p.label}{p.ready === true ? " (Ready)" : p.ready === false ? " (Setup)" : ""}</option>
                 ))}
               </select>
-              <button onClick={retry} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">Run again</button>
+              <button onClick={retry} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white whitespace-nowrap">↺ Retry</button>
             </>
           )
         )}
@@ -664,6 +751,79 @@ export function SessionViewer({
               <button onClick={() => decideApproval(approval, "rejected")} className="rounded bg-red-700 px-2 py-1 text-[10px]">Reject</button>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Compact Contextual Loop & Mid-Flight Steer Strip */}
+      {(["running", "waiting", "pending"].includes(session.status) || loopBlocksAcceptance(session.loop)) && (
+        <div className={`border-b px-3 py-1.5 flex-shrink-0 space-y-1.5 ${
+          loopBlocksAcceptance(session.loop) && !["running", "waiting", "pending"].includes(session.status)
+            ? "border-amber-800/70 bg-amber-950/25"
+            : "border-indigo-900/60 bg-indigo-950/20"
+        }`}>
+          <form
+            onSubmit={(e) => { e.preventDefault(); void submitSteer() }}
+            className="flex flex-wrap items-center gap-2"
+          >
+            <div className="flex items-center gap-1.5 text-[11px] flex-shrink-0 max-w-full">
+              {["running", "waiting", "pending"].includes(session.status) ? (
+                <>
+                  <span className="h-2 w-2 flex-shrink-0 rounded-full bg-blue-400 animate-pulse" />
+                  <span className="font-medium text-blue-200 whitespace-nowrap">
+                    {session.loop?.round
+                      ? `Round ${session.loop.round}/${session.loop.max_rounds ?? 3}`
+                      : "Live"}
+                  </span>
+                  {session.current_step && (
+                    <span className="truncate max-w-[180px] sm:max-w-[260px] font-mono text-[10px] text-gray-300">
+                      · {session.current_step}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="font-semibold text-amber-300 whitespace-nowrap">
+                  {loopStatusLabel(session.loop?.status) || "Loop Checkpoint"}
+                </span>
+              )}
+            </div>
+
+            <input
+              value={steerText}
+              onChange={(e) => setSteerText(e.target.value)}
+              placeholder={
+                ["running", "waiting", "pending"].includes(session.status)
+                  ? "Whisper a steer for the next loop round…"
+                  : "Add a hint to break the stall and retry…"
+              }
+              className="min-w-40 flex-1 rounded border border-gray-700 bg-gray-950/90 px-2.5 py-1 text-xs text-gray-100 placeholder:text-gray-500 focus:border-indigo-500 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={!steerText.trim() || sendingSteer}
+              className="rounded bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40 whitespace-nowrap"
+            >
+              {sendingSteer
+                ? "Sending…"
+                : ["running", "waiting", "pending"].includes(session.status)
+                  ? "Queue Steer"
+                  : "Retry with Hint"}
+            </button>
+          </form>
+
+          {session.pending_steers && session.pending_steers.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-purple-300">Queued:</span>
+              {session.pending_steers.map((st) => (
+                <span
+                  key={st.id}
+                  className="max-w-full truncate rounded-full border border-purple-700/60 bg-purple-950/50 px-2 py-0.5 text-[10px] text-purple-200"
+                  title={st.text}
+                >
+                  {st.text}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -722,6 +882,30 @@ export function SessionViewer({
                 </button>
               )}
 
+              {/* 1-Click Cross-Model Review for implementation sessions */}
+              {needsImplementationEvidence && session.recipe_id !== "code-review" && (
+                <button
+                  disabled={spawningChild !== null}
+                  onClick={() => { void handleRunCrossModelReview() }}
+                  className="rounded border border-purple-700/60 bg-purple-950/40 px-2.5 py-1 text-[11px] font-medium text-purple-200 hover:bg-purple-900/50 disabled:opacity-40"
+                  title="Spawn an independent cross-model Code Review session on this diff"
+                >
+                  {spawningChild === "review" ? "Starting Review…" : "🔍 Cross-Model Review"}
+                </button>
+              )}
+
+              {/* 1-Click Execute Plan for advisory / planning sessions */}
+              {(!needsImplementationEvidence || session.recipe_id === "design-plan") && session.recipe_id !== "code-review" && (
+                <button
+                  disabled={spawningChild !== null}
+                  onClick={() => { void handleExecutePlan() }}
+                  className="rounded border border-blue-600/60 bg-blue-950/50 px-2.5 py-1 text-[11px] font-medium text-blue-200 hover:bg-blue-900/50 disabled:opacity-40"
+                  title="Promote this plan into a bounded coding Session inheriting its findings"
+                >
+                  {spawningChild === "plan" ? "Launching…" : "⚡ Execute Plan"}
+                </button>
+              )}
+
               {/* 1-Click Run Project Checks */}
               {needsImplementationEvidence && (
                 <button
@@ -743,24 +927,23 @@ export function SessionViewer({
                 </button>
               )}
 
-              {/* 1-Click Accept / Complete Outcome */}
-              {session.status === "verifying" && (
-                canComplete ? (
-                  <button
-                    onClick={() => { void markDone(false) }}
-                    className="rounded bg-emerald-600 px-3 py-1 text-[11px] font-semibold text-white hover:bg-emerald-500"
-                  >
-                    ✓ Accept &amp; Complete
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => setShowAcceptanceOverride((v) => !v)}
-                    className="rounded border border-emerald-600/60 bg-emerald-950/30 px-2.5 py-1 text-[11px] font-medium text-emerald-300 hover:bg-emerald-900/40"
-                    title="Accept outcome now (or complete remaining checks)"
-                  >
-                    Accept Outcome…
-                  </button>
-                )
+              {/* 1-Click Accept / Complete Outcome (never blocked by rigid gates) */}
+              {["verifying", "waiting", "failed"].includes(session.status) && (
+                <button
+                  onClick={() => { void markDone(false) }}
+                  className={`rounded px-3 py-1 text-[11px] font-semibold text-white transition-colors ${
+                    canComplete
+                      ? "bg-emerald-600 hover:bg-emerald-500"
+                      : "bg-emerald-700/80 hover:bg-emerald-600"
+                  }`}
+                  title={
+                    canComplete
+                      ? "Accept outcome and mark session completed"
+                      : "Accept and resolve session (advisory checks will be noted)"
+                  }
+                >
+                  {canComplete ? "✓ Accept & Complete" : "✓ Accept & Resolve"}
+                </button>
               )}
 
               {/* Toggle extra review tools (screenshots, custom check command, criteria) */}
@@ -1205,7 +1388,14 @@ function SessionTabs({
                 ? "Details & Evidence"
                 : t === "log"
                   ? "Raw log"
-                  : "Timeline"}
+                  : (
+                    <span className="inline-flex items-center gap-1.5">
+                      Timeline
+                      {["running", "waiting"].includes(session.status) && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
+                      )}
+                    </span>
+                  )}
           </button>
         ))}
         {artifact?.source === "custom" && !showingFollowup && (
@@ -1274,27 +1464,12 @@ function SessionTabs({
         )}
 
         {tab === "timeline" && (
-          <div className="space-y-0.5">
-            {events === null && <div className="text-[10px] text-gray-500">Loading...</div>}
-            {events?.length === 0 && <div className="text-[10px] text-gray-600">No events recorded</div>}
-            {events?.map((e) => (
-              <div key={e.id} className="flex items-start gap-2 text-[10px]">
-                <span className="text-gray-600 flex-shrink-0 font-mono">
-                  {new Date(e.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                </span>
-                <span className={`${
-                  e.type.includes("error") || e.type.includes("failed") ? "text-red-400"
-                  : e.type.includes("completed") || e.type.includes("done") ? "text-green-400"
-                  : e.type.includes("waiting") ? "text-yellow-400"
-                  : "text-gray-400"
-                }`}>
-                  {e.type.replace("session.", "").replace(/_/g, " ")}
-                </span>
-                {e.data.tool ? <span className="text-gray-500">{String(e.data.tool)}</span> : null}
-                {e.data.terminal_id ? <span className="text-gray-600 font-mono">{String(e.data.terminal_id).slice(0, 12)}</span> : null}
-              </div>
-            ))}
-          </div>
+          <SemanticTimeline
+            events={events}
+            isRunning={["running", "waiting", "pending"].includes(session.status)}
+            currentStep={session.current_step}
+            compact={compact}
+          />
         )}
 
         {tab === "log" && (

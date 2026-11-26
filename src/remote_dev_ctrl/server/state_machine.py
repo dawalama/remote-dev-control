@@ -865,18 +865,6 @@ class ServerStateMachine:
         except Exception:
             collections = []
 
-        # Phone call info
-        phone_info = {"configured": False, "active": False}
-        try:
-            from .channels.phone import get_phone_channel
-            phone = get_phone_channel()
-            if phone:
-                phone_info = {**phone.get_call_info(), "configured": True}
-            elif app_module and hasattr(app_module, "_is_phone_configured"):
-                phone_info["configured"] = bool(app_module._is_phone_configured())
-        except Exception:
-            pass
-
         # Conversation metadata
         conversation_info = {}
         try:
@@ -951,7 +939,7 @@ class ServerStateMachine:
             collections=collections,
             channels=channels_data,
             terminal_channels=terminal_channels_map,
-            phone=phone_info,
+            phone={"configured": False, "active": False},
             voice=voice_info,
             conversation=conversation_info,
             queue_stats=queue_stats,

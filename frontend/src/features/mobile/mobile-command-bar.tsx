@@ -1,9 +1,7 @@
 import { useState, useCallback, useRef } from "react"
-import { useStateStore } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
-import { POST, api } from "@/lib/api"
-import { getClientId } from "@/lib/client-id"
+import { api } from "@/lib/api"
 import { useVoice } from "@/hooks/use-voice"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
 import { useChannelStore } from "@/stores/channel-store"
@@ -24,7 +22,6 @@ export function MobileCommandBar({
 }) {
   const [input, setInput] = useState("")
   const [loading, setLoading] = useState(false)
-  const phone = useStateStore((s) => s.phone)
   const currentProject = useProjectStore((s) => s.currentProject)
   const toast = useUIStore((s) => s.toast)
   const autoSubmitRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -78,22 +75,6 @@ export function MobileCommandBar({
   }, [])
 
   const voice = useVoice({ channel: "mobile", onFinal: handleVoiceFinal, onInterim: handleVoiceInterim })
-
-  const handlePhone = async () => {
-    if (phone?.active) {
-      try {
-        await POST("/voice/hangup")
-        toast("Call ended", "info")
-      } catch { toast("Failed to hang up", "error") }
-    } else if (phone?.configured) {
-      try {
-        await POST("/voice/call", { client_id: getClientId() })
-        toast("Calling...", "info")
-      } catch { toast("Failed to call", "error") }
-    } else {
-      toast("Phone not configured", "warning")
-    }
-  }
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -159,20 +140,6 @@ export function MobileCommandBar({
         title={voice.listening ? "Stop" : "Voice"}
       >
         🎤
-      </button>
-      <button
-        className={`w-9 h-9 rounded-lg flex items-center justify-center text-lg ${
-          phone?.active
-            ? "bg-green-600 text-white animate-pulse"
-            : phone?.configured
-              ? "bg-gray-700 text-gray-300"
-              : "bg-gray-700 text-gray-500 opacity-50"
-        }`}
-        onClick={handlePhone}
-        disabled={!phone?.configured}
-        title={phone?.active ? "Hang up" : "Call"}
-      >
-        📞
       </button>
     </div>
   )

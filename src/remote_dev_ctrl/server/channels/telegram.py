@@ -52,10 +52,15 @@ class TelegramBot:
         
         # Register command handlers
         self._app.add_handler(CommandHandler("start", self._handle_start))
+        self._app.add_handler(CommandHandler("menu", self._handle_start))
         self._app.add_handler(CommandHandler("help", self._handle_help))
         self._app.add_handler(CommandHandler("status", self._handle_status))
         self._app.add_handler(CommandHandler("brief", self._handle_brief))
         self._app.add_handler(CommandHandler("homebase", self._handle_brief))
+        self._app.add_handler(CommandHandler("agents", self._handle_agents))
+        self._app.add_handler(CommandHandler("send", self._handle_send_agent))
+        self._app.add_handler(CommandHandler("todo", self._handle_todo))
+        self._app.add_handler(CommandHandler("tasks", self._handle_herd_tasks))
         self._app.add_handler(CommandHandler("sessions", self._handle_sessions))
         self._app.add_handler(CommandHandler("reviews", self._handle_reviews))
         self._app.add_handler(CommandHandler("goal", self._handle_goal))
@@ -75,7 +80,6 @@ class TelegramBot:
         self._app.add_handler(CommandHandler("dashboard", self._handle_dashboard))
         
         # Backwards compatibility handlers
-        self._app.add_handler(CommandHandler("tasks", self._handle_sessions))
         self._app.add_handler(CommandHandler("add", self._handle_goal))
         self._app.add_handler(CommandHandler("run", self._handle_sessions))
 
@@ -83,21 +87,17 @@ class TelegramBot:
         self._app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._handle_voice))
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
         
-        # Set bot commands for autocomplete
+        # Simplified pocket command menu for autocomplete
         commands = [
-            BotCommand("status", "📊 System overview"),
-            BotCommand("brief", "🧭 HomeBase control-plane brief"),
-            BotCommand("sessions", "🎯 Active & recent goal sessions"),
+            BotCommand("menu", "🏠 Pocket control menu"),
+            BotCommand("brief", "🧭 What needs attention right now"),
+            BotCommand("agents", "🤖 Running local agents & live status"),
+            BotCommand("send", "💬 Send prompt to active agent: /send <text>"),
+            BotCommand("todo", "➕ Queue a task card: /todo <title>"),
+            BotCommand("tasks", "📋 View Herd task board"),
             BotCommand("reviews", "🔍 Sessions awaiting review"),
-            BotCommand("goal", "⚡ New goal: /goal [proj] <text>"),
-            BotCommand("accept", "✅ Accept review outcome: /accept <id>"),
             BotCommand("approvals", "⚠️ Pending command approvals"),
-            BotCommand("workstreams", "🌊 List active workstreams"),
-            BotCommand("project", "📂 Select active project: /project <name>"),
-            BotCommand("projects", "📁 List all projects"),
-            BotCommand("processes", "⚙️ Background services & ports"),
-            BotCommand("logs", "📜 View logs"),
-            BotCommand("cancel", "🛑 Cancel session: /cancel <id>"),
+            BotCommand("goal", "⚡ Launch audited goal: /goal [proj] <text>"),
             BotCommand("help", "❓ Show all commands"),
         ]
         
@@ -191,24 +191,25 @@ class TelegramBot:
             await target.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
     
     async def _show_main_menu(self, query, user_id: int):
-        """Show the main menu with quick actions."""
+        """Show the simplified pocket main menu."""
         current_project = self._get_user_project(user_id)
-        
+
         buttons = [
-            [("📊 Status", "refresh_status"), ("🧭 Brief Me", "show_brief")],
-            [("🎯 Sessions", "show_sessions"), ("🔍 Reviews", "show_reviews")],
-            [("⚡ New Goal", f"quick_goal:{current_project}" if current_project else "show_projects"), ("🌊 Workstreams", "show_workstreams")],
-            [("📁 Projects", "show_projects"), ("⚙️ Services", "show_processes")],
+            [("🧭 Brief Me", "show_brief"), ("🤖 Agents", "show_agents")],
+            [("📋 Tasks", "show_tasks"), ("🎯 Sessions", "show_sessions")],
+            [("🔍 Reviews", "show_reviews"), ("⚠️ Approvals", "show_approvals")],
+            [("📁 Project", "show_projects"), ("⚙️ Services", "show_processes")],
         ]
-        
+
         if current_project:
             buttons.append([
-                (f"📜 Logs ({current_project})", f"logs_project:{current_project}"),
+                (f"➕ Task ({current_project})", f"add_task_prompt:{current_project}"),
+                (f"⚡ Goal ({current_project})", f"quick_goal:{current_project}"),
             ])
-        
+
         keyboard = self._make_keyboard(buttons)
         await query.edit_message_text(
-            f"{self._project_context(user_id)}\n\n*RDC Command Center*\n\nSelect an action:",
+            f"{self._project_context(user_id)}\n\n*RDC Pocket Control*\n\nTap an action:",
             parse_mode="Markdown",
             reply_markup=keyboard
         )
@@ -246,6 +247,55 @@ class TelegramBot:
         elif action == "show_brief":
             result = await self.on_command("brief", "", user_id)
             await self._send_or_edit(query, result)
+
+        elif action == "show_agents":
+            result = await self.on_command("agents", "", user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "show_tasks":
+            result = await self.on_command("herd_tasks", "", user_id)
+            await self._send_or_edit(query, result)
+
+        elif action in ("draft_to_task", "draft_to_agent", "draft_to_goal"):
+            result = await self.on_command(action, "", user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "agent_pull":
+            result = await self.on_command("agent_pull", param, user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "agent_peek":
+            result = await self.on_command("agent_peek", param, user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "agent_quick_key":
+            result = await self.on_command("agent_quick_key", param, user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "agent_done_task":
+            result = await self.on_command("agent_done_task", param, user_id)
+            await self._send_or_edit(query, result)
+
+        elif action == "agent_send_prompt":
+            self._user_state[user_id] = {"action": "agent_send", "agent_id": param}
+            buttons = [[("⬅️ Cancel", "show_agents")]]
+            await query.edit_message_text(
+                f"💬 *Send to Agent Terminal* (`{param}`)\n\n"
+                "Type your prompt or command (or send a voice note) — it will be injected straight into the agent's live terminal:",
+                parse_mode="Markdown",
+                reply_markup=self._make_keyboard(buttons),
+            )
+
+        elif action == "add_task_prompt":
+            project = param or self._get_user_project(user_id) or ""
+            self._user_state[user_id] = {"action": "add_task", "project": project}
+            buttons = [[("⬅️ Cancel", "show_tasks")]]
+            await query.edit_message_text(
+                f"📋 *Add Task Card*{f' (`{project}`)' if project else ''}\n\n"
+                "Type the task title (or send a voice note) to queue it for your local agents:",
+                parse_mode="Markdown",
+                reply_markup=self._make_keyboard(buttons),
+            )
         
         elif action == "show_sessions":
             result = await self.on_command("sessions", "", user_id)
@@ -345,7 +395,7 @@ class TelegramBot:
             )
     
     async def _handle_start(self, update, context):
-        """Handle /start command."""
+        """Handle /start and /menu commands."""
         if not self._is_authorized(update.effective_user.id):
             await self._unauthorized(update)
             return
@@ -354,18 +404,23 @@ class TelegramBot:
         current_project = self._get_user_project(user_id)
         
         buttons = [
-            [("📊 Status", "refresh_status"), ("🧭 Brief Me", "show_brief")],
-            [("🎯 Sessions", "show_sessions"), ("🔍 Reviews", "show_reviews")],
-            [("⚡ New Goal", f"quick_goal:{current_project}" if current_project else "show_projects"), ("🌊 Workstreams", "show_workstreams")],
-            [("📁 Select Project", "show_projects"), ("⚙️ Services", "show_processes")],
+            [("🧭 Brief Me", "show_brief"), ("🤖 Agents", "show_agents")],
+            [("📋 Tasks", "show_tasks"), ("🎯 Sessions", "show_sessions")],
+            [("🔍 Reviews", "show_reviews"), ("⚠️ Approvals", "show_approvals")],
+            [("📁 Project", "show_projects"), ("⚙️ Services", "show_processes")],
         ]
+        if current_project:
+            buttons.append([
+                (f"➕ Task ({current_project})", f"add_task_prompt:{current_project}"),
+                (f"⚡ Goal ({current_project})", f"quick_goal:{current_project}"),
+            ])
         
         keyboard = self._make_keyboard(buttons)
         await update.message.reply_text(
             f"{self._project_context(user_id)}\n\n"
-            "👋 *Welcome to RDC Command Center*\n\n"
-            "Remote control for your AI agent workstreams, goal sessions, and outcome reviews.\n\n"
-            "Tap an action below, send a voice note, or type /help for all commands.",
+            "👋 *RDC Pocket Control*\n\n"
+            "Control your local agents, queue task cards, and approve reviews from your phone.\n\n"
+            "Tap a button below, send a voice note, or type `/todo <task>` / `/send <prompt>`.",
             parse_mode="Markdown",
             reply_markup=keyboard
         )
@@ -380,31 +435,72 @@ class TelegramBot:
         project_context = self._project_context(user_id)
         
         help_text = (
-            f"📚 *RDC Command Center Guide*\n\n"
+            f"📚 *RDC Pocket Guide*\n\n"
             f"{project_context}\n\n"
-            "*🎯 Goals & Sessions:*\n"
-            "• /goal `<proj> <text>` - Launch a goal session\n"
-            "• /sessions - View active and recent sessions\n"
-            "• /cancel `<id>` - Cancel an active session\n"
-            "• /instruct `<id> <text>` - Send instruction to agent\n\n"
-            "*🔍 Reviews & Approvals:*\n"
-            "• /reviews - View sessions awaiting review\n"
+            "*🤖 Resident Agents & Task Queue:*\n"
+            "• /agents - See running local agents & live status\n"
+            "• /send `<text>` - Inject prompt into active agent terminal\n"
+            "• /todo `<title>` - Add task card for local agents to pull\n"
+            "• /tasks - View Todo / In Progress / Done board\n\n"
+            "*🎯 Goal Sessions & Reviews:*\n"
+            "• /brief - What needs attention right now\n"
+            "• /reviews - Sessions awaiting review\n"
             "• /accept `<id>` - Accept outcome and complete session\n"
-            "• /proof `<id>` - View verification proof artifact\n"
-            "• /approvals - Pending terminal command approvals\n"
-            "• /approve `<id>` / /reject `<id>` - Decide approval\n\n"
-            "*🧭 Overview & Monitoring:*\n"
-            "• /brief - HomeBase control-plane status brief\n"
-            "• /status - System overview and quick actions\n"
-            "• /workstreams - Active channels and session counts\n"
-            "• /processes - Running services and ports\n"
-            "• /logs `[project]` - Recent agent logs\n\n"
-            "*📁 Project Context:*\n"
-            "• /project `<name>` - Switch active project\n"
-            "• /projects - List registered projects\n\n"
-            "_💡 Tip: You can send voice notes anytime to issue goals or ask for a brief!_"
+            "• /approvals - Pending command approvals\n"
+            "• /goal `<proj> <text>` - Launch audited goal session\n\n"
+            "*📁 Context & Menu:*\n"
+            "• /menu - Open pocket button grid\n"
+            "• /project `<name>` - Set default project\n\n"
+            "_💡 Tip: Send voice notes or plain text anytime!_"
         )
         await update.message.reply_text(help_text, parse_mode="Markdown")
+
+    async def _handle_agents(self, update, context):
+        """Handle /agents command."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        if self.on_command:
+            result = await self.on_command("agents", "", update.effective_user.id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_send_agent(self, update, context):
+        """Handle /send <text> command to inject prompt into active local agent."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        text = " ".join(context.args).strip() if context.args else ""
+        if not text:
+            await update.message.reply_text("Usage: `/send <prompt or command>`", parse_mode="Markdown")
+            return
+        if self.on_command:
+            result = await self.on_command("agent_send", text, update.effective_user.id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_todo(self, update, context):
+        """Handle /todo <title> command to add a Herd task card."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        title = " ".join(context.args).strip() if context.args else ""
+        if not title:
+            await update.message.reply_text("Usage: `/todo <task title>`", parse_mode="Markdown")
+            return
+        user_id = update.effective_user.id
+        project = self._get_user_project(user_id) or ""
+        if self.on_command:
+            payload = f"{project}|{title}" if project else title
+            result = await self.on_command("add_task", payload, user_id)
+            await self._send_or_edit(update.message, result)
+
+    async def _handle_herd_tasks(self, update, context):
+        """Handle /tasks command to show the Herd task board."""
+        if not self._is_authorized(update.effective_user.id):
+            await self._unauthorized(update)
+            return
+        if self.on_command:
+            result = await self.on_command("herd_tasks", "", update.effective_user.id)
+            await self._send_or_edit(update.message, result)
 
     async def _handle_status(self, update, context):
         """Handle /status command."""
@@ -739,6 +835,17 @@ class TelegramBot:
                 result = await self.on_command("instruct_session", f"{session_id} {text}", user_id)
                 await self._send_or_edit(update.message, result)
                 return
+            elif action == "agent_send":
+                agent_id = state.get("agent_id")
+                result = await self.on_command("agent_send_id", f"{agent_id}|{text}", user_id)
+                await self._send_or_edit(update.message, result)
+                return
+            elif action == "add_task":
+                project = state.get("project") or self._get_user_project(user_id) or ""
+                payload = f"{project}|{text}" if project else text
+                result = await self.on_command("add_task", payload, user_id)
+                await self._send_or_edit(update.message, result)
+                return
 
         # Pass to NLP router
         result = await self.on_command("message", text, user_id)
@@ -782,6 +889,17 @@ class TelegramBot:
                     elif action == "instruct":
                         session_id = state.get("session_id")
                         result = await self.on_command("instruct_session", f"{session_id} {transcript}", user_id)
+                        await self._send_or_edit(processing_msg, result)
+                        return
+                    elif action == "agent_send":
+                        agent_id = state.get("agent_id")
+                        result = await self.on_command("agent_send_id", f"{agent_id}|{transcript}", user_id)
+                        await self._send_or_edit(processing_msg, result)
+                        return
+                    elif action == "add_task":
+                        project = state.get("project") or self._get_user_project(user_id) or ""
+                        payload = f"{project}|{transcript}" if project else transcript
+                        result = await self.on_command("add_task", payload, user_id)
                         await self._send_or_edit(processing_msg, result)
                         return
 

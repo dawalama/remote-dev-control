@@ -1,9 +1,8 @@
 import { useState, useRef, useCallback } from "react"
-import { useStateStore, onOrchestratorComplete } from "@/stores/state-store"
+import { onOrchestratorComplete } from "@/stores/state-store"
 import { useProjectStore } from "@/stores/project-store"
 import { useUIStore } from "@/stores/ui-store"
-import { POST, api } from "@/lib/api"
-import { getClientId } from "@/lib/client-id"
+import { api } from "@/lib/api"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
 import { useVoice } from "@/hooks/use-voice"
 import { useChannelStore } from "@/stores/channel-store"
@@ -12,7 +11,7 @@ import type { ChatMessage } from "@/features/chat/chat-renderer"
 
 /**
  * Fixed bottom chat panel for mobile/kiosk — persistent message history with
- * orchestrator.  Action buttons (upload, voice, phone) sit inline next to the
+ * orchestrator.  Action buttons (upload, voice) sit inline next to the
  * input.  Messages expand upward when the header is tapped.
  */
 export function ChatCard({
@@ -40,7 +39,6 @@ export function ChatCard({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const autoSubmitRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const phone = useStateStore((s) => s.phone)
   const currentProject = useProjectStore((s) => s.currentProject)
   const toast = useUIStore((s) => s.toast)
 
@@ -113,19 +111,6 @@ export function ChatCard({
   }, [])
 
   const voice = useVoice({ channel: "mobile", onFinal: handleVoiceFinal, onInterim: handleVoiceInterim })
-
-  // Phone
-  const handlePhone = async () => {
-    if (phone?.active) {
-      try { await POST("/voice/hangup"); toast("Call ended", "info") }
-      catch { toast("Failed to hang up", "error") }
-    } else if (phone?.configured) {
-      try { await POST("/voice/call", { client_id: getClientId() }); toast("Calling...", "info") }
-      catch { toast("Failed to call", "error") }
-    } else {
-      toast("Phone not configured", "warning")
-    }
-  }
 
   // Upload
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -216,20 +201,6 @@ export function ChatCard({
           title={voice.listening ? "Stop" : "Voice"}
         >
           🎤
-        </button>
-        <button
-          className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm flex-shrink-0 ${
-            phone?.active
-              ? "bg-green-600 text-white animate-pulse"
-              : phone?.configured
-                ? "bg-gray-700 text-gray-300"
-                : "bg-gray-700 text-gray-500 opacity-50"
-          }`}
-          onClick={handlePhone}
-          disabled={!phone?.configured}
-          title={phone?.active ? "Hang up" : "Call"}
-        >
-          📞
         </button>
         <button
           className="px-3 h-8 rounded-lg bg-blue-600 text-white text-sm font-medium disabled:opacity-50 flex-shrink-0"

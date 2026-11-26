@@ -59,6 +59,7 @@ class TerminalSession:
     error: Optional[str] = None
     cols: int = 120
     rows: int = 30
+    is_agent: bool = False
     relay_name: Optional[str] = None  # relay process name (e.g. "rdc-myproject")
     _ctrl_sock: Optional[socket.socket] = field(default=None, repr=False)
     _output_buffer: bytearray = field(default_factory=bytearray, repr=False)
@@ -373,6 +374,7 @@ class TerminalManager:
         cols: int = 120,
         rows: int = 30,
         mode: Optional[str] = None,
+        is_agent: bool = False,
     ) -> TerminalSession:
         """Create a new terminal session.
 
@@ -444,13 +446,17 @@ class TerminalManager:
         # Check if a surviving relay exists and reconnect
         if relay_name in _relay_list_sessions():
             try:
-                return self._reconnect_relay(session_id, project, relay_name, command, cwd, cols, rows)
+                session = self._reconnect_relay(session_id, project, relay_name, command, cwd, cols, rows)
+                session.is_agent = is_agent
+                return session
             except Exception as e:
                 logger.warning(f"Failed to reconnect to relay {relay_name}: {e}")
                 _relay_cleanup_stale(relay_name)
 
         # Try relay, fall back to raw PTY
-        return self._create_relay(session_id, project, relay_name, command, cwd, cols, rows)
+        session = self._create_relay(session_id, project, relay_name, command, cwd, cols, rows)
+        session.is_agent = is_agent
+        return session
 
     def _create_relay(
         self, session_id: str, project: str, relay_name: str,
@@ -1033,7 +1039,7 @@ class TerminalManager:
     def is_waiting_for_input(self, session_id: str) -> bool:
         """Heuristic: is this terminal waiting for user input?"""
         session = self._sessions.get(session_id)
-        if not session or session.status != TerminalStatus.RUNNING:
+        if not session or session.status != TerminalStatus.RUNNING or session.is_agent:
             return False
 
         idle_seconds = time.monotonic() - session._last_output_at

@@ -2905,86 +2905,6 @@ class ActionExecutor:
                         "output": f"Cancelled session {session.id}.",
                     }
 
-                case "end_phone_call":
-                    return {"action": "end_phone_call", "type": "client"}
-
-                case "pair_with_client":
-                    from .state_machine import get_state_machine
-                    from .channels.phone import get_phone_channel
-                    sm = get_state_machine()
-                    phone = get_phone_channel()
-                    if not phone:
-                        return {"action": "pair_with_client", "error": "Phone not available", "success": False, "type": "server"}
-                    call = phone.get_active_call()
-                    if not call:
-                        return {"action": "pair_with_client", "error": "No active call", "success": False, "type": "server"}
-                    clients = sm.get_connected_clients()
-                    if not clients:
-                        return {"action": "pair_with_client", "error": "No dashboard clients connected", "success": False, "type": "server"}
-                    # Fuzzy match client name
-                    client_name_query = params.get("client_name", "")
-                    target = None
-                    if client_name_query:
-                        names = [c["client_name"] for c in clients]
-                        matched = fuzzy_match(client_name_query, names)
-                        if matched:
-                            target = next(c for c in clients if c["client_name"] == matched)
-                    if not target:
-                        target = clients[0]  # Auto-select first
-                    phone.pair(call.call_sid, target["client_id"])
-                    # Notify client
-                    await sm.send_to_client(target["client_id"], {
-                        "type": "phone_paired",
-                        "call_sid": call.call_sid,
-                        "client_id": target["client_id"],
-                    })
-                    return {
-                        "action": "pair_with_client",
-                        "client_id": target["client_id"],
-                        "client_name": target["client_name"],
-                        "success": True,
-                        "type": "server",
-                    }
-
-                case "unpair_client":
-                    from .state_machine import get_state_machine
-                    from .channels.phone import get_phone_channel
-                    sm = get_state_machine()
-                    phone = get_phone_channel()
-                    if not phone:
-                        return {"action": "unpair_client", "error": "Phone not available", "success": False, "type": "server"}
-                    call = phone.get_active_call()
-                    if not call:
-                        return {"action": "unpair_client", "error": "No active call", "success": False, "type": "server"}
-                    old_client = call.paired_client_id
-                    phone.unpair(call.call_sid)
-                    if old_client:
-                        await sm.send_to_client(old_client, {
-                            "type": "phone_unpaired",
-                            "call_sid": call.call_sid,
-                        })
-                    return {"action": "unpair_client", "success": True, "type": "server"}
-
-                case "enable_type_mode":
-                    from .channels.phone import get_phone_channel
-                    from .state_machine import get_state_machine
-                    phone = get_phone_channel()
-                    if not phone:
-                        return {"action": "enable_type_mode", "error": "Phone not available", "success": False, "type": "server"}
-                    call = phone.get_active_call()
-                    if not call or not call.paired_client_id:
-                        return {"action": "enable_type_mode", "error": "Must be paired first", "success": False, "type": "server"}
-                    target = params.get("target", "terminal")
-                    call.type_mode = True
-                    call.type_mode_target = target
-                    sm = get_state_machine()
-                    await sm.send_to_client(call.paired_client_id, {
-                        "type": "phone_type_mode",
-                        "enabled": True,
-                        "target": target,
-                    })
-                    return {"action": "enable_type_mode", "target": target, "success": True, "type": "server"}
-
                 case "rename_client":
                     new_name = params.get("name", "").strip()
                     if not new_name:
@@ -3124,25 +3044,6 @@ class ActionExecutor:
                         except Exception:
                             pass
                     return {"action": "start_all_actions", "started": started, "count": len(started), "success": True, "type": "server"}
-
-                case "disable_type_mode":
-                    from .channels.phone import get_phone_channel
-                    from .state_machine import get_state_machine
-                    phone = get_phone_channel()
-                    if not phone:
-                        return {"action": "disable_type_mode", "error": "Phone not available", "success": False, "type": "server"}
-                    call = phone.get_active_call()
-                    if not call:
-                        return {"action": "disable_type_mode", "error": "No active call", "success": False, "type": "server"}
-                    call.type_mode = False
-                    call.type_mode_target = None
-                    if call.paired_client_id:
-                        sm = get_state_machine()
-                        await sm.send_to_client(call.paired_client_id, {
-                            "type": "phone_type_mode",
-                            "enabled": False,
-                        })
-                    return {"action": "disable_type_mode", "success": True, "type": "server"}
 
                 # --- PinchTab browser automation ---
                 case "browser_navigate":
@@ -3629,25 +3530,6 @@ def build_orchestrator_context(
         connected_clients = sm.get_connected_clients()
     except Exception:
         pass
-    if channel in ("phone", "phone_paired"):
-        try:
-            from .channels.phone import get_phone_channel
-            phone = get_phone_channel()
-            if phone:
-                call = phone.get_active_call()
-                if call:
-                    active_call_sid = call.call_sid
-                    if call.paired_client_id:
-                        paired_client_id = call.paired_client_id
-                        # Look up the client's human-readable name
-                        for c in connected_clients:
-                            if c.get("client_id") == paired_client_id:
-                                paired_client_name = c.get("client_name") or paired_client_id
-                                break
-                        if not paired_client_name:
-                            paired_client_name = paired_client_id
-        except Exception:
-            pass
 
     # PinchTab browser automation availability
     pinchtab_available = False

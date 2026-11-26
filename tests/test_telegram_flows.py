@@ -150,3 +150,66 @@ def test_telegram_bot_session_event_broadcast():
         assert "📋 View Proof" in button_texts
 
     asyncio.run(_test())
+
+
+def test_telegram_herd_agents_and_tasks_pocket_flow():
+    """Verify Telegram pocket flow for Herd agents, /todo task cards, and pulling/sending."""
+    async def _test():
+        from remote_dev_ctrl.server.agent_herd import get_agent_herd_manager
+        from remote_dev_ctrl.server.channel_manager import get_channel_manager
+        from remote_dev_ctrl.server.db.repositories import get_project_repo
+
+        proj = get_project_repo().get("demo-project")
+        default_ch = get_channel_manager().get_project_default_channel(proj.id) if proj else None
+        channel_id = default_ch.id if default_ch else "ch-system"
+
+        herd = get_agent_herd_manager()
+        worker = herd.spawn_worker(
+            channel_id=channel_id,
+            project="demo-project",
+            provider="diagnostic",
+        )
+
+        # Queue a task card via Telegram add_task
+        t_res = await handle_telegram_command("add_task", "demo-project|Verify pocket flow", user_id=123)
+        assert isinstance(t_res, dict)
+        assert "Task Card Queued" in t_res["text"]
+
+        # View tasks
+        board_res = await handle_telegram_command("herd_tasks", "", user_id=123)
+        assert "Herd Task Board" in board_res["text"]
+        assert "Verify pocket flow" in board_res["text"]
+
+        # View agents
+        agents_res = await handle_telegram_command("agents", "", user_id=123)
+        assert "Resident Agents" in agents_res["text"]
+        assert worker.name in agents_res["text"]
+
+        # Peek clean agent output card (no raw terminal chrome)
+        with patch.object(herd, "get_worker_clean_tail", return_value=["Running pytest...", "All 12 tests passed"]):
+            peek_res = await handle_telegram_command("agent_peek", worker.id, user_id=123)
+            assert "Latest Output" in peek_res["text"]
+            assert "All 12 tests passed" in peek_res["text"]
+
+        # Send prompt & pull task via mocked send_to_worker
+        with patch.object(herd, "send_to_worker", return_value={"worker": worker.to_dict()}) as mock_send:
+            send_res = await handle_telegram_command("agent_send_id", f"{worker.id}|check status", user_id=123)
+            assert "Sent to" in send_res["text"]
+            assert mock_send.called
+
+            pull_res = await handle_telegram_command("agent_pull", worker.id, user_id=123)
+            assert "Task Pulled" in pull_res["text"]
+
+        # Unmatched plain text offers 3-button intent picker and queues task on draft_to_task
+        draft_res = await handle_telegram_command("message", "Refactor auth cookie expiry", user_id=123)
+        assert "What should I do with this?" in draft_res["text"]
+        draft_actions = [b[1] for row in draft_res["buttons"] for b in row]
+        assert "draft_to_task" in draft_actions
+        assert "draft_to_agent" in draft_actions
+        assert "draft_to_goal" in draft_actions
+
+        queued = await handle_telegram_command("draft_to_task", "", user_id=123)
+        assert "Task Card Queued" in queued["text"]
+        assert "Refactor auth cookie expiry" in queued["text"]
+
+    asyncio.run(_test())

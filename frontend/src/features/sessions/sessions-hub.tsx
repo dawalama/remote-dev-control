@@ -5,6 +5,7 @@ import { useProjectStore } from "@/stores/project-store"
 import { useStateStore } from "@/stores/state-store"
 import { briefWorkstreamFilter } from "@/stores/chat-scope-store"
 import { SessionsCard } from "./sessions-card"
+import { AgentModeWorkspace } from "./agent-mode-workspace"
 import { ProviderSetup } from "./provider-setup"
 import { ProjectBootstrap } from "./project-bootstrap"
 import { EvidenceSetup } from "./evidence-setup"
@@ -12,17 +13,16 @@ import { SessionViewer } from "./session-viewer"
 import { GET } from "@/lib/api"
 
 export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () => void } = {}) {
+  const operatingMode = useUIStore((state) => state.operatingMode)
+  const setOperatingMode = useUIStore((state) => state.setOperatingMode)
   const [showProjectBootstrap, setShowProjectBootstrap] = useState(false)
   const [showSetupCards, setShowSetupCards] = useState(false)
   const [briefing, setBriefing] = useState(false)
   const [briefText, setBriefText] = useState<string | null>(null)
   const toast = useUIStore((state) => state.toast)
-  const layout = useUIStore((state) => state.layout)
   const setVoicePanelOpen = useUIStore((state) => state.setVoicePanelOpen)
   const viewingSessionId = useUIStore((state) => state.viewingSessionId)
   const setViewingSessionId = useUIStore((state) => state.setViewingSessionId)
-  const workspaceMode = useUIStore((state) => state.workspaceMode)
-  const setWorkspaceMode = useUIStore((state) => state.setWorkspaceMode)
   const channels = useChannelStore((state) => state.channels)
   const activeChannelId = useChannelStore((state) => state.activeChannelId)
   const activeChannel = channels.find((c) => c.id === activeChannelId)
@@ -73,15 +73,43 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
   return (
     <section className="flex-1 flex flex-col min-h-0 overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
       <header className="flex items-center justify-between gap-2 border-b border-gray-800 px-3 py-2 bg-gray-900/95 overflow-x-auto no-scrollbar">
-        <div className="min-w-0 flex items-center gap-1.5 flex-shrink-0">
-          <h2 className="text-sm font-semibold text-gray-100 flex items-center gap-1.5 whitespace-nowrap">
-            <span>{activeChannel?.type === "system" ? "HomeBase" : "Goals"}</span>
-            {activeChannel && (
-              <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-mono font-medium truncate max-w-[140px]">
-                #{activeChannel.name.replace(/^#+/, "")}
-              </span>
-            )}
-          </h2>
+        <div className="min-w-0 flex items-center gap-2 flex-shrink-0">
+          {activeChannel?.type !== "system" ? (
+            <div className="flex rounded-md border border-gray-700 bg-gray-950 p-0.5 flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => setOperatingMode("sessions")}
+                className={`rounded px-2.5 py-0.5 text-xs font-medium whitespace-nowrap transition-colors ${
+                  operatingMode === "sessions"
+                    ? "bg-blue-600 text-white shadow-sm"
+                    : "text-gray-400 hover:text-gray-200"
+                }`}
+                title="Goals: 1 bounded outcome per isolated worktree with auto-verify loop and proof artifact"
+              >
+                🎯 Goals
+              </button>
+              <button
+                type="button"
+                onClick={() => setOperatingMode("agents")}
+                className={`rounded px-2.5 py-0.5 text-xs font-medium whitespace-nowrap transition-colors ${
+                  operatingMode === "agents"
+                    ? "bg-blue-600 text-white shadow-sm"
+                    : "text-gray-400 hover:text-gray-200"
+                }`}
+                title="Agent Mode: Chat with persistent resident agents that create and complete task cards on the board"
+              >
+                🤖 Agents
+              </button>
+            </div>
+          ) : (
+            <span className="text-sm font-semibold text-gray-100 whitespace-nowrap">HomeBase</span>
+          )}
+
+          {activeChannel && (
+            <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-mono font-medium truncate max-w-[160px]">
+              #{activeChannel.name.replace(/^#+/, "")}
+            </span>
+          )}
           {activeChannelClient && (
             <span className="hidden md:inline-block rounded border border-purple-500/30 bg-purple-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-purple-300 whitespace-nowrap">
               {activeChannelClient.name}
@@ -120,30 +148,6 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
         </div>
 
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          {!onCloseModal && layout === "desktop" && (
-            <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5 mr-0.5">
-              <button
-                type="button"
-                onClick={() => setWorkspaceMode("goals")}
-                className={`rounded px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-colors ${
-                  workspaceMode === "goals" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
-                }`}
-              >
-                Board
-              </button>
-              <button
-                type="button"
-                onClick={() => setWorkspaceMode("terminal")}
-                className={`rounded px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-colors ${
-                  workspaceMode === "terminal" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
-                }`}
-                title="Switch to raw PTY terminal view (⌘J)"
-              >
-                &gt;_ Terminal
-              </button>
-            </div>
-          )}
-
           <button
             type="button"
             disabled={briefing}
@@ -204,14 +208,24 @@ export function WorkstreamGoalsWorkspace({ onCloseModal }: { onCloseModal?: () =
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div
+        className={
+          operatingMode === "agents" && activeChannel?.type !== "system"
+            ? "flex-1 min-h-0 flex flex-col p-2.5 overflow-hidden gap-2.5"
+            : "flex-1 overflow-y-auto p-4 space-y-4"
+        }
+      >
         {showSetupCards && (
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className="grid gap-3 lg:grid-cols-2 flex-shrink-0">
             <ProviderSetup />
             <EvidenceSetup />
           </div>
         )}
-        <SessionsCard />
+        {operatingMode === "agents" && activeChannel?.type !== "system" ? (
+          <AgentModeWorkspace />
+        ) : (
+          <SessionsCard />
+        )}
       </div>
 
       {showProjectBootstrap && <ProjectBootstrap onClose={() => setShowProjectBootstrap(false)} />}
@@ -250,28 +264,20 @@ export function SessionsNavButton({ compact = false }: { compact?: boolean }) {
   const setScope = useUIStore((state) => state.setSessionsHubScope)
 
   if (layout === "desktop") {
+    if (workspaceMode !== "terminal") {
+      return null
+    }
     return (
-      <div className="flex rounded-md border border-gray-700 bg-gray-800 p-0.5">
-        <button
-          onClick={() => {
-            setWorkspaceMode("goals")
-            setViewingSessionId(null)
-          }}
-          className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-            workspaceMode === "goals" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
-          }`}
-        >
-          Goals &amp; Review
-        </button>
-        <button
-          onClick={() => setWorkspaceMode("terminal")}
-          className={`rounded px-2.5 py-1 text-xs font-mono transition-colors ${
-            workspaceMode === "terminal" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
-          }`}
-        >
-          &gt;_ Terminal
-        </button>
-      </div>
+      <button
+        onClick={() => {
+          setWorkspaceMode("goals")
+          setViewingSessionId(null)
+        }}
+        className="rounded-md border border-blue-500/40 bg-blue-500/10 px-2.5 py-1 text-xs font-medium text-blue-300 hover:bg-blue-500/20"
+        title="Return to Workspace (⌘J)"
+      >
+        ← Back to Workspace
+      </button>
     )
   }
 

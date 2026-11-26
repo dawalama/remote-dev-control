@@ -193,9 +193,6 @@ channels:
   telegram:
     enabled: false
     # token: ${TELEGRAM_BOT_TOKEN}
-  voice:
-    enabled: false
-    provider: twilio
   web:
     enabled: true
 YAML

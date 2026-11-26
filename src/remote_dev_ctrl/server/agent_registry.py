@@ -583,15 +583,46 @@ def _drop_starter_rows(agent_id: str) -> None:
         _write_terminal_preset_rows(kept)
 
 
-def _known_agent_spec(agent_id: str, row: dict[str, Any] | None = None) -> AgentWrapperSpec:
+def _user_bin_dirs() -> list[Path]:
+    """Bin directories a login shell adds and a service PATH usually omits."""
+    home = Path.home()
+    return [home / ".local" / "bin", home / "bin"]
+
+
+def resolve_executable(
+    name: str,
+    which_fn: Callable[[str], str | None] | None = None,
+    extra_dirs: list[Path] | None = None,
+) -> str | None:
+    """Find a CLI on PATH, then in the user bin directories."""
+    check = which_fn or shutil.which
+    found = check(name)
+    if found:
+        return found
+    for directory in _user_bin_dirs() if extra_dirs is None else extra_dirs:
+        candidate = directory / name
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def _known_agent_spec(
+    agent_id: str,
+    row: dict[str, Any] | None = None,
+    resolved: str | None = None,
+) -> AgentWrapperSpec:
     meta = _KNOWN_TERMINAL_AGENTS[agent_id]
     source = row or {}
-    command = str(source.get("command") or meta["executable"])
     goal = str(source.get("goal_command") or "").strip()
     if "{prompt}" not in goal:
         goal = ""
     exe_name = str(meta["executable"])
-    resolved = shutil.which(exe_name)
+    resolved_exe = resolved or resolve_executable(exe_name)
+    typed_command = str(source.get("command") or "").strip()
+    command = typed_command or resolved_exe or exe_name
     return AgentWrapperSpec(
         id=agent_id,
         label=str(source.get("label") or meta["label"]),
@@ -602,7 +633,7 @@ def _known_agent_spec(agent_id: str, row: dict[str, Any] | None = None) -> Agent
         model_provider=str(meta.get("model_provider") or "vendor"),
         model_tier="coding",
         hosting=str(meta.get("hosting") or "cloud"),
-        executable=resolved or exe_name,
+        executable=resolved_exe or exe_name,
         auth_check_args=list(meta.get("auth_check_args") or []),
         setup_command=meta.get("setup_command"),
         env_key=meta.get("env_key"),
@@ -649,15 +680,20 @@ def _path_known_agents(
     seen: set[str],
     disabled: set[str],
     which_fn: Callable[[str], str | None] | None = None,
+    extra_dirs: list[Path] | None = None,
 ) -> list[AgentWrapperSpec]:
-    check = which_fn or shutil.which
     found: list[AgentWrapperSpec] = []
     for agent_id in _KNOWN_TERMINAL_AGENTS:
         if agent_id in seen or agent_id in disabled:
             continue
-        if check(_KNOWN_TERMINAL_AGENTS[agent_id]["executable"]) is None:
+        resolved = resolve_executable(
+            _KNOWN_TERMINAL_AGENTS[agent_id]["executable"],
+            which_fn,
+            extra_dirs,
+        )
+        if not resolved:
             continue
-        found.append(_known_agent_spec(agent_id))
+        found.append(_known_agent_spec(agent_id, resolved=resolved))
     return found
 
 
@@ -933,8 +969,8 @@ def remove_wrapper_spec(wrapper_id: str) -> bool:
     return False
 
 
-def load_agent_provider_policy() -> dict[str, str]:
-    """Load the user's preferred provider policy, defaulting to a discovered codex alias or codex."""
+def load_agent_provider_policy() -> dict[str, Any]:
+    """Load the user's preferred provider & multi-model tier routing policy."""
     store = _load_registry_store()
     policy = store.get("policy") if isinstance(store.get("policy"), dict) else {}
     # Also check legacy policy path in case a test wrote directly to ~/.rdc/agent_provider_policy.json
@@ -954,21 +990,148 @@ def load_agent_provider_policy() -> dict[str, str]:
         aliases = discover_agent_aliases()
         codex_aliases = sorted(k for k, v in aliases.items() if v.get("family") == "codex")
         preferred = codex_aliases[0] if codex_aliases else "codex"
+    raw_tiers = policy.get("tier_routing") if isinstance(policy.get("tier_routing"), dict) else {}
+    tier_routing = {
+        k: str(v).strip()
+        for k, v in raw_tiers.items()
+        if k in {"reasoning", "coding", "fast", "reviewer"} and str(v or "").strip() in valid_ids
+    }
+    routing_profile = str(policy.get("default_routing_profile") or "balanced").strip()
+    if routing_profile not in {"balanced", "max_quality", "fast"}:
+        routing_profile = "balanced"
     return {
         "preferred_provider": preferred,
         "fallback_policy": str(policy.get("fallback_policy") or "ask"),
+        "default_routing_profile": routing_profile,
+        "tier_routing": tier_routing,
     }
 
 
-def save_agent_provider_policy(preferred_provider: str, fallback_policy: str = "ask") -> dict[str, str]:
+def save_agent_provider_policy(
+    preferred_provider: str,
+    fallback_policy: str = "ask",
+    *,
+    default_routing_profile: str | None = None,
+    tier_routing: dict[str, str] | None = None,
+) -> dict[str, Any]:
     store = _load_registry_store()
-    policy = {
+    existing = store.get("policy") if isinstance(store.get("policy"), dict) else {}
+    policy: dict[str, Any] = {
         "preferred_provider": preferred_provider,
         "fallback_policy": fallback_policy,
+        "default_routing_profile": default_routing_profile or existing.get("default_routing_profile") or "balanced",
+        "tier_routing": tier_routing if tier_routing is not None else (existing.get("tier_routing") or {}),
     }
     store["policy"] = policy
     _save_registry_store(store)
     return policy
+
+
+def _is_wrapper_installed(spec: AgentWrapperSpec, which_fn: Callable[[str], str | None]) -> bool:
+    if spec.id in ("diagnostic", "shell") or not spec.supports_sessions or not spec.enabled:
+        return False
+    exe = spec.executable or spec.id
+    return bool(which_fn(exe))
+
+
+def resolve_provider_for_tier(
+    tier: str,
+    *,
+    routing_profile: str = "balanced",
+    exclude_provider: str | None = None,
+    preferred_fallback: str | None = None,
+    which_fn: Callable[[str], str | None] = shutil.which,
+) -> str:
+    """Resolve the best available CLI agent provider for a cognitive tier & routing profile.
+
+    Tiers:
+      - `reasoning`: deep planning, architecture, root-cause escalation
+      - `coding`: balanced implementation & loop iterations
+      - `fast`: lower-cost / local / quick utility execution
+      - `reviewer`: independent cross-model reviewer (avoids `exclude_provider` when possible)
+    """
+    effective_tier = (tier or "coding").strip().lower()
+    if routing_profile == "max_quality" and effective_tier in ("coding", "fast"):
+        effective_tier = "reasoning"
+    elif routing_profile == "fast" and effective_tier == "coding":
+        effective_tier = "fast"
+
+    policy = load_agent_provider_policy()
+    tier_map: dict[str, str] = policy.get("tier_routing") or {}
+    fallback = preferred_fallback or policy.get("preferred_provider") or "codex"
+
+    wrappers = [w for w in list_registered_wrappers() if w.supports_sessions and w.id != "diagnostic"]
+    installed = [w for w in wrappers if _is_wrapper_installed(w, which_fn)]
+    installed_by_id = {w.id: w for w in installed}
+
+    exclude_driver = None
+    if exclude_provider:
+        try:
+            exclude_driver = resolve_provider_spec(exclude_provider)[0]
+        except Exception:
+            exclude_driver = exclude_provider.lower()
+
+    def _is_excluded(w: AgentWrapperSpec) -> bool:
+        if not exclude_provider:
+            return False
+        return w.id == exclude_provider or (exclude_driver is not None and w.driver == exclude_driver)
+
+    # 1. Explicit user tier override if installed and not excluded
+    explicit = tier_map.get(effective_tier)
+    if explicit and explicit in installed_by_id and not _is_excluded(installed_by_id[explicit]):
+        return explicit
+
+    if not installed:
+        return fallback
+
+    # 2. Tier-specific heuristics over installed wrappers
+    candidates = [w for w in installed if not _is_excluded(w)] or installed
+
+    if effective_tier in ("reasoning", "reviewer"):
+        # Prefer explicit reasoning-tier wrappers, then Claude / agy / Codex
+        for w in candidates:
+            if w.model_tier == "reasoning":
+                return w.id
+        for preferred_driver in ("claude", "agy", "codex", "cursor", "opencode"):
+            for w in candidates:
+                if w.driver == preferred_driver:
+                    return w.id
+        return candidates[0].id
+
+    if effective_tier == "fast":
+        # Prefer explicit fast/local wrappers, then codex / agy / opencode
+        for w in candidates:
+            if w.model_tier == "fast" or w.hosting in ("local", "self_hosted"):
+                return w.id
+        for preferred_driver in ("codex", "agy", "opencode", "aider", "claude"):
+            for w in candidates:
+                if w.driver == preferred_driver:
+                    return w.id
+        return candidates[0].id
+
+    # Default "coding" tier: respect preferred_fallback if installed and not excluded
+    if fallback in installed_by_id and not _is_excluded(installed_by_id[fallback]):
+        return fallback
+    for preferred_driver in ("codex", "claude", "agy", "cursor", "opencode"):
+        for w in candidates:
+            if w.driver == preferred_driver:
+                return w.id
+    return candidates[0].id
+
+
+def pick_reviewer_provider(
+    author_provider: str | None,
+    *,
+    which_fn: Callable[[str], str | None] = shutil.which,
+) -> str:
+    """Pick an independent cross-model reviewer provider distinct from the session's author."""
+    return resolve_provider_for_tier(
+        "reviewer",
+        routing_profile="balanced",
+        exclude_provider=author_provider,
+        preferred_fallback=author_provider,
+        which_fn=which_fn,
+    )
 
 
 def resolve_provider_spec(provider: str) -> tuple[str, str, dict[str, str] | None, AgentWrapperSpec]:
@@ -1114,13 +1277,13 @@ def build_agent_command(
     if driver == "codex":
         codex_model_flag = resolve_codex_model_flag(invocation)
         run_args = (
-            f"--ask-for-approval never exec --sandbox workspace-write{codex_model_flag} "
+            f"--ask-for-approval never exec --sandbox workspace-write --json{codex_model_flag} "
             f"--output-last-message \"$rdc_final\" {fallback_prompt if resume else prompt}"
         )
         run_call = wrap_alias_invocation(alias_info, spec.executable or "codex", run_args)
         if resume:
             resume_args = (
-                f"--ask-for-approval never exec resume --last{codex_model_flag} "
+                f"--ask-for-approval never exec resume --last --json{codex_model_flag} "
                 f"--output-last-message \"$rdc_final\" {prompt}"
             )
             resume_call = wrap_alias_invocation(alias_info, spec.executable or "codex", resume_args)
@@ -1131,14 +1294,15 @@ def build_agent_command(
 
     elif driver == "claude":
         perm_flag = "" if ("--dangerously-skip-permissions" in invocation or "--permission-mode" in invocation) else " --dangerously-skip-permissions"
-        run_args = f"-p{perm_flag} {fallback_prompt if resume else prompt}".strip()
-        run_call = f"{wrap_alias_invocation(alias_info, spec.executable or 'claude', run_args)} > \"$rdc_final\""
+        stream_flags = " --output-format stream-json --verbose"
+        run_args = f"-p{stream_flags}{perm_flag} {fallback_prompt if resume else prompt}".strip()
+        run_call = f"{wrap_alias_invocation(alias_info, spec.executable or 'claude', run_args)} | tee \"$rdc_final\""
         if resume:
-            resume_args = f"-p --continue{perm_flag} {prompt}".strip()
-            resume_call = f"{wrap_alias_invocation(alias_info, spec.executable or 'claude', resume_args)} > \"$rdc_final\""
-            body = f"({resume_call}) || ({run_call})"
+            resume_args = f"-p --continue{stream_flags}{perm_flag} {prompt}".strip()
+            resume_call = f"{wrap_alias_invocation(alias_info, spec.executable or 'claude', resume_args)} | tee \"$rdc_final\""
+            body = f"(set -o pipefail 2>/dev/null || true; ({resume_call}) || ({run_call}))"
         else:
-            body = run_call
+            body = f"(set -o pipefail 2>/dev/null || true; {run_call})"
         inner = _wrap_final_capture("claude", body)
 
     elif driver == "cursor":
@@ -1162,9 +1326,9 @@ def build_agent_command(
     elif driver == "agy":
         base_exe = spec.executable or "agy"
         resume_flag = "--continue " if resume else ""
-        run_args = f"--print --dangerously-skip-permissions {resume_flag}{prompt}"
-        run_call = f"{wrap_alias_invocation(alias_info, base_exe, run_args)} > \"$rdc_final\""
-        inner = _wrap_final_capture("agy", run_call)
+        run_args = f"--dangerously-skip-permissions --output-format stream-json {resume_flag}--print {prompt}"
+        run_call = f"{wrap_alias_invocation(alias_info, base_exe, run_args)} | tee \"$rdc_final\""
+        inner = _wrap_final_capture("agy", f"(set -o pipefail 2>/dev/null || true; {run_call})")
 
     elif driver == "aider":
         base_exe = spec.executable or "aider"
@@ -1301,7 +1465,8 @@ def list_provider_readiness(
     specs = [w for w in list_registered_wrappers() if w.supports_sessions]
 
     def _probe(spec: AgentWrapperSpec) -> dict[str, Any]:
-        installed = spec.executable is None or which_fn(spec.executable) is not None
+        exe = spec.executable or ""
+        installed = not exe or (os.path.isabs(exe) and os.path.isfile(exe)) or which_fn(exe) is not None
         blocker = check_fn(spec.id) if installed else f"{spec.label} is not installed on the RDC host."
         return {
             "id": spec.id,

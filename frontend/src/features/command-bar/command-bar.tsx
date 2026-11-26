@@ -1,157 +1,192 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useRef } from "react"
 import { useUIStore } from "@/stores/ui-store"
-import { useStateStore } from "@/stores/state-store"
-import { POST } from "@/lib/api"
-import { getClientId } from "@/lib/client-id"
 import { LogsPill } from "@/features/logs/logs-panel"
 import { useVoice } from "@/hooks/use-voice"
 import { useOrchestrator } from "@/hooks/use-orchestrator"
+import { useChannelSend } from "@/hooks/use-channel-send"
+import { useFileUpload } from "@/hooks/use-file-upload"
 import { useChannelStore } from "@/stores/channel-store"
 import { useProjectStore } from "@/stores/project-store"
-import { ChatScopeChip } from "@/components/chat-scope-chip"
 
 export function CommandBar() {
   const toast = useUIStore((s) => s.toast)
-  const phone = useStateStore((s) => s.phone)
   const toggleBottomPanel = useUIStore((s) => s.toggleBottomPanel)
-  const [phoneCalling, setPhoneCalling] = useState(false)
+  const chatOpen = useUIStore((s) => s.chatOpen)
+  const toggleChat = useUIStore((s) => s.toggleChat)
+  const setVoicePanelOpen = useUIStore((s) => s.setVoicePanelOpen)
+  const voicePanelOpen = useUIStore((s) => s.voicePanelOpen)
+
   const [quickInput, setQuickInput] = useState("")
-  const [sendingQuick, setSendingQuick] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const channels = useChannelStore((s) => s.channels)
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
+  const messages = useChannelStore((s) => s.messages)
+  const postMessage = useChannelStore((s) => s.postMessage)
   const activeChannel = channels.find((c) => c.id === activeChannelId)
   const currentProject = useProjectStore((s) => s.currentProject)
 
+  const isHomebase = !activeChannelId || activeChannelId === "ch-system"
+  const rawName = activeChannel?.name?.replace(/^#/, "") || currentProject || "HomeBase"
+  const scopeBadge = isHomebase ? "HomeBase" : `#${rawName}`
+  const projectName =
+    activeChannel?.project_names?.[0] ||
+    (isHomebase ? currentProject || "" : rawName.split("/")[0] || "")
+
   const orchestrator = useOrchestrator({
     channel: "desktop",
-    sync: true,
     onOpenTerminal: () => toggleBottomPanel(),
   })
 
-  const runChiefOfStaffPrompt = useCallback(async (text: string, openDrawer = true) => {
-    const trimmed = text.trim()
-    if (!trimmed) return
-    setSendingQuick(true)
-    try {
-      const { activeChannelId: chId, postMessage } = useChannelStore.getState()
-      if (chId) {
-        await postMessage(chId, trimmed, "user")
-      }
-      if (openDrawer && chId && !useUIStore.getState().chatOpen) {
+  const { handleSend: sendToChannel, sending } = useChannelSend({
+    activeChannelId,
+    projectName,
+    orchestrator,
+    postMessage,
+  })
+
+  const { uploadMultiple } = useFileUpload()
+
+  const sendPrompt = useCallback(
+    async (text: string, openDrawer = true) => {
+      const trimmed = text.trim()
+      if (!trimmed) return
+      if (openDrawer && !useUIStore.getState().chatOpen) {
         useUIStore.getState().toggleChat()
       }
-      const result = await orchestrator.send(trimmed)
-      if (chId && result?.response) {
-        await postMessage(chId, result.response, "orchestrator")
-      } else if (!chId && result?.response) {
-        toast(result.response.slice(0, 160), "info")
+      if (activeChannelId) {
+        await sendToChannel(trimmed)
+      } else {
+        const result = await orchestrator.send(trimmed)
+        if (result?.response) {
+          toast(String(result.response).slice(0, 160), "info")
+        }
       }
-    } finally {
-      setSendingQuick(false)
-    }
-  }, [orchestrator, toast])
+    },
+    [activeChannelId, sendToChannel, orchestrator, toast],
+  )
 
-  const handleVoiceFinal = useCallback(async (text: string) => {
-    toast(`Voice: "${text}"`, "info")
-    await runChiefOfStaffPrompt(text, true)
-  }, [toast, runChiefOfStaffPrompt])
+  const handleVoiceFinal = useCallback(
+    async (text: string) => {
+      toast(`Voice: "${text}"`, "info")
+      await sendPrompt(text, true)
+    },
+    [toast, sendPrompt],
+  )
 
   const voice = useVoice({ channel: "desktop", onFinal: handleVoiceFinal })
-  const setVoicePanelOpen = useUIStore((s) => s.setVoicePanelOpen)
-  const voicePanelOpen = useUIStore((s) => s.voicePanelOpen)
-  const chatOpen = useUIStore((s) => s.chatOpen)
-
-  const handlePhone = async () => {
-    if (phone?.active) {
-      try {
-        await POST("/voice/hangup")
-        toast("Call ended", "info")
-      } catch { toast("Failed to hang up", "error") }
-    } else {
-      setPhoneCalling(true)
-      try {
-        await POST("/voice/call", { client_id: getClientId() })
-        toast("Calling...", "info")
-      } catch { toast("Failed to call", "error") }
-      finally { setPhoneCalling(false) }
-    }
-  }
-
-  const scopeLabel = activeChannel?.name?.replace(/^#/, "") || currentProject || "HomeBase"
 
   return (
     <div className="fixed bottom-0 left-0 right-0 h-[48px] bg-gray-800 border-t border-gray-700 z-40 flex items-center px-4 gap-2">
-      {/* Left: logs pill + scope chip */}
-      <LogsPill />
-      {!chatOpen && <ChatScopeChip compact />}
+      {/* Hidden file input for single docked composer */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files?.length) {
+            void uploadMultiple(e.target.files)
+            if (!chatOpen) toggleChat()
+          }
+          e.target.value = ""
+        }}
+      />
 
-      {/* Center: Always-ready Workstream Chief-of-Staff Bar */}
+      {/* Left: logs pill */}
+      <LogsPill />
+
+      {/* Center: Single Docked Scope Composer + Inline Thread Toggle */}
       <div className="flex-1 max-w-2xl mx-auto flex items-center gap-1.5">
-        <div className="flex-1 flex items-center rounded-full border border-gray-600/80 bg-gray-900/90 px-3 py-1 focus-within:border-blue-500">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400 mr-2 flex-shrink-0">
-            Chief of Staff
+        <div
+          className={`flex-1 flex items-center rounded-full border bg-gray-900/95 px-2.5 py-1 transition-colors ${
+            chatOpen
+              ? "border-blue-500/70 ring-1 ring-blue-500/20"
+              : "border-gray-600/80 focus-within:border-blue-500"
+          }`}
+        >
+          <span
+            className={`mr-2 flex-shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+              isHomebase
+                ? "bg-blue-500/15 text-blue-300 border border-blue-500/30"
+                : "bg-amber-500/15 text-amber-200 border border-amber-500/30"
+            }`}
+            title={isHomebase ? "Whole-machine HomeBase scope" : `Workstream ${scopeBadge}`}
+          >
+            {scopeBadge}
           </span>
+
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="mr-1.5 text-gray-500 hover:text-gray-300 text-xs flex-shrink-0"
+            title="Attach file to thread"
+          >
+            📎
+          </button>
+
           <input
             data-no-global-intercept
             value={quickInput}
-            disabled={sendingQuick}
+            disabled={sending}
             onChange={(e) => setQuickInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && quickInput.trim() && !sendingQuick) {
+              if (e.key === "Enter" && quickInput.trim() && !sending) {
                 e.preventDefault()
                 const msg = quickInput
                 setQuickInput("")
-                void runChiefOfStaffPrompt(msg, true)
+                void sendPrompt(msg, true)
               }
             }}
-            placeholder={`Ask ${scopeLabel} — "Brief me", "Start a goal to...", or ask anything…`}
+            placeholder={`Ask ${scopeBadge}… ("Brief me", "Start a goal…", or ⌘/ for history)`}
             className="min-w-0 flex-1 bg-transparent text-xs text-gray-100 placeholder-gray-500 focus:outline-none"
           />
+
           {quickInput.trim() ? (
             <button
-              disabled={sendingQuick}
+              type="button"
+              disabled={sending}
               onClick={() => {
                 const msg = quickInput
                 setQuickInput("")
-                void runChiefOfStaffPrompt(msg, true)
+                void sendPrompt(msg, true)
               }}
-              className="ml-1.5 rounded-full bg-blue-600 px-2.5 py-0.5 text-[10px] font-medium text-white hover:bg-blue-500"
+              className="ml-1.5 rounded-full bg-blue-600 px-2.5 py-0.5 text-[10px] font-medium text-white hover:bg-blue-500 flex-shrink-0"
             >
-              {sendingQuick ? "…" : "Send"}
+              {sending ? "…" : "Send"}
             </button>
           ) : (
             <button
-              disabled={sendingQuick}
-              onClick={() => { void runChiefOfStaffPrompt("Brief me", true) }}
+              type="button"
+              disabled={sending}
+              onClick={() => {
+                void sendPrompt("Brief me", true)
+              }}
               className="ml-1.5 rounded-full border border-gray-700 bg-gray-800 px-2 py-0.5 text-[10px] text-gray-300 hover:border-blue-500/50 hover:text-blue-300 flex-shrink-0"
-              title="Get an instant deterministic status brief for this workstream"
+              title="Get an instant status brief"
             >
               ⚡ Brief me
             </button>
           )}
+
+          <button
+            type="button"
+            onClick={toggleChat}
+            title={chatOpen ? "Hide thread history (⌘/)" : "Show thread history (⌘/)"}
+            className={`ml-1.5 flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors flex-shrink-0 ${
+              chatOpen
+                ? "bg-blue-600/25 text-blue-200 border border-blue-500/40"
+                : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+            }`}
+          >
+            <span>{chatOpen ? "⌄" : "⌃"}</span>
+            {messages.length > 0 && <span className="font-mono">{messages.length}</span>}
+          </button>
         </div>
       </div>
 
-      {/* Right: Unified Controls */}
+      {/* Right: Voice & Settings */}
       <div className="flex items-center gap-2">
-        {/* Phone */}
-        {Boolean(phone?.configured) && (
-          <button
-            className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${
-              phone?.active
-                ? "bg-green-600 text-white animate-pulse"
-                : "bg-gray-600 text-gray-300 hover:bg-gray-500"
-            }`}
-            disabled={phoneCalling}
-            onClick={handlePhone}
-            title={phone?.active ? "Hang up" : "Call"}
-          >
-            📱
-          </button>
-        )}
-
-        {/* Voice — opens HomeBase Voice panel */}
         <button
           className={`h-8 rounded-full flex items-center gap-1.5 px-3 text-xs font-medium transition-colors ${
             voicePanelOpen || voice.listening
@@ -159,43 +194,15 @@ export function CommandBar() {
               : "bg-gray-700 text-gray-300 hover:bg-gray-600"
           }`}
           onClick={() => setVoicePanelOpen(true)}
-          title="HomeBase Voice — talk to Chief of Staff"
+          title="Voice input"
         >
           🎤
           <span className="hidden sm:inline">Voice</span>
         </button>
 
-        {/* Chief of Staff History Drawer toggle */}
-        <ChatToggle />
-
-        {/* Settings (rightmost) */}
         <SettingsButton />
       </div>
     </div>
-  )
-}
-
-function ChatToggle() {
-  const chatOpen = useUIStore((s) => s.chatOpen)
-  const toggleChat = useUIStore((s) => s.toggleChat)
-  const messages = useChannelStore((s) => s.messages)
-
-  return (
-    <button
-      className={`h-8 rounded-full flex items-center gap-1.5 px-3 text-xs font-medium transition-colors ${
-        chatOpen
-          ? "bg-blue-600 text-white"
-          : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-      }`}
-      onClick={toggleChat}
-      title="Toggle Workstream Chief-of-Staff drawer (⌘/)"
-    >
-      💬
-      <span className="hidden md:inline">Thread</span>
-      {!chatOpen && messages.length > 0 && (
-        <span className="text-[10px] bg-gray-600 text-gray-200 px-1.5 rounded-full">{messages.length}</span>
-      )}
-    </button>
   )
 }
 
@@ -230,7 +237,10 @@ function SettingsButton() {
             {currentProject && (
               <button
                 className="w-full px-3 py-2 text-xs text-gray-200 hover:bg-gray-700 text-left"
-                onClick={() => { setOpen(false); useUIStore.getState().setProjectSettingsOpen(true) }}
+                onClick={() => {
+                  setOpen(false)
+                  useUIStore.getState().setProjectSettingsOpen(true)
+                }}
               >
                 Project Settings
                 <span className="text-[10px] text-gray-500 ml-1">{currentProject}</span>
@@ -239,15 +249,23 @@ function SettingsButton() {
             {activeWorkstream && (
               <button
                 className="w-full px-3 py-2 text-xs text-gray-200 hover:bg-gray-700 text-left truncate"
-                onClick={() => { setOpen(false); useUIStore.getState().setWorkstreamSettingsOpen(true) }}
+                onClick={() => {
+                  setOpen(false)
+                  useUIStore.getState().setWorkstreamSettingsOpen(true)
+                }}
               >
                 Workstream Settings
-                <span className="text-[10px] text-gray-500 ml-1">{activeWorkstream.name.replace(/^#/, "")}</span>
+                <span className="text-[10px] text-gray-500 ml-1">
+                  {activeWorkstream.name.replace(/^#/, "")}
+                </span>
               </button>
             )}
             <button
               className="w-full px-3 py-2 text-xs text-gray-200 hover:bg-gray-700 text-left"
-              onClick={() => { setOpen(false); useUIStore.getState().setSystemSettingsOpen(true) }}
+              onClick={() => {
+                setOpen(false)
+                useUIStore.getState().setSystemSettingsOpen(true)
+              }}
             >
               System Settings
             </button>
@@ -259,7 +277,9 @@ function SettingsButton() {
                   <button
                     key={t.id}
                     className={`px-2 py-0.5 text-[10px] rounded ${
-                      theme === t.id ? "bg-blue-600 text-white" : "bg-gray-700 text-gray-400 hover:bg-gray-600"
+                      theme === t.id
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 text-gray-400 hover:bg-gray-600"
                     }`}
                     onClick={() => setTheme(t.id)}
                   >

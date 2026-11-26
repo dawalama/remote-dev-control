@@ -165,12 +165,18 @@ _EXIT_SIGNAL_RE = re.compile(r"__RDC_EXIT:(\d+)")
 
 def extract_agent_report(transcript: str, provider: str | None) -> str:
     """Extract the provider's final human-readable answer from a terminal transcript."""
+    from .agent_stream import extract_final_from_ndjson
+
     cleaned = strip_ansi(transcript).replace("\r\n", "\n")
-    final_match = re.search(r"\n__RDC_FINAL_BEGIN__\n(.*?)\n__RDC_FINAL_END__", cleaned, re.DOTALL)
-    if final_match:
-        final_text = final_match.group(1).strip()
+    final_matches = re.findall(r"\n__RDC_FINAL_BEGIN__\n(.*?)\n__RDC_FINAL_END__", cleaned, re.DOTALL)
+    for raw_block in reversed(final_matches):
+        final_text = raw_block.strip()
         if final_text:
-            return final_text
+            ndjson_final = extract_final_from_ndjson(final_text)
+            return ndjson_final if ndjson_final else final_text
+    ndjson_fallback = extract_final_from_ndjson(cleaned)
+    if ndjson_fallback:
+        return ndjson_fallback
     # Codex prints this stable role marker even when RDC recorded the provider
     # as "orchestrated". Inspect the transcript instead of trusting that alias.
     marker = "codex\n"
@@ -372,6 +378,51 @@ class SessionManager:
         ).fetchall()
         return self._rows_to_sessions(rows)
 
+    def reconcile_orphaned_sessions(self) -> int:
+        """Recover sessions left in 'running' after a server restart or dead process."""
+        from .terminal import get_terminal_manager
+
+        tm = get_terminal_manager()
+        running_rows = self._db().execute(
+            "SELECT * FROM sessions WHERE status = ?",
+            (SessionStatus.RUNNING.value,),
+        ).fetchall()
+        recovered = 0
+        for row in running_rows:
+            session = self._row_to_session(row)
+            has_live_term = any(tm.is_alive(tid) for tid in (session.terminal_ids or []))
+            if has_live_term:
+                continue
+
+            meta = dict(session.metadata or {})
+            loop_state = meta.get("loop")
+            if isinstance(loop_state, dict) and loop_state.get("status") == "running":
+                loop_state = {**loop_state, "status": "interrupted"}
+                meta["loop"] = loop_state
+                session.metadata = meta
+
+            ev_row = self._db().execute(
+                "SELECT COUNT(*) AS c FROM session_evidence WHERE session_id = ?",
+                (session.id,),
+            ).fetchone()
+            has_evidence = bool(ev_row and ev_row["c"] > 0)
+
+            if session.output_summary or has_evidence:
+                session.blocker = session.blocker or "Interrupted by server restart — ready for review or retry"
+                self._persist(session)
+                self.update_status(
+                    session.id,
+                    SessionStatus.VERIFYING,
+                    output_summary=session.output_summary,
+                )
+            else:
+                session.blocker = "Interrupted by server restart — resume, retry, or close"
+                self._persist(session)
+                self.update_status(session.id, SessionStatus.WAITING)
+            self.log_event(session, "session.reconciled_on_startup", {"to": session.status.value})
+            recovered += 1
+        return recovered
+
     def resolve_terminal_approvals(self, session_id: str, decided_by: str = "terminal") -> None:
         """Close terminal prompts that the session has left behind.
 
@@ -479,6 +530,12 @@ class SessionManager:
         self._persist(session)
         if session.status != SessionStatus.WAITING:
             self.resolve_terminal_approvals(session.id)
+        try:
+            from .agent_herd import get_agent_herd_manager
+
+            get_agent_herd_manager().on_session_status_changed(session, session.status.value)
+        except Exception:
+            logger.debug("agent herd status sync skipped", exc_info=True)
         self.log_event(
             session,
             f"session.{session.status.value}",
@@ -588,8 +645,29 @@ class SessionManager:
             return
         self._monitors[monitor_key] = loop.create_task(_monitor())
 
+    def _emit_stream_events(self, session: Session, stream_events: list) -> None:
+        """Persist normalized NDJSON agent events and update live current_step."""
+        if not stream_events:
+            return
+        latest_step: str | None = None
+        for ev in stream_events:
+            scrubbed: dict[str, Any] = {}
+            for key, val in ev.data.items():
+                if isinstance(val, str):
+                    scrubbed[key] = _outbound_scrubber.scrub(val)
+                else:
+                    scrubbed[key] = val
+            self.log_event(session, ev.event_type, scrubbed)
+            if ev.step_label:
+                latest_step = _outbound_scrubber.scrub(ev.step_label)
+        if latest_step and latest_step != session.current_step:
+            session.current_step = latest_step
+            self._persist(session)
+
     async def _monitor_terminal(self, session: Session, terminal_id: str):
         """Monitor a single terminal's output for a session."""
+        from .agent_stream import AgentStreamParser
+
         tm = get_terminal_manager()
         cm = get_channel_manager()
         pos_key = terminal_id
@@ -597,9 +675,10 @@ class SessionManager:
         idle_count = 0
         output_seen = False  # Don't check completion until agent has produced output
         last_event_type: Optional[str] = None
+        stream_parser = AgentStreamParser()
 
         while session.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
-            await asyncio.sleep(3)
+            await asyncio.sleep(1.5)
 
             # Refresh session from memory (might have been updated by another monitor)
             session = self.get(session.id) or session
@@ -674,9 +753,17 @@ class SessionManager:
                 self._last_output_pos[pos_key] = len(buf)
                 text = strip_ansi(buf[last_pos:].decode("utf-8", errors="replace"))
 
+                # Parse structured NDJSON events (Claude stream-json / Codex --json / agy)
+                parsed_events = stream_parser.feed(text)
+                self._emit_stream_events(session, parsed_events)
+                if not parsed_events and stream_parser.live_step_label and stream_parser.live_step_label != session.current_step:
+                    session.current_step = stream_parser.live_step_label
+                    self._persist(session)
+
                 # Check for exit signal (instant completion)
                 exit_match = _EXIT_SIGNAL_RE.search(text)
                 if exit_match:
+                    self._emit_stream_events(session, stream_parser.flush())
                     exit_code = int(exit_match.group(1))
                     self.log_event(session, "session.agent_exited", {"terminal_id": terminal_id, "exit_code": exit_code})
                     self._save_terminal_log(session)
@@ -738,6 +825,9 @@ class SessionManager:
                 "summary": summary,
             }
 
+        if loop_res.get("action") == "aborted":
+            return
+
         if loop_res.get("action") == "retry":
             round_num = loop_res.get("round", 2)
             max_rounds = loop_res.get("max_rounds", 3)
@@ -749,6 +839,13 @@ class SessionManager:
                 )
             except Exception:
                 pass
+            return
+
+        latest = self.get(session.id)
+        if latest and (
+            latest.status in (SessionStatus.CANCELLED, SessionStatus.COMPLETED, SessionStatus.DONE)
+            or latest.control_owner == "human"
+        ):
             return
 
         end_status = loop_res.get("end_status") or (

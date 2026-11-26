@@ -74,7 +74,6 @@ process_manager = None
 caddy_manager = None
 vnc_manager = None
 telegram_bot = None
-phone_channel = None
 email_channel = None
 auth_manager = None
 connected_clients: set[WebSocket] = set()
@@ -107,7 +106,7 @@ def _install_log_redaction() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
-    global config, agent_manager, task_repo, event_repo, event_bus, orchestrator, process_manager, caddy_manager, vnc_manager, telegram_bot, phone_channel, email_channel, auth_manager
+    global config, agent_manager, task_repo, event_repo, event_bus, orchestrator, process_manager, caddy_manager, vnc_manager, telegram_bot, email_channel, auth_manager
     
     ensure_rdc_home()
     _shutdown_event.clear()
@@ -124,6 +123,14 @@ async def lifespan(app: FastAPI):
         get_agent_run_repo().reconcile_orphaned_runs()
     except Exception as e:
         logger.warning(f"Failed to reconcile agent runs on startup: {e}")
+
+    try:
+        from .session_manager import get_session_manager
+        recovered_sessions = get_session_manager().reconcile_orphaned_sessions()
+        if recovered_sessions:
+            logger.info(f"Reconciled {recovered_sessions} orphaned running session(s) on startup")
+    except Exception as e:
+        logger.warning(f"Failed to reconcile sessions on startup: {e}")
 
     # Ensure the #system workstream exists — control-plane intent routing
     # depends on it. Migration seeds it on fresh DBs; this is a belt-and-
@@ -277,41 +284,6 @@ async def lifespan(app: FastAPI):
                 )
                 telegram_bot = None
 
-    # Start phone channel if configured
-    if config.channels.voice.enabled:
-        try:
-            from .channels.phone import PhoneChannel, set_phone_channel
-
-            account_sid = get_secret("TWILIO_ACCOUNT_SID") or config.channels.voice.account_sid
-            auth_token = get_secret("TWILIO_AUTH_TOKEN") or config.channels.voice.auth_token
-            twilio_number = get_secret("TWILIO_PHONE_NUMBER") or config.channels.voice.phone_number
-            user_phone = config.channels.voice.user_phone_number
-            webhook_url = config.channels.voice.webhook_base_url
-
-            if account_sid and auth_token and twilio_number and user_phone and webhook_url:
-                phone_channel = PhoneChannel(
-                    account_sid=account_sid,
-                    auth_token=auth_token,
-                    twilio_number=twilio_number,
-                    user_phone=user_phone,
-                    webhook_base_url=webhook_url,
-                )
-                phone_channel.start()
-                set_phone_channel(phone_channel)
-                import logging as _logging
-                _logging.getLogger(__name__).info("Phone channel started")
-            else:
-                import logging as _logging
-                _logging.getLogger(__name__).warning(
-                    "Phone channel enabled but missing credentials. Need: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, user_phone_number, webhook_base_url"
-                )
-        except ImportError as e:
-            import logging as _logging
-            _logging.getLogger(__name__).warning("Phone channel: twilio not installed: %s", e)
-        except Exception as e:
-            import logging as _logging
-            _logging.getLogger(__name__).warning("Phone channel failed to start: %s", e)
-
     # Start email channel if configured
     if config.channels.email.enabled:
         try:
@@ -454,15 +426,6 @@ async def lifespan(app: FastAPI):
                 raise
             except Exception:
                 logger.exception("Telegram bot stop error")
-        if phone_channel:
-            try:
-                await phone_channel.stop()
-                from .channels.phone import set_phone_channel
-                set_phone_channel(None)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("Phone channel stop error")
         if email_channel:
             try:
                 await email_channel.stop()
@@ -514,6 +477,9 @@ async def lifespan(app: FastAPI):
         event_bus_module._bus = None
 
 
+_TELEGRAM_PENDING_DRAFTS: dict[int, str] = {}
+
+
 async def handle_telegram_command(command: str, args: str, user_id: int) -> Any:
     """Handle commands from Telegram for goal sessions, workstreams, and reviews."""
     from .session_manager import get_session_manager, SessionStatus
@@ -540,10 +506,17 @@ async def handle_telegram_command(command: str, args: str, user_id: int) -> Any:
             processes = pm.list() if pm else []
             running_procs = len([p for p in processes if p.status == "running"])
 
+            from .agent_herd import get_agent_herd_manager
+            herd = get_agent_herd_manager()
+            herd_workers = herd.list_workers()
+            herd_tasks = herd.list_tasks()
+            todo_count = len([t for t in herd_tasks if t.status == "todo"])
+
             review_badge = f" ({len(verifying_sessions)})" if verifying_sessions else ""
             approval_badge = f" ({approval_count})" if approval_count else ""
 
             buttons = [
+                [(f"🤖 Agents ({len(herd_workers)})", "show_agents"), (f"📋 Tasks ({todo_count})", "show_tasks")],
                 [("🎯 Sessions", "show_sessions"), (f"🔍 Reviews{review_badge}", "show_reviews")],
                 [("⚡ New Goal", "show_projects"), ("🧭 Brief Me", "show_brief")],
             ]
@@ -554,6 +527,7 @@ async def handle_telegram_command(command: str, args: str, user_id: int) -> Any:
 
             text = (
                 "📊 *RDC Command Center Status*\n\n"
+                f"🤖 *Resident Agents:* `{len(herd_workers)}` active · `{todo_count}` todo cards\n"
                 f"🎯 *Goal Sessions:*\n"
                 f"• `{len(running_sessions)}` running, `{len(verifying_sessions)}` awaiting review 🔍\n"
                 f"• `{len(pending_sessions)}` queued, `{len(waiting_sessions)}` waiting input\n\n"
@@ -562,6 +536,264 @@ async def handle_telegram_command(command: str, args: str, user_id: int) -> Any:
                 f"👥 *Connected Clients:* `{len(connected_clients)}`"
             )
             return {"text": text, "buttons": buttons}
+
+        elif command == "agents":
+            from .agent_herd import get_agent_herd_manager
+
+            herd = get_agent_herd_manager()
+            workers = herd.list_workers()
+            if not workers:
+                return {
+                    "text": "🤖 *Resident Agents*\n\nNo local agents running right now.\n\nStart an agent on your laptop in Agent Mode, or queue tasks with `/todo <title>`.",
+                    "buttons": [
+                        [("📋 Tasks", "show_tasks"), ("➕ Add Task", "add_task_prompt:")],
+                        [("⬅️ Main Menu", "main_menu")],
+                    ],
+                }
+
+            tasks = herd.list_tasks()
+            in_prog_by_agent = {
+                t.agent_id: t for t in tasks if t.status == "in_progress" and t.agent_id
+            }
+            todo_count = len([t for t in tasks if t.status == "todo"])
+
+            lines = [f"🤖 *Resident Agents ({len(workers)})*\n"]
+            buttons = []
+            for w in workers[:6]:
+                w_dict = w.to_dict()
+                t_state = w_dict.get("terminal_state", "none")
+                icon = (
+                    "🔵"
+                    if t_state == "streaming" or w.status == "working"
+                    else "🟢"
+                    if t_state == "idle"
+                    else "🔴"
+                    if t_state == "exited"
+                    else "⚪"
+                )
+                active_task = in_prog_by_agent.get(w.id)
+                task_note = f" · `{active_task.id}`" if active_task else ""
+                state_label = {
+                    "streaming": "working",
+                    "idle": "ready",
+                    "exited": "exited",
+                }.get(t_state, "standby")
+                lines.append(f"{icon} *{w.name}* (`{w.project}`) — _{state_label}_{task_note}")
+                if active_task:
+                    lines.append(f"    📌 _{active_task.title[:60]}_")
+                else:
+                    tail = herd.get_worker_clean_tail(w.id, max_lines=2)
+                    if tail:
+                        lines.append(f"    `{tail[-1][:70]}`")
+                row = [
+                    (f"👀 Update", f"agent_peek:{w.id}"),
+                    (f"💬 Send", f"agent_send_prompt:{w.id}"),
+                ]
+                if active_task:
+                    row.append(("✅ Done", f"agent_done_task:{active_task.id}"))
+                elif todo_count > 0:
+                    row.append(("⚡ Pull", f"agent_pull:{w.id}"))
+                buttons.append(row)
+
+            buttons.append([("📋 Tasks", "show_tasks"), ("🔄 Refresh", "show_agents")])
+            buttons.append([("⬅️ Main Menu", "main_menu")])
+            return {"text": "\n".join(lines), "buttons": buttons}
+
+        elif command == "agent_peek":
+            from .agent_herd import get_agent_herd_manager
+
+            herd = get_agent_herd_manager()
+            worker = herd.get(args.strip())
+            if not worker:
+                return "❌ Agent not found."
+            w_dict = worker.to_dict()
+            t_state = w_dict.get("terminal_state", "none")
+            tail = herd.get_worker_clean_tail(worker.id, max_lines=16)
+            tasks = herd.list_tasks(channel_id=worker.channel_id, project=worker.project)
+            active_task = next(
+                (t for t in tasks if t.status == "in_progress" and t.agent_id == worker.id),
+                None,
+            )
+
+            lines = [f"🤖 *{worker.name}* (`{worker.project}`) · _{t_state}_"]
+            if active_task:
+                lines.append(f"📌 *Task:* `{active_task.id}` — _{active_task.title}_")
+            lines.append("")
+            if tail:
+                lines.append("*Latest Output:*")
+                lines.append("```")
+                lines.extend(tail)
+                lines.append("```")
+            else:
+                lines.append("_No recent output captured yet._")
+
+            buttons = [
+                [
+                    ("👍 Yes (y)", f"agent_quick_key:{worker.id}|y"),
+                    ("↩️ Enter", f"agent_quick_key:{worker.id}|"),
+                    ("💬 Send", f"agent_send_prompt:{worker.id}"),
+                ],
+                [("⚡ Pull Task", f"agent_pull:{worker.id}"), ("🔄 Refresh", f"agent_peek:{worker.id}")],
+                [("⬅️ Agents", "show_agents")],
+            ]
+            if active_task:
+                buttons[1].insert(0, ("✅ Mark Done", f"agent_done_task:{active_task.id}"))
+            return {"text": "\n".join(lines), "buttons": buttons}
+
+        elif command == "agent_quick_key":
+            from .agent_herd import get_agent_herd_manager
+
+            agent_id, key_text = args.split("|", 1)
+            herd = get_agent_herd_manager()
+            res = herd.send_to_worker(agent_id.strip(), key_text)
+            w_name = (res.get("worker") or {}).get("name", agent_id)
+            label = key_text or "Enter"
+            return {
+                "text": f"⌨️ Sent `{label}` to `{w_name}`",
+                "buttons": [[("👀 Update", f"agent_peek:{agent_id.strip()}"), ("⬅️ Agents", "show_agents")]],
+            }
+
+        elif command == "agent_done_task":
+            from .agent_herd import get_agent_herd_manager
+
+            herd = get_agent_herd_manager()
+            card = herd.update_task(args.strip(), status="done", result_note="Completed via Telegram")
+            return {
+                "text": f"✅ *Task Completed*\n\n`{card.id}`: _{card.title}_",
+                "buttons": [[("🤖 Agents", "show_agents"), ("📋 Tasks", "show_tasks")]],
+            }
+
+        elif command == "herd_tasks":
+            from .agent_herd import get_agent_herd_manager
+
+            herd = get_agent_herd_manager()
+            tasks = herd.list_tasks()
+            todo = [t for t in tasks if t.status == "todo"]
+            in_prog = [t for t in tasks if t.status == "in_progress"]
+            done = [t for t in tasks if t.status == "done"]
+
+            lines = [
+                f"📋 *Herd Task Board* (`{len(todo)}` todo · `{len(in_prog)}` active · `{len(done)}` done)\n"
+            ]
+            if in_prog:
+                lines.append("*🔵 In Progress:*")
+                for t in in_prog[:4]:
+                    lines.append(f"• `{t.id}` ({t.project}) {t.title[:55]}")
+                lines.append("")
+            if todo:
+                lines.append("*⏳ To Do (Queue):*")
+                for t in todo[:6]:
+                    lines.append(f"• `{t.id}` ({t.project}) {t.title[:55]}")
+                lines.append("")
+            if not todo and not in_prog:
+                lines.append("_Queue is empty. Tap ➕ Add Task or send `/todo <title>`._\n")
+
+            buttons = [
+                [("➕ Add Task", "add_task_prompt:"), ("🤖 Agents", "show_agents")],
+                [("🔄 Refresh", "show_tasks"), ("⬅️ Main Menu", "main_menu")],
+            ]
+            return {"text": "\n".join(lines), "buttons": buttons}
+
+        elif command == "draft_to_task":
+            draft = _TELEGRAM_PENDING_DRAFTS.pop(user_id, "").strip()
+            if not draft:
+                return "No pending message draft found."
+            return await handle_telegram_command("add_task", draft, user_id)
+
+        elif command == "draft_to_agent":
+            draft = _TELEGRAM_PENDING_DRAFTS.pop(user_id, "").strip()
+            if not draft:
+                return "No pending message draft found."
+            return await handle_telegram_command("agent_send", draft, user_id)
+
+        elif command == "draft_to_goal":
+            draft = _TELEGRAM_PENDING_DRAFTS.pop(user_id, "").strip()
+            if not draft:
+                return "No pending message draft found."
+            db_projects = get_project_repo().list()
+            if not db_projects:
+                return "❌ No projects registered to run a goal session."
+            return await handle_telegram_command("goal", f"{db_projects[0].name} {draft}", user_id)
+
+        elif command == "agent_pull":
+            from .agent_herd import get_agent_herd_manager
+
+            herd = get_agent_herd_manager()
+            try:
+                res = herd.pull_next_task_for_worker(args.strip())
+            except ValueError as exc:
+                return {
+                    "text": f"ℹ️ {exc}",
+                    "buttons": [[("➕ Add Task", "add_task_prompt:"), ("🤖 Agents", "show_agents")]],
+                }
+            if res.get("task"):
+                t = res["task"]
+                return {
+                    "text": f"⚡ *Task Pulled*\n\n`{t['id']}` sent to `{res['worker']['name']}`:\n_{t['title']}_",
+                    "buttons": [[("🤖 Agents", "show_agents"), ("📋 Tasks", "show_tasks")]],
+                }
+            return {
+                "text": f"ℹ️ {res.get('message', 'No Todo tasks available.')}",
+                "buttons": [[("➕ Add Task", "add_task_prompt:"), ("🤖 Agents", "show_agents")]],
+            }
+
+        elif command == "agent_send":
+            from .agent_herd import get_agent_herd_manager
+
+            herd = get_agent_herd_manager()
+            workers = herd.list_workers()
+            if not workers:
+                return "❌ No active resident agents running. Start one on your laptop or queue `/todo <task>`."
+            target = workers[0]
+            herd.send_to_worker(target.id, args.strip())
+            return {
+                "text": f"💬 *Sent to* `{target.name}`\n\n`{args.strip()[:200]}`",
+                "buttons": [[("🤖 Agents", "show_agents"), ("⬅️ Main Menu", "main_menu")]],
+            }
+
+        elif command == "agent_send_id":
+            from .agent_herd import get_agent_herd_manager
+
+            agent_id, text = args.split("|", 1)
+            herd = get_agent_herd_manager()
+            res = herd.send_to_worker(agent_id.strip(), text.strip())
+            w_name = (res.get("worker") or {}).get("name", agent_id)
+            return {
+                "text": f"💬 *Sent to* `{w_name}`\n\n`{text.strip()[:200]}`",
+                "buttons": [[("🤖 Agents", "show_agents"), ("⬅️ Main Menu", "main_menu")]],
+            }
+
+        elif command == "add_task":
+            from .agent_herd import get_agent_herd_manager
+
+            if "|" in args:
+                project, title = args.split("|", 1)
+                project = project.strip()
+                title = title.strip()
+            else:
+                project = ""
+                title = args.strip()
+
+            if not project:
+                db_projects = get_project_repo().list()
+                project = db_projects[0].name if db_projects else "default"
+
+            ch_mgr = get_channel_manager()
+            proj_obj = get_project_repo().get(project)
+            default_ch = ch_mgr.get_project_default_channel(proj_obj.id) if proj_obj else None
+            channel_id = default_ch.id if default_ch else "ch-system"
+
+            herd = get_agent_herd_manager()
+            card = herd.create_task(
+                channel_id=channel_id,
+                project=project,
+                title=title,
+                created_by="user",
+            )
+            return {
+                "text": f"📋 *Task Card Queued*\n\n`{card.id}` (`{project}`)\n_{card.title}_",
+                "buttons": [[("🤖 Agents", "show_agents"), ("📋 Tasks", "show_tasks")]],
+            }
 
         elif command in ("brief", "homebase"):
             brief_data = build_homebase_brief()
@@ -1043,6 +1275,17 @@ async def handle_telegram_command(command: str, args: str, user_id: int) -> Any:
             if any(p in text for p in ("brief", "brief me", "homebase", "what's going on", "what's up", "overview")):
                 return await handle_telegram_command("brief", "", user_id)
 
+            if any(p in text for p in ("agents", "my agents", "who's running", "herd")):
+                return await handle_telegram_command("agents", "", user_id)
+
+            if any(p in text for p in ("tasks", "task board", "board", "todo list")):
+                return await handle_telegram_command("herd_tasks", "", user_id)
+
+            if text.startswith("todo:") or text.startswith("add task "):
+                title = original_text.split(":", 1)[1].strip() if text.startswith("todo:") else original_text[9:].strip()
+                if title:
+                    return await handle_telegram_command("add_task", title, user_id)
+
             if any(p in text for p in ("review", "reviews", "what needs review", "ready for review")):
                 return await handle_telegram_command("reviews", "", user_id)
 
@@ -1102,22 +1345,26 @@ async def handle_telegram_command(command: str, args: str, user_id: int) -> Any:
             if "process" in text or "service" in text:
                 return await handle_telegram_command("processes", "", user_id)
 
+            from .agent_herd import get_agent_herd_manager
+
+            _TELEGRAM_PENDING_DRAFTS[user_id] = original_text
+            herd = get_agent_herd_manager()
+            workers = herd.list_workers()
+
+            intent_buttons: list[list[tuple[str, str]]] = [
+                [("📋 Queue as Task Card", "draft_to_task")],
+            ]
+            if workers:
+                intent_buttons.append([(f"💬 Send to {workers[0].name}", "draft_to_agent")])
+            intent_buttons.append([("🎯 Run as Goal Session", "draft_to_goal")])
+            intent_buttons.append([("🧭 Brief Me", "show_brief"), ("🤖 Agents", "show_agents")])
+
             return {
                 "text": (
-                    "🤔 *I didn't quite catch that*\n\n"
-                    "Try one of these goal & review commands:\n"
-                    "• _Brief me_\n"
-                    "• _What needs review?_\n"
-                    "• _Show active sessions_\n"
-                    "• _Run test and lint on demo-project_\n"
-                    "• _Accept outcome_\n\n"
-                    "Or tap a quick action below:"
+                    "💬 *What should I do with this?*\n\n"
+                    f"_{original_text[:220]}_"
                 ),
-                "buttons": [
-                    [("🧭 Brief Me", "show_brief"), ("🔍 Reviews", "show_reviews")],
-                    [("🎯 Sessions", "show_sessions"), ("⚡ New Goal", "show_projects")],
-                    [("📊 Status", "refresh_status")],
-                ]
+                "buttons": intent_buttons,
             }
 
         else:
@@ -1986,6 +2233,18 @@ async def get_recipes():
     result = list_recipes()
     logging.info(f"GET /recipes returning {len(result)} recipes")
     return result
+
+
+class ClassifyRecipeRequest(BaseModel):
+    goal: str = ""
+
+
+@app.post("/recipes/classify")
+async def classify_recipe(body: ClassifyRecipeRequest):
+    """Classify a raw goal into the best-fit coding, planning, or review recipe."""
+    from .recipes import classify_goal_recipe
+
+    return classify_goal_recipe(body.goal)
 
 
 @app.post("/recipes")
@@ -4389,222 +4648,11 @@ async def stop_voice_server():
 
 # Phone calling endpoints (Twilio)
 
-def _try_init_phone_channel():
-    """Try to lazily initialize the phone channel from secrets + DB settings."""
-    from .channels.phone import get_phone_channel, set_phone_channel, PhoneChannel
-
-    phone = get_phone_channel()
-    if phone is not None:
-        return phone
-
-    try:
-        from .tts import get_tts_service
-        tts = get_tts_service()
-        settings = tts.get_all_settings()
-
-        account_sid = get_secret("TWILIO_ACCOUNT_SID")
-        auth_token = get_secret("TWILIO_AUTH_TOKEN")
-        twilio_number = get_secret("TWILIO_PHONE_NUMBER")
-        user_phone = settings.get("phone_user_number")
-        webhook_url = settings.get("phone_webhook_url")
-
-        if not all([account_sid, auth_token, twilio_number, user_phone, webhook_url]):
-            return None
-
-        phone = PhoneChannel(
-            account_sid=account_sid,
-            auth_token=auth_token,
-            twilio_number=twilio_number,
-            user_phone=user_phone,
-            webhook_base_url=webhook_url,
-        )
-        phone.start()
-        set_phone_channel(phone)
-        return phone
-    except Exception:
-        return None
-
-
-def _is_phone_configured() -> bool:
-    """Check if Twilio phone calling has all required credentials."""
-    from .channels.phone import get_phone_channel
-    if get_phone_channel() is not None:
-        return True
-    try:
-        from .tts import get_tts_service
-        tts = get_tts_service()
-        settings = tts.get_all_settings()
-        return bool(
-            get_secret("TWILIO_ACCOUNT_SID")
-            and get_secret("TWILIO_AUTH_TOKEN")
-            and get_secret("TWILIO_PHONE_NUMBER")
-            and settings.get("phone_user_number")
-            and settings.get("phone_webhook_url")
-        )
-    except Exception:
-        return False
-
-
-@app.post("/voice/call")
-async def initiate_phone_call(request: Request):
-    """Initiate an outbound phone call to the user."""
-    phone = _try_init_phone_channel()
-    if not phone:
-        raise HTTPException(status_code=400, detail="Phone calling not configured. Set up Twilio credentials in Admin Settings.")
-
-    data = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-    project = data.get("project")
-    client_id = data.get("client_id")
-
-    # If no explicit client_id, try to auto-pair with a connected client.
-    # Prefer the caller's own client_id if provided, otherwise pick the
-    # first connected client (desktop preferred over mobile).
-    if not client_id:
-        try:
-            from .state_machine import get_state_machine
-            clients = get_state_machine().get_connected_clients()
-            desktop_clients = [c for c in clients if c["client_id"].startswith("desktop-")]
-            mobile_clients = [c for c in clients if c["client_id"].startswith("mobile-")]
-            if desktop_clients:
-                client_id = desktop_clients[0]["client_id"]
-            elif mobile_clients:
-                client_id = mobile_clients[0]["client_id"]
-        except Exception:
-            pass
-
-    result = await phone.initiate_call(project=project, client_id=client_id)
-    return result
-
-
-@app.post("/voice/hangup")
-async def hangup_phone_call(request: Request):
-    """Hang up the active phone call."""
-    from .channels.phone import get_phone_channel
-    phone = get_phone_channel()
-    if not phone:
-        raise HTTPException(status_code=400, detail="Phone calling not configured")
-
-    call = phone.get_active_call()
-    if not call:
-        return {"status": "no_active_call"}
-
-    data = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-    call_sid = data.get("call_sid") or call.call_sid
-    result = await phone.hangup(call_sid)
-    return result
-
-
-@app.get("/voice/call/status")
-async def get_phone_call_status():
-    """Get current phone call status."""
-    from .channels.phone import get_phone_channel
-    phone = get_phone_channel()
-    if phone:
-        info = phone.get_call_info()
-        info["configured"] = True
-        return info
-    return {"active": False, "configured": _is_phone_configured()}
-
-
-@app.post("/voice/pair")
-async def pair_phone_with_client(request: Request):
-    """Pair the active phone call with a dashboard client."""
-    from .channels.phone import get_phone_channel
-
-    phone = get_phone_channel()
-    if not phone:
-        raise HTTPException(status_code=400, detail="Phone calling not configured")
-
-    call = phone.get_active_call()
-    if not call:
-        raise HTTPException(status_code=400, detail="No active call")
-
-    data = await request.json()
-    client_id = data.get("client_id")
-    if not client_id:
-        raise HTTPException(status_code=400, detail="client_id required")
-
-    machine = get_state_machine()
-    # Verify client is connected
-    connected = {c["client_id"] for c in machine.get_connected_clients()}
-    if client_id not in connected:
-        raise HTTPException(status_code=400, detail=f"Client {client_id} not connected")
-
-    phone.pair(call.call_sid, client_id)
-
-    # Notify the paired client
-    await machine.send_to_client(client_id, {
-        "type": "phone_paired",
-        "call_sid": call.call_sid,
-        "client_id": client_id,
-    })
-
-    return {"paired": True, "call_sid": call.call_sid, "client_id": client_id}
-
-
-@app.post("/voice/unpair")
-async def unpair_phone(request: Request):
-    """Remove pairing from the active phone call."""
-    from .channels.phone import get_phone_channel
-
-    phone = get_phone_channel()
-    if not phone:
-        raise HTTPException(status_code=400, detail="Phone calling not configured")
-
-    call = phone.get_active_call()
-    if not call:
-        raise HTTPException(status_code=400, detail="No active call")
-
-    old_client = call.paired_client_id
-    phone.unpair(call.call_sid)
-
-    # Notify the previously paired client
-    if old_client:
-        machine = get_state_machine()
-        await machine.send_to_client(old_client, {
-            "type": "phone_unpaired",
-            "call_sid": call.call_sid,
-        })
-
-    return {"unpaired": True, "call_sid": call.call_sid}
-
-
 @app.get("/voice/clients")
 async def get_voice_clients():
-    """List connected dashboard clients available for pairing."""
+    """List connected dashboard clients."""
     machine = get_state_machine()
     return {"clients": machine.get_connected_clients()}
-
-
-@app.post("/voice/type-mode")
-async def set_type_mode(request: Request):
-    """Toggle type mode for the active phone call."""
-    from .channels.phone import get_phone_channel
-
-    data = await request.json()
-    enabled = data.get("enabled", False)
-    target = data.get("target", "terminal")
-
-    phone = get_phone_channel()
-    if not phone:
-        raise HTTPException(status_code=400, detail="Phone calling not configured")
-
-    call = phone.get_active_call()
-    if not call:
-        raise HTTPException(status_code=400, detail="No active call")
-
-    call.type_mode = enabled
-    call.type_mode_target = target if enabled else None
-
-    if call.paired_client_id:
-        machine = get_state_machine()
-        await machine.send_to_client(call.paired_client_id, {
-            "type": "phone_type_mode",
-            "enabled": enabled,
-            "target": target,
-        })
-
-    return {"type_mode": enabled, "target": target}
 
 
 @app.post("/voice/sessions")
@@ -4654,128 +4702,6 @@ async def end_voice_session(session_id: str, request: Request):
     if not session:
         raise HTTPException(status_code=404, detail="Voice session not found")
     return session.to_dict()
-
-
-# Twilio webhooks (public, validated by signature)
-
-@app.post("/voice/twilio/incoming")
-async def twilio_incoming(request: Request):
-    """Twilio webhook: call connected (inbound or outbound), return greeting TwiML."""
-    from fastapi.responses import Response
-
-    phone = _try_init_phone_channel()
-    if not phone:
-        raise HTTPException(status_code=500, detail="Phone not configured")
-
-    form = await request.form()
-    params = dict(form)
-    call_sid = params.get("CallSid", "")
-
-    # Validate Twilio signature using canonical public URL (not local proxy URL)
-    signature = request.headers.get("X-Twilio-Signature", "")
-    canonical_url = f"{phone.webhook_base_url}/voice/twilio/incoming"
-    if not phone.validate_request(canonical_url, params, signature):
-        logger.warning("Invalid Twilio signature for incoming webhook (url=%s)", canonical_url)
-        # Don't block — signature may mismatch due to HTTP/HTTPS or proxy differences
-        # raise HTTPException(status_code=403, detail="Invalid signature")
-
-    twiml = await phone.handle_incoming(call_sid)
-    return Response(content=twiml, media_type="application/xml")
-
-
-@app.post("/voice/twilio/gather")
-async def twilio_gather(request: Request):
-    """Twilio webhook: speech received, process and return response TwiML."""
-    from fastapi.responses import Response
-
-    phone = _try_init_phone_channel()
-    if not phone:
-        raise HTTPException(status_code=500, detail="Phone not configured")
-
-    form = await request.form()
-    params = dict(form)
-    call_sid = params.get("CallSid", "")
-    speech_result = params.get("SpeechResult", "")
-
-    # Validate Twilio signature using canonical public URL
-    signature = request.headers.get("X-Twilio-Signature", "")
-    canonical_url = f"{phone.webhook_base_url}/voice/twilio/gather"
-    if not phone.validate_request(canonical_url, params, signature):
-        logger.warning("Invalid Twilio signature for gather webhook (url=%s)", canonical_url)
-        # Don't block — signature may mismatch due to HTTP/HTTPS or proxy differences
-
-    if not speech_result:
-        # No speech detected, re-prompt
-        from twilio.twiml.voice_response import VoiceResponse, Gather
-        resp = VoiceResponse()
-        resp.say("I didn't catch that. Please try again.", voice="Polly.Joanna")
-        gather = Gather(
-            input="speech",
-            action=f"{phone.webhook_base_url}/voice/twilio/gather",
-            method="POST",
-            speech_timeout="auto",
-            language="en-US",
-        )
-        resp.append(gather)
-        return Response(content=str(resp), media_type="application/xml")
-
-    twiml = await phone.handle_gather(call_sid, speech_result)
-    return Response(content=twiml, media_type="application/xml")
-
-
-@app.post("/voice/twilio/result/{call_sid}")
-async def twilio_result(call_sid: str, request: Request):
-    """Twilio webhook: poll for async LLM result."""
-    from fastapi.responses import Response
-
-    phone = _try_init_phone_channel()
-    if not phone:
-        raise HTTPException(status_code=500, detail="Phone not configured")
-
-    twiml = phone.get_pending_result(call_sid)
-    return Response(content=twiml, media_type="application/xml")
-
-
-@app.post("/voice/twilio/status")
-async def twilio_status(request: Request):
-    """Twilio webhook: call status updates."""
-    from .channels.phone import get_phone_channel
-
-    phone = get_phone_channel()
-    if not phone:
-        return {"ok": True}
-
-    form = await request.form()
-    params = dict(form)
-    call_sid = params.get("CallSid", "")
-    call_status = params.get("CallStatus", "")
-
-    await phone.handle_status(call_sid, call_status)
-
-    # Broadcast state so all clients see the call ended
-    if call_status in ("completed", "failed", "busy", "no-answer", "canceled"):
-        machine = get_state_machine()
-        await machine._broadcast_state()
-
-    return {"ok": True}
-
-
-@app.get("/voice/twilio/audio/{filename}")
-async def serve_twilio_audio(filename: str):
-    """Serve TTS audio files for Twilio to play."""
-    from .channels.phone import get_phone_channel
-    from fastapi.responses import FileResponse
-
-    phone = get_phone_channel()
-    if not phone:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    filepath = phone.get_audio_file(filename)
-    if not filepath:
-        raise HTTPException(status_code=404, detail="Audio file not found")
-
-    media_type = "audio/wav" if filepath.suffix == ".wav" else "audio/mpeg"
-    return FileResponse(filepath, media_type=media_type)
 
 
 # ── Email Channel Endpoints ──────────────────────────────────────────────────
@@ -7190,29 +7116,21 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
     tm.start_reader(session_id)
 
     if not skip_replay:
-        # For live sessions, avoid replaying serialized snapshots or raw PTY
-        # tails into xterm. Both can reconnect mid-control-sequence and leave
-        # the parser in a broken state. A forced PTY repaint is slower but
-        # much more reliable.
-        if live_repaint:
-            tm.redraw_for_client(session_id, client_id)
-        else:
-            snapshot_data = None
-            if client_cols > 0 and client_rows > 0:
-                snapshot_data = tm.get_best_snapshot(session_id, client_cols, client_rows)
+        snapshot_data = None
+        if client_cols > 0 and client_rows > 0:
+            snapshot_data = tm.get_best_snapshot(session_id, client_cols, client_rows)
 
-            if snapshot_data:
-                await websocket.send_text(snapshot_data)
-            else:
-                buffered = tm.get_buffer(session_id)
-                if buffered:
-                    await websocket.send_bytes(buffered)
+        if snapshot_data:
+            await websocket.send_text(snapshot_data)
+        else:
+            buffered = tm.get_buffer(session_id)
+            if buffered:
+                await websocket.send_bytes(buffered)
 
     tm.on_output(session_id, on_output)
 
     if live_repaint:
-        # Now that the client callback is attached, trigger a second repaint so
-        # the first bytes the browser sees are a fresh, self-contained render.
+        # Also trigger a SIGWINCH repaint so full-screen TUIs re-sync dimensions.
         tm.redraw_for_client(session_id, client_id)
 
     # If terminal is stopped, send a marker and close
@@ -9912,6 +9830,8 @@ def _session_response(session) -> dict:
         "policy": session.policy, "budget": session.budget,
         "unresolved_risks": session.unresolved_risks,
         "agent_provider": session.agent_provider,
+        "agent_id": metadata.get("agent_id"),
+        "agent_name": metadata.get("agent_name"),
         "created_at": session.created_at.isoformat(),
         "updated_at": session.updated_at.isoformat(),
         "completed_at": session.completed_at.isoformat() if session.completed_at else None,
@@ -9925,6 +9845,20 @@ def _session_response(session) -> dict:
         "handoff_brief": getattr(session, "handoff_brief", None),
         "verification_command": verification_command,
         "loop": metadata.get("loop"),
+        "recipe_id": metadata.get("recipe_id"),
+        "recipe_name": metadata.get("recipe_name"),
+        "recipe_category": metadata.get("recipe_category"),
+        "recipe_icon": metadata.get("recipe_icon"),
+        "routing_profile": metadata.get("routing_profile") or "balanced",
+        "pending_steers": [
+            {
+                "id": str(item.get("id") or ""),
+                "text": str(item.get("text") or ""),
+                "created_at": item.get("created_at"),
+            }
+            for item in (metadata.get("pending_steers") or [])
+            if isinstance(item, dict) and item.get("applied_round") is None and str(item.get("text") or "").strip()
+        ],
         "followup_instructions": [
             {
                 "instruction": str(item.get("instruction") or ""),
@@ -9951,6 +9885,9 @@ class CreateSupervisedSessionRequest(BaseModel):
     worktree_branch: str | None = None
     max_rounds: int | None = None
     verification_command: str | None = None
+    agent_id: str | None = None
+    recipe_id: str | None = None
+    routing_profile: str | None = None
 
 
 class ContinueSessionRequest(BaseModel):
@@ -9958,6 +9895,13 @@ class ContinueSessionRequest(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
     provider: str | None = "orchestrated"
     review_mode: str = Field(default="implementation", pattern="^(implementation|advisory)$")
+
+
+class SpawnChildWorkflowRequest(BaseModel):
+    provider: str | None = None
+    focus: str = ""
+    routing_profile: str | None = None
+    recipe_id: str | None = None
 
 
 def _find_continuation(parent_session_id: str):
@@ -9971,6 +9915,8 @@ def _find_continuation(parent_session_id: str):
 class AgentProviderPolicyRequest(BaseModel):
     preferred_provider: str
     fallback_policy: str = "ask"
+    default_routing_profile: str | None = None
+    tier_routing: dict[str, str] | None = None
 
 
 def _agent_provider_policy_path() -> Path:
@@ -10004,7 +9950,12 @@ async def update_agent_provider_settings(body: AgentProviderPolicyRequest):
     valid_ids = {provider["id"] for provider in providers if provider["id"] != "diagnostic"}
     if body.preferred_provider not in valid_ids:
         raise HTTPException(status_code=422, detail="Unknown preferred provider")
-    policy = save_agent_provider_policy(body.preferred_provider, body.fallback_policy)
+    policy = save_agent_provider_policy(
+        body.preferred_provider,
+        body.fallback_policy,
+        default_routing_profile=body.default_routing_profile,
+        tier_routing=body.tier_routing,
+    )
     wrappers = [w.model_dump() for w in list_registered_wrappers(include_disabled=True)]
     return {"policy": policy, "providers": providers, "wrappers": wrappers}
 
@@ -10139,6 +10090,13 @@ async def create_supervised_session(body: CreateSupervisedSessionRequest):
     meta_extra: dict = {}
     if body.parent_session_id:
         meta_extra["parent_session_id"] = body.parent_session_id
+    if body.agent_id:
+        meta_extra["agent_id"] = body.agent_id.strip()
+        from .agent_herd import get_agent_herd_manager
+
+        bound_worker = get_agent_herd_manager().get(body.agent_id.strip())
+        if bound_worker:
+            meta_extra["agent_name"] = bound_worker.name
     if body.max_rounds is not None or body.verification_command:
         loop_cfg: dict = {"round": 1}
         if body.max_rounds is not None:
@@ -10163,12 +10121,114 @@ async def create_supervised_session(body: CreateSupervisedSessionRequest):
             worktree_branch=body.worktree_branch,
             discovered_from=body.parent_session_id,
             metadata_extra=meta_extra or None,
+            recipe_id=body.recipe_id,
+            routing_profile=body.routing_profile,
         )
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     return _session_response(session)
+
+
+@app.post("/sessions/{session_id}/review")
+async def spawn_cross_model_review(session_id: str, body: SpawnChildWorkflowRequest | None = None):
+    """Spawn a cross-model Code Review session on the parent session's worktree & diff."""
+    from .agent_registry import pick_reviewer_provider
+    from .session_manager import get_session_manager
+    from .supervised_sessions import create_supervised_session as create_supervised, start_supervised_session
+
+    sm = get_session_manager()
+    parent = sm.get(session_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent Session not found")
+
+    req = body or SpawnChildWorkflowRequest()
+    reviewer_provider = (
+        req.provider.strip()
+        if req.provider and req.provider.strip() not in ("", "orchestrated")
+        else pick_reviewer_provider(parent.agent_provider)
+    )
+    focus = req.focus.strip()
+    review_goal = (
+        f"Review the implementation and git diff for: {(parent.goal or parent.description)[:400]}"
+        + (f"\n\nExtra review focus: {focus}" if focus else "")
+    )
+    wt_mode = "reuse" if (parent.worktree_path and parent.worktree_mode == "isolated") else "direct"
+    child = create_supervised(
+        channel_id=parent.channel_id,
+        project=parent.project,
+        goal=review_goal,
+        provider=reviewer_provider,
+        worktree_mode=wt_mode,
+        worktree_branch=parent.worktree_branch,
+        discovered_from=parent.id,
+        recipe_id=req.recipe_id or "code-review",
+        routing_profile=req.routing_profile or "max_quality",
+        metadata_extra={
+            "parent_session_id": parent.id,
+            "review_of_session_id": parent.id,
+            "review_author_provider": parent.agent_provider,
+            "inherited_context": {
+                "parent_goal": parent.goal or parent.description,
+                "parent_result": parent.output_summary or "",
+                "evidence": [],
+            },
+        },
+    )
+    try:
+        start_supervised_session(child.id)
+    except Exception as exc:
+        logger.warning("Cross-model review session %s created but start failed: %s", child.id, exc)
+    fresh = sm.get(child.id) or child
+    return {
+        "session": _session_response(fresh),
+        "reviewer_provider": reviewer_provider,
+        "author_provider": parent.agent_provider,
+    }
+
+
+@app.post("/sessions/{session_id}/execute-plan")
+async def execute_session_plan(session_id: str, body: SpawnChildWorkflowRequest | None = None):
+    """Promote an advisory Plan/Spike session into a child coding Session inheriting the plan."""
+    from .session_manager import get_session_manager
+    from .supervised_sessions import create_supervised_session as create_supervised, start_supervised_session
+
+    sm = get_session_manager()
+    parent = sm.get(session_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent Session not found")
+
+    req = body or SpawnChildWorkflowRequest()
+    extra = req.focus.strip()
+    exec_goal = f"Execute the approved plan for: {(parent.goal or parent.description)[:400]}" + (
+        f"\n\nAdditional notes: {extra}" if extra else ""
+    )
+    child = create_supervised(
+        channel_id=parent.channel_id,
+        project=parent.project,
+        goal=exec_goal,
+        provider=req.provider or "orchestrated",
+        worktree_mode="isolated",
+        discovered_from=parent.id,
+        recipe_id=req.recipe_id or "feature",
+        routing_profile=req.routing_profile or "balanced",
+        metadata_extra={
+            "parent_session_id": parent.id,
+            "executed_from_plan_id": parent.id,
+            "inherited_context": {
+                "parent_goal": parent.goal or parent.description,
+                "parent_result": parent.output_summary or "",
+                "evidence": [],
+            },
+        },
+    )
+    try:
+        start_supervised_session(child.id)
+    except Exception as exc:
+        logger.warning("Execute-plan session %s created but start failed: %s", child.id, exc)
+    fresh = sm.get(child.id) or child
+    return {"session": _session_response(fresh)}
 
 
 @app.post("/sessions/{session_id}/continue")
@@ -10203,6 +10263,9 @@ async def continue_supervised_session(session_id: str, body: ContinueSessionRequ
         if body.provider and body.provider != "orchestrated"
         else parent.agent_provider
     )
+    parent_wt = getattr(parent, "worktree_path", None)
+    parent_override = Path(parent_wt) if parent_wt and Path(parent_wt).is_dir() else None
+    child_wt_mode = "reuse" if (parent.worktree_mode == "isolated" or parent_wt) else (parent.worktree_mode or "direct")
     child = sm.create_session(
         channel_id=parent.channel_id,
         project=parent.project,
@@ -10212,13 +10275,17 @@ async def continue_supervised_session(session_id: str, body: ContinueSessionRequ
             "supervised": True,
             "parent_session_id": parent.id,
             "review_mode": body.review_mode,
-            "git_baseline": _session_git_snapshot(parent.project),
+            "git_baseline": _session_git_snapshot(parent.project, override_path=parent_override),
             "inherited_context": inherited_context,
             "evidence_providers": (parent.metadata or {}).get("evidence_providers", [{"id": "native", "label": "RDC native evidence"}]),
         },
         acceptance_criteria=[item.strip() for item in body.acceptance_criteria if item.strip()],
         policy=parent.policy,
         budget=parent.budget,
+        worktree_mode=child_wt_mode,
+        worktree_path=parent_wt,
+        worktree_branch=getattr(parent, "worktree_branch", None),
+        discovered_from=parent.id,
     )
     sm.log_event(child, "session.context_inherited", {"parent_session_id": parent.id, "evidence_ids": [item["id"] for item in inherited_context["evidence"]]})
     return _session_response(child)
@@ -10721,9 +10788,13 @@ async def get_session_artifact(session_id: str):
         get_rdc_home() / "sessions" / f"{session_id}.artifact.html",
     ]
     try:
+        eff_path = _session_effective_path(session)
+        custom_paths.append(eff_path / ".rdc" / "sessions" / f"{session_id}.html")
+        custom_paths.append(eff_path / ".rdc" / "artifact.html")
         proj_path = _session_project_path(session.project)
-        custom_paths.append(proj_path / ".rdc" / "sessions" / f"{session_id}.html")
-        custom_paths.append(proj_path / ".rdc" / "artifact.html")
+        if proj_path != eff_path:
+            custom_paths.append(proj_path / ".rdc" / "sessions" / f"{session_id}.html")
+            custom_paths.append(proj_path / ".rdc" / "artifact.html")
     except Exception:
         pass
 
@@ -11143,12 +11214,18 @@ async def get_session_git_status(session_id: str):
             res = subprocess.run(["git", *args], cwd=path, text=True, capture_output=True, timeout=15, check=False)
             return res.stdout.strip() if res.returncode == 0 else ""
 
-        status_short = git("status", "--short")
+        raw_status = git("status", "--short")
+        status_lines = []
         changed_files = []
-        for line in status_short.splitlines():
+        for line in raw_status.splitlines():
             parts = line.strip().split(None, 1)
             if len(parts) == 2:
-                changed_files.append(parts[1].strip())
+                fpath = parts[1].strip()
+                if fpath == ".rdc" or fpath.startswith(".rdc/"):
+                    continue
+                status_lines.append(line)
+                changed_files.append(fpath)
+        status_short = "\n".join(status_lines)
         remotes = git("remote")
         first_remote = remotes.splitlines()[0].strip() if remotes else ""
         remote_url = git("remote", "get-url", first_remote) if first_remote else ""
@@ -11189,8 +11266,8 @@ async def get_session_git_status(session_id: str):
             "label": f"Commit {changed_count} changed file{'s' if changed_count != 1 else ''}",
             "detail": "Commits directly on the host (bypasses agent .git sandbox restriction)",
         })
-    project_record = get_project_repo().get(session.project)
-    verif_cmd = ((project_record.config or {}).get("profile", {}) if project_record else {}).get("test_command")
+    from .session_loop import resolve_verification_command
+    verif_cmd = resolve_verification_command(session)
 
     db = sm._db()
     evidence_rows = db.execute(
@@ -11274,14 +11351,16 @@ async def commit_session_git_changes(session_id: str, body: SessionGitCommitRequ
         status_res = subprocess.run(
             ["git", "status", "--short"], cwd=path, text=True, capture_output=True, timeout=15, check=False
         )
-        if not status_res.stdout.strip():
-            raise ValueError("Working tree is already clean — nothing to commit")
-
         changed_files = [
             line.strip().split(None, 1)[1].strip()
             for line in status_res.stdout.splitlines()
             if len(line.strip().split(None, 1)) == 2
+            and line.strip().split(None, 1)[1].strip() != ".rdc"
+            and not line.strip().split(None, 1)[1].strip().startswith(".rdc/")
         ]
+        if not changed_files:
+            raise ValueError("Working tree is already clean — nothing to commit")
+
         diff_stat_res = subprocess.run(
             ["git", "diff", "--stat", "HEAD"], cwd=path, text=True, capture_output=True, timeout=15, check=False
         )
@@ -11291,6 +11370,10 @@ async def commit_session_git_changes(session_id: str, body: SessionGitCommitRequ
         )
         if add_res.returncode != 0:
             raise RuntimeError(add_res.stderr.strip() or "git add failed")
+        subprocess.run(
+            ["git", "reset", "-q", "HEAD", "--", ".rdc"],
+            cwd=path, text=True, capture_output=True, timeout=15, check=False,
+        )
 
         commit_res = subprocess.run(
             ["git", "commit", "-m", commit_msg],
@@ -11388,62 +11471,44 @@ class VerificationRequest(BaseModel):
 
 @app.post("/sessions/{session_id}/evidence/verification")
 async def run_session_verification(session_id: str, body: VerificationRequest):
+    from .session_loop import run_verification_sync
     from .session_manager import get_session_manager
-    session = get_session_manager().get(session_id)
+
+    sm = get_session_manager()
+    session = sm.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    project = get_project_repo().get(session.project)
-    path = _session_effective_path(session)
-    profile = (project.config or {}).get("profile", {}) if project else {}
-    command = (
-        body.command
-        or (session.policy or {}).get("verification_command")
-        or (session.metadata or {}).get("verification_command")
-        or profile.get("test_command")
-        or ""
-    ).strip()
-    if not command:
-        raise HTTPException(status_code=422, detail="No verification command configured")
     try:
-        argv = shlex.split(command)
+        res = await asyncio.to_thread(
+            run_verification_sync,
+            session,
+            body.command,
+            source="rdc",
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid verification command: {exc}") from exc
-    if not argv or any(token in {"&&", "||", ";", "|", ">", "<"} for token in argv):
-        raise HTTPException(status_code=422, detail="Verification must be a single executable command")
-    started = time.monotonic()
-    try:
-        result = await asyncio.to_thread(
-            subprocess.run, argv, cwd=path, text=True, capture_output=True, timeout=900, check=False,
-        )
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=422, detail=f"Verification command not found: {argv[0]}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise HTTPException(status_code=408, detail="Verification timed out after 15 minutes") from exc
-    data = {
-        "command": command, "exit_code": result.returncode,
-        "duration_seconds": round(time.monotonic() - started, 3),
-        "stdout": result.stdout[-30000:], "stderr": result.stderr[-15000:],
-    }
-    evidence_id = secrets.token_hex(16)
-    db = get_session_manager()._db()
-    db.execute(
-        """INSERT INTO session_evidence
-           (id, session_id, evidence_type, title, data, source)
-           VALUES (?, ?, 'verification', 'Verification command', ?, 'rdc')""",
-        (evidence_id, session_id, json.dumps(data)),
-    )
-    if result.returncode == 0:
-        now = datetime.now().isoformat()
-        db.execute(
-            """UPDATE session_criteria
-               SET status = 'passed', note = 'Automatically satisfied by passing RDC verification',
-                   evidence_ids = ?, evaluated_by = 'rdc', evaluated_at = ?
-               WHERE session_id = ? AND status = 'unevaluated'
-                 AND (lower(criterion) LIKE '%verif%' OR lower(criterion) LIKE '%test%pass%')""",
-            (json.dumps([evidence_id]), now, session_id),
-        )
-    db.commit()
-    return {"id": evidence_id, "evidence_type": "verification", "data": data}
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=408, detail=str(exc)) from exc
+
+    if res.get("data", {}).get("exit_code") == 0:
+        fresh = sm.get(session_id) or session
+        meta = dict(fresh.metadata or {})
+        loop_meta = meta.get("loop")
+        if isinstance(loop_meta, dict):
+            meta["loop"] = {
+                **loop_meta,
+                "status": "passed",
+                "exit_reason": "success",
+                "last_exit_code": 0,
+                "last_summary": str(res["data"].get("concise_feedback") or "")[:300],
+            }
+            fresh.metadata = meta
+        fresh.blocker = None
+        sm._persist(fresh)
+
+    return res
 
 
 @app.get("/sessions/{session_id}/criteria")
@@ -11625,24 +11690,19 @@ async def complete_session(session_id: str, body: CompleteSessionRequest | None 
         if blocked:
             missing.append(blocked)
         if missing:
-            override = bool(body and body.override)
-            note = (body.note if body else "").strip()
-            if not override:
-                raise HTTPException(status_code=409, detail=f"Completion requires {', '.join(missing)}")
-            if len(note) < 5:
-                raise HTTPException(status_code=422, detail="Explain why this Session can be accepted with missing review evidence")
+            note = (body.note if body else "").strip() or "Accepted by operator"
             now = datetime.now().isoformat()
             sm._db().execute(
-                """UPDATE session_criteria SET status = 'waived', note = ?, evaluated_by = 'operator-override', evaluated_at = ?
+                """UPDATE session_criteria SET status = 'waived', note = ?, evaluated_by = 'operator-accept', evaluated_at = ?
                    WHERE session_id = ? AND status NOT IN ('passed', 'waived')""",
                 (note, now, session_id),
             )
             sm._db().commit()
-            risk = f"Accepted with review exception ({', '.join(missing)}): {note}"
+            risk = f"Accepted with advisory warnings ({', '.join(missing)}): {note}"
             s.unresolved_risks = [*s.unresolved_risks, risk]
             s.metadata = {**(s.metadata or {}), "review_override": {"note": note, "missing": missing, "accepted_at": now}}
             sm._persist(s)
-            sm.log_event(s, "session.review_overridden", {"note": note, "missing": missing})
+            sm.log_event(s, "session.review_accepted_with_warnings", {"note": note, "missing": missing})
     # Save terminal log before killing
     sm._save_terminal_log(s)
     # Kill associated terminals
@@ -11787,6 +11847,330 @@ async def instruct_session(session_id: str, body: SessionInstructionRequest):
         return instruct(session_id, body.instruction)
     except SessionControlError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+class SessionSteerRequest(BaseModel):
+    guidance: str
+
+
+@app.post("/sessions/{session_id}/steer")
+async def steer_session(session_id: str, body: SessionSteerRequest):
+    """Queue mid-flight steering for a running session, or immediately resume a paused/stalled session."""
+    from .session_controls import SessionControlError, instruct_session as instruct
+    from .session_loop import get_pending_steers, queue_session_steer
+    from .session_manager import SessionStatus, get_session_manager
+
+    guidance = body.guidance.strip()
+    if not guidance:
+        raise HTTPException(status_code=422, detail="Steering guidance is required")
+
+    sm = get_session_manager()
+    session = sm.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    status = session.status if isinstance(session.status, SessionStatus) else SessionStatus(str(session.status))
+    if status in (SessionStatus.RUNNING, SessionStatus.WAITING, SessionStatus.PENDING):
+        try:
+            entry = queue_session_steer(session, guidance)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "mode": "queued",
+            "steer": entry,
+            "pending_steers": get_pending_steers(session),
+            "session": _session_response(session),
+        }
+
+    try:
+        result = instruct(session_id, guidance)
+    except SessionControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return {
+        "mode": "applied",
+        "result": result,
+    }
+
+
+# ── Native Agent Herd Lifecycle Endpoints ───────────────────────────────────
+
+class SpawnAgentWorkerRequest(BaseModel):
+    channel_id: str
+    project: str
+    provider: str = "orchestrated"
+    name: str | None = None
+    auto_drain: bool = False
+    context_mode: str = "warm"
+    start_terminal: bool = False
+
+
+class AgentSendRequest(BaseModel):
+    text: str
+    task_id: str | None = None
+
+
+class UpdateAgentWorkerRequest(BaseModel):
+    name: str | None = None
+    auto_drain: bool | None = None
+    context_mode: str | None = None
+
+
+class AssignAgentSessionRequest(BaseModel):
+    session_id: str
+
+
+class AgentChatRequest(BaseModel):
+    message: str
+
+
+class CreateAgentTaskRequest(BaseModel):
+    channel_id: str
+    project: str
+    title: str
+    agent_id: str | None = None
+    status: str = "todo"
+
+
+class UpdateAgentTaskRequest(BaseModel):
+    title: str | None = None
+    status: str | None = None
+    result_note: str | None = None
+    agent_id: str | None = None
+
+
+@app.get("/herd/agents")
+async def list_agent_workers(
+    channel_id: str | None = None,
+    project: str | None = None,
+    include_stopped: bool = False,
+):
+    """List persistent Agent Workers in the Herd."""
+    from .agent_herd import get_agent_herd_manager
+
+    workers = get_agent_herd_manager().list_workers(
+        channel_id=channel_id,
+        project=project,
+        include_stopped=include_stopped,
+    )
+    return [w.to_dict() for w in workers]
+
+
+@app.get("/herd/agents/{agent_id}")
+async def get_agent_worker(agent_id: str):
+    """Get a single Agent Worker with its chat messages and live terminal ID."""
+    from .agent_herd import get_agent_herd_manager
+
+    worker = get_agent_herd_manager().get(agent_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Agent worker not found")
+    return worker.to_dict()
+
+
+@app.post("/herd/agents")
+async def spawn_agent_worker(body: SpawnAgentWorkerRequest):
+    """Spawn / warm up a resident Agent Worker on a workstream and project."""
+    from .agent_herd import get_agent_herd_manager
+
+    if not body.channel_id.strip() or not body.project.strip():
+        raise HTTPException(status_code=422, detail="channel_id and project are required")
+    herd = get_agent_herd_manager()
+    worker = herd.spawn_worker(
+        channel_id=body.channel_id.strip(),
+        project=body.project.strip(),
+        provider=body.provider,
+        name=body.name,
+        auto_drain=body.auto_drain,
+        context_mode=body.context_mode,
+    )
+    if body.start_terminal:
+        try:
+            ensured = herd.ensure_interactive_terminal(worker.id)
+            return ensured["worker"]
+        except Exception:
+            pass
+    return worker.to_dict()
+
+
+@app.post("/herd/agents/{agent_id}/send")
+async def send_text_to_agent_worker(agent_id: str, body: AgentSendRequest):
+    """Paste text and press Enter in the agent's live terminal (like `hc send`)."""
+    from .agent_herd import get_agent_herd_manager
+
+    try:
+        return get_agent_herd_manager().send_to_worker(agent_id, body.text, task_id=body.task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/herd/agents/{agent_id}/pull-task")
+async def pull_next_task_for_agent_worker(agent_id: str):
+    """Claim the next Todo task card on the board and send it into the agent's live terminal."""
+    from .agent_herd import get_agent_herd_manager
+
+    try:
+        return get_agent_herd_manager().pull_next_task_for_worker(agent_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/herd/agents/{agent_id}/chat")
+async def chat_with_agent_worker(agent_id: str, body: AgentChatRequest):
+    """Send a direct prompt/instruction to a Resident Agent in Agent Mode."""
+    from .agent_herd import get_agent_herd_manager
+
+    try:
+        return get_agent_herd_manager().chat_with_worker(agent_id, body.message)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/herd/agents/{agent_id}/terminal")
+async def ensure_agent_worker_terminal(agent_id: str):
+    """Return an active interactive CLI terminal for this agent, spawning one if needed."""
+    from .agent_herd import get_agent_herd_manager
+
+    try:
+        return get_agent_herd_manager().ensure_interactive_terminal(agent_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/herd/tasks")
+async def list_agent_tasks(
+    channel_id: str | None = None,
+    project: str | None = None,
+    agent_id: str | None = None,
+):
+    """List tasks on the Agent Mode Task Board."""
+    from .agent_herd import get_agent_herd_manager
+
+    cards = get_agent_herd_manager().list_tasks(
+        channel_id=channel_id,
+        project=project,
+        agent_id=agent_id,
+    )
+    return [c.to_dict() for c in cards]
+
+
+@app.post("/herd/tasks")
+async def create_agent_task(body: CreateAgentTaskRequest):
+    """Add a task card to the Agent Mode Task Board."""
+    from .agent_herd import get_agent_herd_manager
+
+    try:
+        card = get_agent_herd_manager().create_task(
+            channel_id=body.channel_id.strip(),
+            project=body.project.strip(),
+            title=body.title,
+            agent_id=body.agent_id,
+            status=body.status,
+            created_by="user",
+        )
+        return card.to_dict()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.patch("/herd/tasks/{task_id}")
+async def update_agent_task(task_id: str, body: UpdateAgentTaskRequest):
+    """Update a task card on the Agent Mode Task Board."""
+    from .agent_herd import get_agent_herd_manager
+
+    try:
+        card = get_agent_herd_manager().update_task(
+            task_id,
+            title=body.title,
+            status=body.status,
+            result_note=body.result_note,
+            agent_id=body.agent_id,
+        )
+        return card.to_dict()
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/herd/tasks/{task_id}")
+async def delete_agent_task(task_id: str):
+    """Delete a task card from the Agent Mode Task Board."""
+    from .agent_herd import get_agent_herd_manager
+
+    ok = get_agent_herd_manager().delete_task(task_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"deleted": True, "id": task_id}
+
+
+@app.patch("/herd/agents/{agent_id}")
+async def update_agent_worker(agent_id: str, body: UpdateAgentWorkerRequest):
+    """Update an Agent Worker's name, auto_drain toggle, or context_mode."""
+    from .agent_herd import get_agent_herd_manager
+
+    try:
+        worker = get_agent_herd_manager().update_worker(
+            agent_id,
+            name=body.name,
+            auto_drain=body.auto_drain,
+            context_mode=body.context_mode,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return worker.to_dict()
+
+
+@app.post("/herd/agents/{agent_id}/reset-context")
+async def reset_agent_worker_context(agent_id: str):
+    """Reset an Agent Worker's context window so its next session starts fresh."""
+    from .agent_herd import get_agent_herd_manager
+
+    try:
+        worker = get_agent_herd_manager().reset_context(agent_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return worker.to_dict()
+
+
+@app.post("/herd/agents/{agent_id}/assign")
+async def assign_session_to_agent_worker(agent_id: str, body: AssignAgentSessionRequest):
+    """Assign a staged or existing session to a specific Agent Worker and start it."""
+    from .agent_herd import get_agent_herd_manager
+
+    try:
+        return get_agent_herd_manager().assign_session(agent_id, body.session_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/herd/agents/{agent_id}/stop")
+async def stop_agent_worker(agent_id: str):
+    """Stop a resident Agent Worker and interrupt any active session."""
+    from .agent_herd import get_agent_herd_manager
+
+    try:
+        worker = get_agent_herd_manager().stop_worker(agent_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return worker.to_dict()
+
+
+@app.delete("/herd/agents/{agent_id}")
+async def delete_agent_worker(agent_id: str):
+    """Remove an Agent Worker from the Herd."""
+    from .agent_herd import get_agent_herd_manager
+
+    ok = get_agent_herd_manager().delete_worker(agent_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Agent worker not found")
+    return {"deleted": True, "id": agent_id}
 
 
 @app.patch("/channels/{channel_id}")

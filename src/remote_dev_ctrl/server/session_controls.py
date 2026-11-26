@@ -117,15 +117,19 @@ def _valid_git_sha(value) -> str | None:
     return text if _GIT_SHA.fullmatch(text) else None
 
 
-def _base_head(project: str) -> str | None:
+def _base_head(session: Session) -> str | None:
     try:
-        record = get_project_repo().get(project)
-        project_path = Path(record.path).resolve() if record and record.path else None
-        if project_path is None or not (project_path / ".git").exists():
+        wt_path = getattr(session, "worktree_path", None)
+        if wt_path and Path(wt_path).is_dir():
+            target_path: Path | None = Path(wt_path).resolve()
+        else:
+            record = get_project_repo().get(session.project)
+            target_path = Path(record.path).resolve() if record and record.path else None
+        if target_path is None or not (target_path / ".git").exists():
             return None
         rev = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=project_path,
+            cwd=target_path,
             text=True,
             capture_output=True,
             timeout=5,
@@ -154,12 +158,27 @@ def instruct_session(session_id: str, instruction: str) -> dict:
         "prior_result": session.output_summary or "No prior outcome was recorded.",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    base_head = _base_head(session.project)
+    base_head = _base_head(session)
     if base_head:
         followup["base_head"] = base_head
     followups.append(followup)
     prior_metadata = dict(session.metadata or {})
-    session.metadata = {**(session.metadata or {}), "followup_instructions": followups, "review_mode": "implementation"}
+    next_metadata: dict = {**(session.metadata or {}), "followup_instructions": followups, "review_mode": "implementation"}
+    loop_meta = next_metadata.get("loop")
+    if isinstance(loop_meta, dict):
+        updated_loop = dict(loop_meta)
+        if updated_loop.get("status") != "retrying":
+            updated_loop.update({
+                "round": 1,
+                "status": "running",
+                "exit_reason": None,
+                "history": [],
+            })
+        else:
+            updated_loop["status"] = "running"
+        next_metadata["loop"] = updated_loop
+    session.metadata = next_metadata
+    session.blocker = None
     sm._persist(session)
     sm.log_event(session, "session.instruction_added", {"instruction": text, "context_mode": "reconstructed"})
     from .supervised_sessions import start_supervised_session

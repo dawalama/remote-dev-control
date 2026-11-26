@@ -53,7 +53,13 @@ export function DesktopLayout() {
   const workstreamSettingsOpen = useUIStore((s) => s.workstreamSettingsOpen)
   const setWorkstreamSettingsOpen = useUIStore((s) => s.setWorkstreamSettingsOpen)
   const activeChannelId = useChannelStore((s) => s.activeChannelId)
+  const operatingMode = useUIStore((s) => s.operatingMode)
   const [addProjectOpen, setAddProjectOpen] = useState(false)
+  const [rightPanelOverride, setRightPanelOverride] = useState<boolean | null>(null)
+  const showRightPanel =
+    rightPanelOverride !== null
+      ? rightPanelOverride
+      : !(workspaceMode === "goals" && operatingMode === "agents")
 
   useMountEffect(() => {
     loadProjects()
@@ -148,6 +154,18 @@ export function DesktopLayout() {
         </div>
         <div className="flex items-center gap-3">
           <SessionsNavButton />
+          <button
+            type="button"
+            onClick={() => setRightPanelOverride(!showRightPanel)}
+            className={`rounded border px-2 py-1 text-[11px] font-medium transition-colors ${
+              showRightPanel
+                ? "border-blue-500/40 bg-blue-500/10 text-blue-300"
+                : "border-gray-700 bg-gray-800 text-gray-400 hover:text-gray-200"
+            }`}
+            title={showRightPanel ? "Hide right tools panel" : "Show right tools panel (Actions, System, Browser)"}
+          >
+            ◨ Tools
+          </button>
           <div className="flex rounded-md overflow-hidden border border-gray-700">
             {LAYOUTS.map((l) => (
               <button
@@ -242,9 +260,11 @@ export function DesktopLayout() {
           )}
         </div>
 
-        <div className="w-[340px] min-h-0 min-w-0 overflow-hidden px-2 py-2 flex-shrink-0">
-          <RightTabs />
-        </div>
+        {showRightPanel && (
+          <div className="w-[340px] min-h-0 min-w-0 overflow-hidden px-2 py-2 flex-shrink-0">
+            <RightTabs />
+          </div>
+        )}
       </div>
 
       {/* Chief-of-Staff Chat & Command Bar (hidden when full-screen settings modal is open) */}

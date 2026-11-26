@@ -331,13 +331,151 @@ def test_stalled_session_complete_requires_override(loop_env):
     token, _ = get_auth_manager().create_token("loop-override-test", Role.ADMIN)
     client = TestClient(app)
     headers = {"Authorization": f"Bearer {token}"}
-    blocked = client.post(f"/sessions/{sess.id}/complete", headers=headers, json={})
-    assert blocked.status_code == 409
-    assert "verification stall" in blocked.json()["detail"]
-    accepted = client.post(
-        f"/sessions/{sess.id}/complete",
-        headers=headers,
-        json={"override": True, "note": "Reviewed the failed check and accepted it"},
-    )
+    accepted = client.post(f"/sessions/{sess.id}/complete", headers=headers, json={})
     assert accepted.status_code == 200
-    assert s_mgr.get(sess.id).status == SessionStatus.COMPLETED
+    completed = s_mgr.get(sess.id)
+    assert completed.status == SessionStatus.COMPLETED
+    assert any("advisory warnings" in r for r in completed.unresolved_risks)
+
+
+def test_isolated_worktree_uses_project_root_venv(loop_env):
+    s_mgr = loop_env["s_mgr"]
+    proj = loop_env["proj"]
+    proj_dir = loop_env["proj_dir"]
+    wt_dir = loop_env["wt_dir"]
+    ch = loop_env["ch"]
+
+    # Create a .venv/bin executable only in proj_dir (not in wt_dir)
+    venv_bin = proj_dir / ".venv" / "bin"
+    venv_bin.mkdir(parents=True, exist_ok=True)
+    custom_runner = venv_bin / "custom-verify-runner"
+    custom_runner.write_text(
+        "#!/bin/sh\npython3 -c \"import os, sys; assert 'VIRTUAL_ENV' in os.environ; sys.exit(0)\"\n",
+        encoding="utf-8",
+    )
+    custom_runner.chmod(0o755)
+
+    sess = s_mgr.create_session(
+        channel_id=ch.id,
+        project=proj.name,
+        description="Worktree with root .venv",
+        agent_provider="diagnostic",
+        worktree_mode="isolated",
+        worktree_path=str(wt_dir),
+        metadata={
+            "supervised": True,
+            "verification_command": "custom-verify-runner",
+            "loop": {"round": 1, "max_rounds": 3},
+        },
+    )
+
+    res = asyncio.run(handle_agent_turn_completed(sess, "Done in worktree", agent_exit_code=0))
+    assert res["action"] == "finish"
+    assert res["loop"]["status"] == "passed"
+    assert res["loop"]["exit_reason"] == "success"
+    assert loop_acceptance_block(sess) is None
+
+
+def test_loop_aborts_if_session_cancelled_during_verification(loop_env):
+    s_mgr = loop_env["s_mgr"]
+    proj = loop_env["proj"]
+    ch = loop_env["ch"]
+    wt_dir = loop_env["wt_dir"]
+
+    sess = s_mgr.create_session(
+        channel_id=ch.id,
+        project=proj.name,
+        description="Cancelled mid-verify",
+        agent_provider="diagnostic",
+        worktree_mode="isolated",
+        worktree_path=str(wt_dir),
+        metadata={
+            "supervised": True,
+            "verification_command": "python3 -c \"import sys; sys.exit(1)\"",
+            "loop": {"round": 1, "max_rounds": 3},
+        },
+    )
+
+    orig_run = run_verification_sync
+
+    def _cancel_while_verifying(session_obj, *args, **kwargs):
+        out = orig_run(session_obj, *args, **kwargs)
+        s_mgr.update_status(session_obj.id, SessionStatus.CANCELLED)
+        return out
+
+    with (
+        patch("remote_dev_ctrl.server.session_loop.run_verification_sync", side_effect=_cancel_while_verifying),
+        patch("remote_dev_ctrl.server.session_controls.instruct_session") as mock_inst,
+    ):
+        res = asyncio.run(handle_agent_turn_completed(sess, "Attempt 1", agent_exit_code=0))
+        assert not mock_inst.called
+
+    assert res["action"] == "aborted"
+    assert s_mgr.get(sess.id).status == SessionStatus.CANCELLED
+
+
+def test_human_instruction_resets_loop_and_manual_verify_clears_block(loop_env):
+    from fastapi.testclient import TestClient
+
+    from remote_dev_ctrl.server.app import app
+    from remote_dev_ctrl.server.auth import Role, get_auth_manager
+    from remote_dev_ctrl.server.session_controls import instruct_session
+
+    s_mgr = loop_env["s_mgr"]
+    proj = loop_env["proj"]
+    ch = loop_env["ch"]
+    wt_dir = loop_env["wt_dir"]
+
+    sess = s_mgr.create_session(
+        channel_id=ch.id,
+        project=proj.name,
+        description="Stalled then guided",
+        agent_provider="diagnostic",
+        worktree_mode="isolated",
+        worktree_path=str(wt_dir),
+        metadata={
+            "supervised": True,
+            "verification_command": "python3 -c \"import sys; sys.exit(0)\"",
+            "loop": {
+                "round": 3,
+                "max_rounds": 3,
+                "status": "budget_exhausted",
+                "exit_reason": "budget",
+                "history": [{"round": 3, "exit_code": 1, "signature": "sig-abc"}],
+            },
+        },
+    )
+    sess.status = SessionStatus.VERIFYING
+    sess.blocker = "Verification failed after 3/3 rounds"
+    s_mgr._persist(sess)
+
+    # 1. Human follow-up instruction resets round to 1 and clears blocker
+    with patch("remote_dev_ctrl.server.supervised_sessions.start_supervised_session", return_value={"success": True}):
+        instruct_session(sess.id, "Try fixing the edge case in parser.py")
+
+    reloaded = s_mgr.get(sess.id)
+    assert reloaded.metadata["loop"]["round"] == 1
+    assert reloaded.metadata["loop"]["status"] == "running"
+    assert reloaded.metadata["loop"]["exit_reason"] is None
+    assert reloaded.metadata["loop"]["history"] == []
+    assert reloaded.blocker is None
+
+    # 2. Manual verification pass via endpoint clears a stalled/runtime loop block
+    reloaded.status = SessionStatus.VERIFYING
+    reloaded.metadata["loop"] = {"round": 2, "max_rounds": 3, "status": "stalled", "exit_reason": "stall"}
+    reloaded.blocker = "Stalled on round 2/3"
+    s_mgr._persist(reloaded)
+    assert loop_acceptance_block(s_mgr.get(sess.id)) == "verification stall"
+
+    token, _ = get_auth_manager().create_token("manual-verify-test", Role.ADMIN)
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {token}"}
+    v_resp = client.post(f"/sessions/{sess.id}/evidence/verification", headers=headers, json={})
+    assert v_resp.status_code == 200
+    assert v_resp.json()["data"]["exit_code"] == 0
+
+    after_verify = s_mgr.get(sess.id)
+    assert after_verify.metadata["loop"]["status"] == "passed"
+    assert after_verify.metadata["loop"]["exit_reason"] == "success"
+    assert after_verify.blocker is None
+    assert loop_acceptance_block(after_verify) is None

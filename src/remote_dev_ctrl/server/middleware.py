@@ -93,7 +93,6 @@ PUBLIC_PATH_PREFIXES = [
     "/app/",         # React SPA nested routes (e.g. /app/pair-approve)
     "/kb/",          # Knowledge base SPA sub-routes
     "/static/",  # Static assets (CSS, JS)
-    "/voice/twilio/",  # Twilio webhooks (auth via signature validation)
     "/assets/",       # React SPA static assets
 ]
 

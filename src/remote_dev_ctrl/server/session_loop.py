@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import shlex
@@ -126,6 +127,52 @@ def _normalize_command(text: str) -> str:
     return " ".join(text.split())
 
 
+def _build_verification_env(cwd: Path, project_root: Path | None = None) -> dict[str, str]:
+    """Build an environment for verification that shares project .venv and user bin dirs with worktrees."""
+    env = os.environ.copy()
+    extra_bins: list[str] = []
+
+    for venv_name in (".venv", "venv"):
+        local_bin = cwd / venv_name / "bin"
+        if local_bin.is_dir():
+            extra_bins.append(str(local_bin.resolve()))
+            env["VIRTUAL_ENV"] = str((cwd / venv_name).resolve())
+            env["UV_PROJECT_ENVIRONMENT"] = str((cwd / venv_name).resolve())
+            break
+    else:
+        if project_root is not None:
+            for venv_name in (".venv", "venv"):
+                root_venv = project_root / venv_name
+                root_bin = root_venv / "bin"
+                if root_bin.is_dir():
+                    extra_bins.append(str(root_bin.resolve()))
+                    env["VIRTUAL_ENV"] = str(root_venv.resolve())
+                    env["UV_PROJECT_ENVIRONMENT"] = str(root_venv.resolve())
+                    py_paths = [str((cwd / "src").resolve())] if (cwd / "src").is_dir() else []
+                    py_paths.append(str(cwd.resolve()))
+                    existing_py = env.get("PYTHONPATH", "").strip()
+                    if existing_py:
+                        py_paths.append(existing_py)
+                    env["PYTHONPATH"] = os.pathsep.join(py_paths)
+                    break
+
+    for nm_root in (cwd, project_root):
+        if nm_root is not None:
+            nm_bin = nm_root / "node_modules" / ".bin"
+            if nm_bin.is_dir():
+                extra_bins.append(str(nm_bin.resolve()))
+
+    home = Path.home()
+    for user_bin in (home / ".local" / "bin", home / "bin"):
+        if user_bin.is_dir():
+            extra_bins.append(str(user_bin))
+
+    current_path = env.get("PATH", "")
+    if extra_bins:
+        env["PATH"] = os.pathsep.join([*extra_bins, current_path]) if current_path else os.pathsep.join(extra_bins)
+    return env
+
+
 def verification_runtime_blocker(command: str, cwd: Path, project_root: Path | None = None) -> str | None:
     """Return why the harness should not run this command in the session directory."""
     try:
@@ -138,23 +185,16 @@ def verification_runtime_blocker(command: str, cwd: Path, project_root: Path | N
     base = Path(exe).name
     if base in _NODE_RUNNERS and (cwd / "package.json").is_file() and not (cwd / "node_modules").is_dir():
         return "The session directory has package.json and no node_modules, so the verification command was not run."
-    if base in _PY_RUNNERS and project_root is not None:
-        try:
-            same_tree = project_root.resolve() == cwd.resolve()
-        except OSError:
-            same_tree = False
-        if not same_tree:
-            for venv_name in (".venv", "venv"):
-                if (project_root / venv_name).is_dir() and not (cwd / venv_name).is_dir():
-                    return f"The session directory has no {venv_name}, so the verification command was not run."
     exe_path = Path(exe)
     looks_like_path = exe_path.is_absolute() or "/" in exe or exe.startswith(".")
     if looks_like_path:
         candidate = exe_path if exe_path.is_absolute() else cwd / exe_path
         if not candidate.is_file():
             return "Verification command was not found in the session directory, so the check was not run."
-    elif shutil.which(exe) is None:
-        return "Verification command was not found, so the check was not run."
+    else:
+        verif_env = _build_verification_env(cwd, project_root)
+        if shutil.which(exe, path=verif_env.get("PATH")) is None:
+            return "Verification command was not found, so the check was not run."
     return None
 
 
@@ -231,10 +271,19 @@ def capture_git_evidence_if_changed(session: Session, cwd: Path, source: str = "
         return res.stdout.strip() if res.returncode == 0 else ""
 
     head = _git("rev-parse", "HEAD")
-    status_short = _git("status", "--short")
-    changed_files = [line for line in _git("diff", "--name-only", "HEAD").splitlines() if line]
-    if not changed_files and status_short:
-        for line in status_short.splitlines():
+    raw_status = _git("status", "--short")
+    status_lines = [
+        ln for ln in raw_status.splitlines()
+        if ln.strip() and not ln.strip().split(None, 1)[-1].strip().startswith(".rdc/")
+        and ln.strip().split(None, 1)[-1].strip() != ".rdc"
+    ]
+    status_short = "\n".join(status_lines)
+    changed_files = [
+        line for line in _git("diff", "--name-only", "HEAD").splitlines()
+        if line and not line.startswith(".rdc/") and line != ".rdc"
+    ]
+    if not changed_files and status_lines:
+        for line in status_lines:
             parts = line.strip().split(None, 1)
             if len(parts) == 2:
                 changed_files.append(parts[1].strip())
@@ -287,11 +336,21 @@ def run_verification_sync(
     if not argv or any(token in {"&&", "||", ";", "|", ">", "<"} for token in argv):
         raise ValueError("Verification must be a single executable command")
 
+    project_record = get_project_repo().get(session.project)
+    project_root = Path(project_record.path).resolve() if project_record and project_record.path else None
+    verif_env = _build_verification_env(cwd, project_root)
+    exe_path = Path(argv[0])
+    if not (exe_path.is_absolute() or "/" in argv[0] or argv[0].startswith(".")):
+        resolved_exe = shutil.which(argv[0], path=verif_env.get("PATH"))
+        if resolved_exe:
+            argv[0] = resolved_exe
+
     started = time.monotonic()
     try:
         result = subprocess.run(
             argv,
             cwd=cwd,
+            env=verif_env,
             text=True,
             capture_output=True,
             timeout=timeout,
@@ -386,6 +445,71 @@ def _fetch_proven_patterns_hint(session: Session) -> str:
         return "\n".join(lines)
     except Exception:
         return ""
+
+
+def queue_session_steer(session: Session, guidance: str) -> dict[str, Any]:
+    """Queue mid-flight operator steering guidance for the next loop round."""
+    cleaned = _scrub_verification_text(guidance).strip()
+    if not cleaned:
+        raise ValueError("Steering guidance cannot be empty")
+    sm = get_session_manager()
+    metadata = dict(session.metadata or {})
+    steers = list(metadata.get("pending_steers") or [])
+    entry = {
+        "id": secrets.token_hex(8),
+        "text": cleaned[:2000],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "applied_round": None,
+    }
+    steers.append(entry)
+    metadata["pending_steers"] = steers[-20:]
+    session.metadata = metadata
+    sm._persist(session)
+    sm.log_event(
+        session,
+        "session.steer_queued",
+        {"steer_id": entry["id"], "text": entry["text"]},
+    )
+    return entry
+
+
+def get_pending_steers(session: Session) -> list[dict[str, Any]]:
+    """Return unconsumed operator steering entries on a session."""
+    raw = (session.metadata or {}).get("pending_steers") or []
+    return [
+        item
+        for item in raw
+        if isinstance(item, dict) and item.get("applied_round") is None and str(item.get("text") or "").strip()
+    ]
+
+
+def consume_pending_steers(session: Session, target_round: int) -> list[str]:
+    """Mark all pending steers as consumed for target_round and return their text."""
+    sm = get_session_manager()
+    metadata = dict(session.metadata or {})
+    raw = list(metadata.get("pending_steers") or [])
+    consumed_texts: list[str] = []
+    updated: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        item_copy = dict(item)
+        if item_copy.get("applied_round") is None:
+            txt = str(item_copy.get("text") or "").strip()
+            if txt:
+                consumed_texts.append(txt)
+            item_copy["applied_round"] = target_round
+        updated.append(item_copy)
+    if consumed_texts:
+        metadata["pending_steers"] = updated[-20:]
+        session.metadata = metadata
+        sm._persist(session)
+        sm.log_event(
+            session,
+            "session.steer_applied",
+            {"round": target_round, "count": len(consumed_texts), "steers": consumed_texts},
+        )
+    return consumed_texts
 
 
 async def handle_agent_turn_completed(
@@ -502,6 +626,19 @@ async def handle_agent_turn_completed(
     concise_feedback = str(v_data.get("concise_feedback") or "")
     signature = str(v_data.get("signature") or "")
 
+    # Guard against operator cancel / completion / take-control while verification was running
+    fresh = sm.get(session.id)
+    if fresh is not None:
+        session = fresh
+        metadata = dict(session.metadata or {})
+        if session.status in (SessionStatus.CANCELLED, SessionStatus.COMPLETED, SessionStatus.DONE) or session.control_owner == "human":
+            return {
+                "action": "aborted",
+                "end_status": session.status,
+                "summary": session.output_summary or summary,
+                "loop": loop_state,
+            }
+
     round_entry = {
         "round": current_round,
         "exit_code": v_exit,
@@ -543,8 +680,43 @@ async def handle_agent_turn_completed(
         }
 
     # 2. STALL EXIT: Same failure signature two rounds in a row
+    # - If the operator queued fresh steering guidance mid-flight and rounds remain,
+    #   let that guidance break the stall instead of halting.
+    # - In `balanced` routing mode, if we haven't escalated yet and a distinct reasoning
+    #   provider is ready, automatically escalate from coding -> reasoning to break the stall.
     prev_signatures = [h.get("signature") for h in history[:-1] if h.get("signature")]
-    is_stalled = bool(signature and prev_signatures and prev_signatures[-1] == signature)
+    has_pending_steer = bool(get_pending_steers(session))
+    same_failure_twice = bool(signature and prev_signatures and prev_signatures[-1] == signature)
+
+    escalated_from: str | None = None
+    escalated_to: str | None = None
+    routing_profile = str(metadata.get("routing_profile") or "balanced")
+    if (
+        same_failure_twice
+        and not has_pending_steer
+        and current_round < max_rounds
+        and routing_profile == "balanced"
+        and not loop_state.get("escalated_provider")
+        and metadata.get("auto_escalate_on_stall", True)
+    ):
+        try:
+            from .agent_registry import resolve_provider_for_tier
+            from .session_manager import agent_provider_blocker
+
+            candidate = resolve_provider_for_tier(
+                "reasoning",
+                routing_profile="balanced",
+                exclude_provider=session.agent_provider,
+            )
+            if candidate and candidate != session.agent_provider and not agent_provider_blocker(candidate):
+                escalated_from = session.agent_provider or "coding"
+                escalated_to = candidate
+        except Exception:
+            logger.debug("stall auto-escalation check skipped for %s", session.id, exc_info=True)
+
+    is_stalled = same_failure_twice and not (
+        (has_pending_steer or bool(escalated_to)) and current_round < max_rounds
+    )
 
     if is_stalled or current_round >= max_rounds:
         exit_reason = "stall" if is_stalled else "budget"
@@ -586,6 +758,21 @@ async def handle_agent_turn_completed(
 
     # 3. RETRY: Advance to round N+1 with structured feedback + Proven Patterns
     next_round = current_round + 1
+    if escalated_to:
+        session.agent_provider = escalated_to
+        loop_state["escalated_from"] = escalated_from
+        loop_state["escalated_provider"] = escalated_to
+        loop_state["escalated_round"] = next_round
+        sm.log_event(
+            session,
+            "session.loop_escalated",
+            {
+                "from_provider": escalated_from,
+                "to_provider": escalated_to,
+                "round": next_round,
+                "reason": "stall",
+            },
+        )
     loop_state.update({
         "round": next_round,
         "max_rounds": max_rounds,
@@ -602,6 +789,23 @@ async def handle_agent_turn_completed(
     sm._persist(session)
 
     patterns_hint = await asyncio.to_thread(_fetch_proven_patterns_hint, session)
+
+    fresh = sm.get(session.id)
+    if fresh is not None:
+        if fresh.status in (SessionStatus.CANCELLED, SessionStatus.COMPLETED, SessionStatus.DONE) or fresh.control_owner == "human":
+            return {
+                "action": "aborted",
+                "end_status": fresh.status,
+                "summary": fresh.output_summary or summary,
+                "loop": loop_state,
+            }
+        session = fresh
+        session.metadata = metadata
+        session.output_summary = summary
+
+    operator_steers = consume_pending_steers(session, next_round)
+    metadata = dict(session.metadata or {})
+
     feedback_parts = [
         f"[RDC Verify Loop — Round {next_round}/{max_rounds}]",
         f"Your previous attempt did not pass the harness verification check (`{verif_cmd}`).",
@@ -610,6 +814,18 @@ async def handle_agent_turn_completed(
         "",
         "DEAD END: Do not repeat the exact same change without addressing the failing assertion above.",
     ]
+    if operator_steers:
+        feedback_parts.extend([
+            "",
+            "OPERATOR STEERING GUIDANCE (high priority from the human supervising this loop):",
+            *[f"- {s}" for s in operator_steers],
+        ])
+    if escalated_to:
+        feedback_parts.extend([
+            "",
+            f"REASONING ESCALATION: The previous provider ({escalated_from}) stalled on this identical failure. "
+            "Step back, re-examine assumptions from first principles, and diagnose the true root cause before editing.",
+        ])
     if patterns_hint:
         feedback_parts.extend(["", patterns_hint])
     feedback_parts.extend([

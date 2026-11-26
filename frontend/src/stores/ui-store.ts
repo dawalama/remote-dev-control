@@ -29,6 +29,7 @@ interface UIState {
   sessionsHubGroupBy: "client_workstream" | "none"
   needsAttentionCount: number
   workspaceMode: "goals" | "terminal"
+  operatingMode: "sessions" | "agents"
   voicePanelOpen: boolean
   projectSettingsOpen: boolean
   systemSettingsOpen: boolean
@@ -70,6 +71,7 @@ interface UIState {
   setSessionsHubGroupBy: (groupBy: "client_workstream" | "none") => void
   setNeedsAttentionCount: (count: number) => void
   setWorkspaceMode: (mode: "goals" | "terminal") => void
+  setOperatingMode: (mode: "sessions" | "agents") => void
   setVoicePanelOpen: (open: boolean) => void
   toggleVoicePanel: () => void
   setProjectSettingsOpen: (open: boolean) => void
@@ -104,6 +106,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   sessionsHubGroupBy: (localStorage.getItem("rdc_board_group_by") as "client_workstream" | "none") || "client_workstream",
   needsAttentionCount: 0,
   workspaceMode: "goals",
+  operatingMode: (localStorage.getItem("rdc_operating_mode") as "sessions" | "agents") === "agents" ? "agents" : "sessions",
   voicePanelOpen: false,
   projectSettingsOpen: false,
   systemSettingsOpen: false,
@@ -186,6 +189,10 @@ export const useUIStore = create<UIState>((set, get) => ({
   },
   setNeedsAttentionCount: (count) => set({ needsAttentionCount: count }),
   setWorkspaceMode: (mode) => set({ workspaceMode: mode }),
+  setOperatingMode: (mode) => {
+    localStorage.setItem("rdc_operating_mode", mode)
+    set({ operatingMode: mode })
+  },
   setVoicePanelOpen: (open) => set({ voicePanelOpen: open }),
   toggleVoicePanel: () => set((s) => ({ voicePanelOpen: !s.voicePanelOpen })),
   setProjectSettingsOpen: (open) => set({ projectSettingsOpen: open }),

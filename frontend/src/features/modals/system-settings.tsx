@@ -48,7 +48,7 @@ interface PairedSession {
   last_used_at: string | null
 }
 
-type Section = "voice" | "terminal" | "nanobot" | "recipes" | "phone" | "email" | "caddy" | "keys" | "sessions" | "info"
+type Section = "voice" | "terminal" | "nanobot" | "recipes" | "email" | "caddy" | "keys" | "sessions" | "info"
 
 const SECTION_GROUPS: { label: string; sections: { id: Section; label: string }[] }[] = [
   {
@@ -71,7 +71,6 @@ const SECTION_GROUPS: { label: string; sections: { id: Section; label: string }[
   {
     label: "Reach me",
     sections: [
-      { id: "phone", label: "Phone" },
       { id: "sessions", label: "Paired devices" },
       { id: "email", label: "Email" },
     ],
@@ -259,9 +258,6 @@ export function SystemSettingsModal({ onClose }: { onClose: () => void }) {
             )}
             {section === "recipes" && (
               <RecipesSection toast={toast} />
-            )}
-            {section === "phone" && adminSettings && (
-              <PhoneSection settings={adminSettings} toast={toast} />
             )}
             {section === "email" && (
               <EmailSection toast={toast} />
@@ -1049,90 +1045,6 @@ export function RecipesSection({
   )
 }
 
-// ─── Phone ────────────────────────────────────────────────────────────
-
-function PhoneSection({
-  settings,
-  toast,
-}: {
-  settings: AdminSettings
-  toast: (msg: string, type?: "info" | "success" | "error" | "warning") => void
-}) {
-  const [userNumber, setUserNumber] = useState(settings.settings.phone_user_number || "")
-  const [webhookUrl, setWebhookUrl] = useState(settings.settings.phone_webhook_url || "")
-
-  const save = async () => {
-    try {
-      await Promise.all([
-        POST("/admin/settings", { key: "phone_user_number", value: userNumber.trim() }),
-        POST("/admin/settings", { key: "phone_webhook_url", value: webhookUrl.trim() }),
-      ])
-      toast("Phone settings saved", "success")
-    } catch {
-      toast("Failed to save", "error")
-    }
-  }
-
-  const twilioKeys = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"]
-
-  return (
-    <div className="space-y-4">
-      <p className="text-[10px] text-gray-500">
-        Call your phone from the dashboard to interact with the orchestrator via voice
-      </p>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <Label>Your Phone Number</Label>
-          <input
-            className="input-cls font-mono"
-            value={userNumber}
-            onChange={(e) => setUserNumber(e.target.value)}
-            placeholder="+1234567890"
-          />
-          <p className="text-[10px] text-gray-500 mt-1">E.164 format</p>
-        </div>
-        <div>
-          <Label>Webhook Base URL</Label>
-          <input
-            className="input-cls font-mono"
-            value={webhookUrl}
-            onChange={(e) => setWebhookUrl(e.target.value)}
-            placeholder="https://abc123.ngrok.io"
-          />
-          <p className="text-[10px] text-gray-500 mt-1">Public URL for Twilio callbacks</p>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2 flex-wrap">
-        {twilioKeys.map((key) => {
-          const isSet = settings.secrets.includes(key)
-          const label = key.replace("TWILIO_", "").replace(/_/g, " ")
-          return (
-            <span
-              key={key}
-              className={`px-2 py-1 rounded text-[10px] ${
-                isSet ? "bg-green-900 text-green-400" : "bg-red-900 text-red-400"
-              }`}
-            >
-              {label}: {isSet ? "\u2713" : "\u2717"}
-            </span>
-          )
-        })}
-      </div>
-
-      <p className="text-[10px] text-gray-500">
-        Set secrets via CLI: <code className="bg-gray-700 px-1 rounded">rdc config set-secret TWILIO_ACCOUNT_SID value</code>
-      </p>
-
-      <div className="flex justify-end">
-        <button className="px-3 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white" onClick={save}>
-          Save Phone Settings
-        </button>
-      </div>
-    </div>
-  )
-}
-
 // ─── API Keys ─────────────────────────────────────────────────────────
 
 function APIKeysSection({ secrets }: { secrets: string[] }) {
@@ -1142,9 +1054,6 @@ function APIKeysSection({ secrets }: { secrets: string[] }) {
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "X_BEARER_TOKEN",
-    "TWILIO_ACCOUNT_SID",
-    "TWILIO_AUTH_TOKEN",
-    "TWILIO_PHONE_NUMBER",
   ]
 
   return (

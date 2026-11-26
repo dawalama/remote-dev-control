@@ -76,8 +76,14 @@ def _load_agent_provider_policy() -> dict[str, str]:
 
 
 def session_execution_prompt(session: Session) -> str:
+    from .recipes import apply_recipe_to_goal
+
     inherited = (session.metadata or {}).get("inherited_context")
     followups = (session.metadata or {}).get("followup_instructions") or []
+    recipe_id = (session.metadata or {}).get("recipe_id")
+    raw_goal = session.goal or session.description
+    wrapped_goal = apply_recipe_to_goal(str(recipe_id), session.project, raw_goal) if recipe_id else raw_goal
+
     followup_context = ""
     if isinstance(followups, list) and followups:
         turns = []
@@ -98,7 +104,7 @@ def session_execution_prompt(session: Session) -> str:
                 + "\n\n---\n\n".join(turns)
             )
     if not isinstance(inherited, dict):
-        return (session.goal or session.description) + followup_context
+        return wrapped_goal + followup_context
     evidence = inherited.get("evidence") or []
     evidence_summary = "\n".join(
         f"- {item.get('title', item.get('type', 'Evidence'))} ({item.get('id', 'unknown')})"
@@ -106,7 +112,7 @@ def session_execution_prompt(session: Session) -> str:
         if isinstance(item, dict)
     ) or "- No independent evidence was attached."
     return (
-        f"{session.goal or session.description}\n\n"
+        f"{wrapped_goal}\n\n"
         "This Session continues approved work from a parent Session. Use the handoff below as durable context; "
         "inspect the repository and verify assumptions before changing files.\n\n"
         f"Parent goal:\n{str(inherited.get('parent_goal') or '')[:4000]}\n\n"
@@ -130,6 +136,8 @@ def create_supervised_session(
     worktree_mode: Optional[str] = None,
     worktree_branch: Optional[str] = None,
     discovered_from: Optional[str] = None,
+    recipe_id: Optional[str] = None,
+    routing_profile: Optional[str] = None,
 ) -> Session:
     """Create a durable supervised session with evidence/git baseline metadata."""
     if not resolve_project_id(project):
@@ -162,7 +170,23 @@ def create_supervised_session(
         if project not in linked_names:
             raise ValueError(f"Project '{project}' is not linked to channel '{channel_id}'")
 
-    # Resolve concrete agent provider: explicit -> collection default -> preferred_provider
+    # Resolve optional workflow recipe + multi-model routing profile
+    from .agent_registry import resolve_provider_for_tier
+    from .recipes import classify_goal_recipe, get_recipe_spec
+
+    resolved_recipe_id = (recipe_id or "").strip() or None
+    if resolved_recipe_id == "auto":
+        resolved_recipe_id = classify_goal_recipe(goal)["recipe_id"]
+    recipe_spec = get_recipe_spec(resolved_recipe_id) if resolved_recipe_id else None
+
+    provider_policy = _load_agent_provider_policy()
+    effective_routing = (routing_profile or "").strip() or str(
+        provider_policy.get("default_routing_profile") or "balanced"
+    )
+    if effective_routing not in {"balanced", "max_quality", "fast"}:
+        effective_routing = "balanced"
+
+    # Resolve concrete agent provider: explicit -> collection default -> recipe/tier routing -> preferred_provider
     requested = (provider or "").strip()
     if requested and requested != "orchestrated":
         concrete_provider = requested
@@ -175,7 +199,16 @@ def create_supervised_session(
             ).fetchone()
             if c_row and c_row["default_agent_id"]:
                 coll_default = c_row["default_agent_id"].strip()
-        concrete_provider = coll_default or _load_agent_provider_policy().get("preferred_provider", "codex")
+        fallback_provider = coll_default or str(provider_policy.get("preferred_provider") or "codex")
+        if recipe_spec or routing_profile:
+            target_tier = recipe_spec.default_tier if recipe_spec else "coding"
+            concrete_provider = resolve_provider_for_tier(
+                target_tier,
+                routing_profile=effective_routing,
+                preferred_fallback=fallback_provider,
+            )
+        else:
+            concrete_provider = fallback_provider
 
     # Resolve workspace mode and branch
     parent_id = discovered_from or (metadata_extra.get("parent_session_id") if metadata_extra else None)
@@ -204,9 +237,22 @@ def create_supervised_session(
         "supervised": True,
         "git_baseline": session_git_snapshot(project),
         "evidence_providers": _evidence_provider_refs(project),
+        "routing_profile": effective_routing,
     }
+    if recipe_spec:
+        metadata["recipe_id"] = recipe_spec.id
+        metadata["recipe_name"] = recipe_spec.name
+        metadata["recipe_category"] = recipe_spec.category
+        metadata["recipe_icon"] = recipe_spec.icon
+        metadata["review_mode"] = recipe_spec.review_mode
+        if recipe_spec.default_max_rounds and "loop" not in (metadata_extra or {}):
+            metadata.setdefault("max_rounds", recipe_spec.default_max_rounds)
     if metadata_extra:
         metadata.update(metadata_extra)
+
+    effective_criteria = [item.strip() for item in (acceptance_criteria or []) if item.strip()]
+    if not effective_criteria and recipe_spec and recipe_spec.default_criteria:
+        effective_criteria = list(recipe_spec.default_criteria)
 
     session_status = SessionStatus.PROPOSED if status == "proposed" else (SessionStatus(status) if status else SessionStatus.PENDING)
 
@@ -217,7 +263,7 @@ def create_supervised_session(
         agent_provider=concrete_provider,
         task_id=task_id,
         metadata=metadata,
-        acceptance_criteria=[item.strip() for item in (acceptance_criteria or []) if item.strip()],
+        acceptance_criteria=effective_criteria,
         policy=policy or {},
         budget=budget,
         status=session_status,
@@ -228,7 +274,11 @@ def create_supervised_session(
     )
 
 
-_RERUN_STATUSES = {SessionStatus.FAILED.value, SessionStatus.CANCELLED.value}
+_RERUN_STATUSES = {
+    SessionStatus.FAILED.value,
+    SessionStatus.CANCELLED.value,
+    SessionStatus.WAITING.value,
+}
 _REVIEW_STATUSES = {
     SessionStatus.VERIFYING.value,
     SessionStatus.COMPLETED.value,
@@ -261,19 +311,33 @@ def _paths_equal(left: str | Path | None, right: str | Path | None) -> bool:
         return False
 
 
-def _checkout_blocker(project: str, candidate: Path, project_root: Path, exclude_session_id: str) -> Session | None:
-    """Another started session already writing this checkout path.
+def _is_advisory_session(session: Session) -> bool:
+    return str((session.metadata or {}).get("review_mode") or "").strip().lower() == "advisory"
 
-    A pending session is created but has not claimed a checkout. Start moves
-    the session to running before this check, so a staged peer does not reserve
-    the project root. A started direct session still blocks that root when its
-    path was never stored.
+
+def _checkout_blocker(
+    project: str,
+    candidate: Path,
+    project_root: Path,
+    exclude_session_id: str,
+    *,
+    is_advisory: bool = False,
+) -> Session | None:
+    """Another started writer session already using this checkout path.
+
+    Read-only advisory sessions (e.g., cross-model Code Review or Plan spikes)
+    never modify the worktree, so they neither block writers nor are blocked by
+    an active parent session awaiting review.
     """
+    if is_advisory:
+        return None
     candidate_is_root = _paths_equal(candidate, project_root)
     for other in get_session_manager().list_active():
         if other.id == exclude_session_id or other.project != project:
             continue
         if _status_label(other) == SessionStatus.PENDING.value:
+            continue
+        if _is_advisory_session(other):
             continue
         if _paths_equal(other.worktree_path, candidate):
             return other
@@ -291,7 +355,13 @@ def _busy_message(blocker: Session) -> str:
 
 def _try_claim_project_root(sm, session: Session, project_path: Path, wm) -> str | None:
     """Reserve the live checkout. Returns a refusal message, or None when claimed."""
-    blocker = _checkout_blocker(session.project, project_path, project_path, session.id)
+    blocker = _checkout_blocker(
+        session.project,
+        project_path,
+        project_path,
+        session.id,
+        is_advisory=_is_advisory_session(session),
+    )
     if blocker is not None:
         return _busy_message(blocker)
     session.worktree_mode = "direct"
@@ -333,14 +403,26 @@ def _assign_checkout(sm, session: Session, project_path: Path, wm, previous: str
                     "The session was not started on the project checkout."
                 )
             else:
-                blocker = _checkout_blocker(session.project, existing, project_path, session.id)
+                blocker = _checkout_blocker(
+                    session.project,
+                    existing,
+                    project_path,
+                    session.id,
+                    is_advisory=_is_advisory_session(session),
+                )
                 refusal = _busy_message(blocker) if blocker is not None else None
                 if refusal is None:
                     sm._persist(session)
                     claimed = existing.resolve()
         else:
             if existing_ready and existing is not None:
-                blocker = _checkout_blocker(session.project, existing, project_path, session.id)
+                blocker = _checkout_blocker(
+                    session.project,
+                    existing,
+                    project_path,
+                    session.id,
+                    is_advisory=_is_advisory_session(session),
+                )
                 refusal = _busy_message(blocker) if blocker is not None else None
                 if refusal is None:
                     sm._persist(session)
@@ -497,6 +579,9 @@ def start_supervised_session(
         if continue_review and isinstance(followups, list) and followups and isinstance(followups[-1], dict)
         else ""
     )
+    previous_provider = str((s.metadata or {}).get("effective_provider") or "").strip()
+    provider_switched = bool(previous_provider and previous_provider != effective)
+
     s.metadata = {
         **(s.metadata or {}),
         "requested_provider": requested_provider,
@@ -505,6 +590,14 @@ def start_supervised_session(
     }
     # Always mark supervised for this path
     s.metadata["supervised"] = True
+    if not continue_review and previous in _RERUN_STATUSES and isinstance(s.metadata.get("loop"), dict):
+        s.metadata["loop"] = {
+            **s.metadata["loop"],
+            "round": 1,
+            "status": "running",
+            "exit_reason": None,
+            "history": [],
+        }
 
     from .worktree import get_worktree_manager
 
@@ -518,8 +611,20 @@ def start_supervised_session(
         s.worktree_mode = "direct"
         target_cwd = None
 
-    if target_cwd:
+    if target_cwd and not continue_review and not s.metadata.get("git_baseline_captured"):
         s.metadata["git_baseline"] = session_git_snapshot(s.project, override_path=target_cwd)
+        s.metadata["git_baseline_captured"] = True
+
+    from .agent_herd import get_agent_herd_manager
+
+    herd = get_agent_herd_manager()
+    worker = None
+    try:
+        worker = herd.acquire_for_session(s, effective_provider=effective)
+        s.metadata["agent_id"] = worker.id
+        s.metadata["agent_name"] = worker.name
+    except Exception:
+        logger.debug("agent herd acquire skipped for session %s", s.id, exc_info=True)
     sm._persist(s)
 
     from .knowledge_bridge import (
@@ -541,13 +646,22 @@ def start_supervised_session(
     instruction = scrub_goal(latest_instruction, secrets) if latest_instruction else ""
     note = rdc_note
     pointer = pack_pointer_line(path) if path else ""
+    warm_resume = bool(worker and herd.should_use_warm_resume(worker, target_cwd))
     if effective == "shell":
         base = instruction if instruction else (goal + note)
         command = build_agent_command(effective, base + safe_pointer_or_empty(path))
     elif instruction:
         sent = fit_goal_first(instruction, pointer, limit=4000)
         fallback = fit_goal_first(goal, note, pointer, limit=4000)
-        command = build_agent_command(effective, sent, resume=True, fallback_description=fallback)
+        if provider_switched:
+            # Provider changed (e.g. stall escalation codex -> claude): never resume
+            # an unrelated native thread on the new provider; send full context cleanly.
+            command = build_agent_command(effective, fallback, resume=False)
+        else:
+            command = build_agent_command(effective, sent, resume=True, fallback_description=fallback)
+    elif warm_resume:
+        full_prompt = fit_goal_first(goal, note, pointer, limit=4000)
+        command = build_agent_command(effective, full_prompt, resume=True, fallback_description=full_prompt)
     else:
         command = build_agent_command(effective, fit_goal_first(goal, note, pointer, limit=4000))
 
@@ -567,6 +681,17 @@ def start_supervised_session(
             raise RuntimeError("Could not start the agent.") from e
 
     sm.link_terminal(s.id, term.id)
+    if worker is not None:
+        try:
+            herd.record_session_started(
+                worker,
+                session_id=s.id,
+                terminal_id=term.id,
+                worktree_path=s.worktree_path,
+                worktree_branch=s.worktree_branch,
+            )
+        except Exception:
+            logger.debug("agent herd record_session_started skipped", exc_info=True)
     try:
         cm = get_channel_manager()
         cm.post_message(

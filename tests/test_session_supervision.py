@@ -428,7 +428,7 @@ def test_terminal_starter_is_the_session_agent(monkeypatch, tmp_path):
     ids = {wrapper.id for wrapper in list_registered_wrappers() if wrapper.supports_sessions}
     assert {"grok", "agy"} <= ids
     assert "--permission-mode dontAsk -p 'Optimize the query'" in build_agent_command("grok", "Optimize the query")
-    assert "--print --dangerously-skip-permissions 'Ship the fix'" in build_agent_command("agy", "Ship the fix")
+    assert "--dangerously-skip-permissions --output-format stream-json --print 'Ship the fix'" in build_agent_command("agy", "Ship the fix")
 
     menu = terminal_menu()
     assert any(row["agent_id"] == "grok" and row["runs_goals"] for row in menu)

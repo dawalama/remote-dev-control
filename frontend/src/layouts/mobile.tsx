@@ -6,7 +6,6 @@ import { AttentionCard } from "@/features/mobile/attention-card"
 import { TerminalsCard } from "@/features/mobile/terminals-card"
 import { ProcessesCard } from "@/features/mobile/processes-card"
 import { ContextsCard } from "@/features/mobile/contexts-card"
-import { DictationCard } from "@/features/mobile/dictation-card"
 import { BrowserCard } from "@/features/mobile/browser-card"
 import { GlobalTextInput } from "@/components/global-text-input"
 import { useBrowserStore } from "@/stores/browser-store"
@@ -401,7 +400,6 @@ export function MobileLayout() {
                 </div>
               )}
             </div>
-            <PhoneDictation />
           </div>
         )}
 
@@ -687,13 +685,6 @@ export function MobileLayout() {
       <GlobalTextInput />
     </div>
   )
-}
-
-function PhoneDictation() {
-  const phone = useStateStore((s) => s.phone)
-  const phoneActive = (phone as { active?: boolean })?.active === true
-  if (!phoneActive) return null
-  return <DictationCard />
 }
 
 function BrowserUrlSheet({

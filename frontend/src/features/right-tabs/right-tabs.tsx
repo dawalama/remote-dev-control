@@ -28,7 +28,6 @@ const MORE_TABS: { id: RightTab; label: string }[] = [
 export function RightTabs() {
   const globalTab = useUIStore((s) => s.currentTab)
   const setGlobalTab = useUIStore((s) => s.setTab)
-  const phone = useStateStore((s) => s.phone)
   const dictationBlocks = useDictationStore((s) => s.blocks)
   const [moreOpen, setMoreOpen] = useState(false)
 
@@ -38,11 +37,10 @@ export function RightTabs() {
   const mappedTab = globalTab === "pinchtab" ? "browser" : globalTab === "tasks" ? "processes" : globalTab
   const tab: RightTab = VALID_TABS.has(mappedTab) ? (mappedTab as RightTab) : "processes"
   const setTab = (t: RightTab) => setGlobalTab(t)
-  const phoneActive = (phone as { active?: boolean })?.active === true
 
   const primaryTabs: { id: RightTab; label: string; badge?: number }[] = [
     { id: "processes", label: "Actions" },
-    ...(phoneActive ? [{ id: "dictation" as RightTab, label: "Dictation", badge: dictationBlocks.length > 0 ? dictationBlocks.length : undefined }] : []),
+    ...(dictationBlocks.length > 0 ? [{ id: "dictation" as RightTab, label: "Dictation", badge: dictationBlocks.length }] : []),
     { id: "system", label: "System" },
   ]
   const isMoreTab = MORE_TABS.some((t) => t.id === tab)

@@ -233,6 +233,19 @@ export function KioskLayout() {
         >
           <button
             role="tab"
+            aria-selected={viewMode === "goals"}
+            onClick={() => setViewMode("goals")}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[38px] flex items-center gap-1.5 ${
+              viewMode === "goals"
+                ? "bg-blue-600 text-white shadow-sm"
+                : "text-gray-400 hover:text-gray-200 hover:bg-gray-700/50"
+            }`}
+          >
+            <span>🤖</span>
+            <span className="hidden sm:inline">Workspace</span>
+          </button>
+          <button
+            role="tab"
             aria-selected={viewMode === "terminal"}
             onClick={() => setViewMode("terminal")}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[38px] flex items-center gap-1.5 ${
@@ -242,59 +255,7 @@ export function KioskLayout() {
             }`}
           >
             <span>📟</span>
-            <span className="hidden sm:inline">Terminal</span>
-          </button>
-          <button
-            role="tab"
-            aria-selected={viewMode === "chat"}
-            onClick={() => setViewMode("chat")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[38px] flex items-center gap-1.5 ${
-              viewMode === "chat"
-                ? "bg-blue-600 text-white shadow-sm"
-                : "text-gray-400 hover:text-gray-200 hover:bg-gray-700/50"
-            }`}
-          >
-            <span>💬</span>
-            <span className="hidden sm:inline">Chat</span>
-          </button>
-          <button
-            role="tab"
-            aria-selected={viewMode === "goals"}
-            onClick={() => setViewMode("goals")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[38px] flex items-center gap-1.5 ${
-              viewMode === "goals"
-                ? "bg-amber-600 text-white shadow-sm"
-                : "text-gray-400 hover:text-gray-200 hover:bg-gray-700/50"
-            }`}
-          >
-            <span>🎯</span>
-            <span className="hidden sm:inline">Goals</span>
-          </button>
-          <button
-            role="tab"
-            aria-selected={viewMode === "preview"}
-            onClick={() => setViewMode("preview")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[38px] flex items-center gap-1.5 ${
-              viewMode === "preview"
-                ? "bg-purple-600 text-white shadow-sm"
-                : "text-gray-400 hover:text-gray-200 hover:bg-gray-700/50"
-            }`}
-          >
-            <span>🌐</span>
-            <span className="hidden sm:inline">Preview</span>
-          </button>
-          <button
-            role="tab"
-            aria-selected={viewMode === "services"}
-            onClick={() => setViewMode("services")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[38px] flex items-center gap-1.5 ${
-              viewMode === "services"
-                ? "bg-emerald-600 text-white shadow-sm"
-                : "text-gray-400 hover:text-gray-200 hover:bg-gray-700/50"
-            }`}
-          >
-            <span>⚡</span>
-            <span className="hidden sm:inline">Services</span>
+            <span className="hidden sm:inline">Shell</span>
           </button>
           <button
             role="tab"
@@ -308,6 +269,19 @@ export function KioskLayout() {
           >
             <span>◫</span>
             <span className="hidden sm:inline">Split</span>
+          </button>
+          <button
+            role="tab"
+            aria-selected={viewMode === "services"}
+            onClick={() => setViewMode("services")}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[38px] flex items-center gap-1.5 ${
+              viewMode === "services"
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "text-gray-400 hover:text-gray-200 hover:bg-gray-700/50"
+            }`}
+          >
+            <span>⚡</span>
+            <span className="hidden sm:inline">Services</span>
           </button>
         </div>
 
@@ -835,23 +809,6 @@ function KioskActionBar({
   onOpenMenu: () => void
   voice: { listening: boolean; toggle: () => void }
 }) {
-  const phone = useStateStore((s) => s.phone)
-  const toast = useUIStore((s) => s.toast)
-
-  const handlePhone = async () => {
-    if (phone?.active) {
-      try { await POST("/voice/hangup"); toast("Call ended", "info") }
-      catch { toast("Failed to hang up", "error") }
-      return
-    }
-    if (phone?.configured) {
-      try { await POST("/voice/call", { client_id: getClientId() }); toast("Calling...", "info") }
-      catch { toast("Failed to call", "error") }
-      return
-    }
-    toast("Phone not configured", "warning")
-  }
-
   return (
     <div className="flex-shrink-0 border-t border-gray-800 bg-gray-900/98 z-30">
       <div className="max-w-7xl mx-auto px-4 py-2">
@@ -887,22 +844,6 @@ function KioskActionBar({
             aria-label="Voice Dictation"
           >
             🎤
-          </button>
-
-          {/* Phone Button */}
-          <button
-            className={`w-12 py-2 rounded-xl flex items-center justify-center text-lg flex-shrink-0 transition-all min-h-[46px] ${
-              phone?.active
-                ? "bg-emerald-600 text-white animate-pulse shadow-md"
-                : phone?.configured
-                  ? "bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-750 border border-gray-700/60"
-                  : "bg-gray-800 text-gray-500 opacity-40 border border-gray-800"
-            }`}
-            onClick={handlePhone}
-            title={phone?.active ? "Hang up" : phone?.configured ? "Call" : "Phone not configured"}
-            aria-label="Phone Call"
-          >
-            📞
           </button>
 
           {/* Menu Button */}
