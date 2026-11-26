@@ -1158,20 +1158,22 @@ def resolve_provider_spec(provider: str) -> tuple[str, str, dict[str, str] | Non
         default_cmd = spec.terminal_command or spec.executable or provider
         return spec.driver, default_cmd, None, spec
 
-    # Heuristic fallback if user typed a custom alias name like claude-work or codex-quill not yet in static parse
+    # Heuristic fallback if user typed a base CLI not currently on PATH (e.g. agy/grok/aider)
+    # or a custom alias name like claude-work or codex-quill not yet in static parse.
     family = classify_agent_family(provider, provider)
     if family:
         base_bin = {"codex": "codex", "claude": "claude", "cursor": "cursor-agent", "grok": "grok", "agy": "agy"}.get(family, family)
-        alias_info = {"id": provider, "family": family, "expansion": provider, "kind": "zsh_dynamic"}
+        is_base_cli = provider.lower() in {family, base_bin}
+        alias_info = None if is_base_cli else {"id": provider, "family": family, "expansion": provider, "kind": "zsh_dynamic"}
         spec = AgentWrapperSpec(
             id=provider,
             label=f"{provider} ({family.title()})",
             driver=family,
             executable=base_bin,
-            source="alias",
-            terminal_command=provider,
+            source="builtin" if is_base_cli else "alias",
+            terminal_command=base_bin if is_base_cli else provider,
         )
-        return family, provider, alias_info, spec
+        return family, (base_bin if is_base_cli else provider), alias_info, spec
 
     raise ValueError(f"Unsupported session provider: {provider}")
 
